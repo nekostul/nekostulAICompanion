@@ -8,10 +8,12 @@ final class CompanionCommandParser {
     static final class CommandRequest {
         private final CompanionResourceType resourceType;
         private final int amount;
+        private final CompanionTreeRequestMode treeMode;
 
-        CommandRequest(CompanionResourceType resourceType, int amount) {
+        CommandRequest(CompanionResourceType resourceType, int amount, CompanionTreeRequestMode treeMode) {
             this.resourceType = resourceType;
             this.amount = amount;
+            this.treeMode = treeMode;
         }
 
         CompanionResourceType getResourceType() {
@@ -20,6 +22,10 @@ final class CompanionCommandParser {
 
         int getAmount() {
             return amount;
+        }
+
+        CompanionTreeRequestMode getTreeMode() {
+            return treeMode;
         }
     }
 
@@ -40,11 +46,12 @@ final class CompanionCommandParser {
         if (resourceType == null) {
             return null;
         }
-        int amount = parseAmount(normalized, resourceType);
+        CompanionTreeRequestMode treeMode = parseTreeMode(normalized, resourceType);
+        int amount = parseAmount(normalized, resourceType, treeMode);
         if (amount <= 0) {
             return null;
         }
-        return new CommandRequest(resourceType, amount);
+        return new CommandRequest(resourceType, amount, treeMode);
     }
 
     private boolean containsActionKeyword(String normalized) {
@@ -59,45 +66,25 @@ final class CompanionCommandParser {
     }
 
     private CompanionResourceType parseResourceType(String normalized) {
-        if (normalized.contains("\u0432\u043e\u0434") || normalized.contains("water")) {
-            return CompanionResourceType.WATER;
-        }
-        if (normalized.contains("\u043b\u0430\u0432") || normalized.contains("lava")) {
-            return CompanionResourceType.LAVA;
-        }
-        if (normalized.contains("\u043f\u0435\u0441\u043e\u043a")) {
-            return CompanionResourceType.SAND;
-        }
-        if (normalized.contains("\u0433\u0440\u0430\u0432")) {
-            return CompanionResourceType.GRAVEL;
-        }
-        if (normalized.contains("\u043a\u0430\u043c\u043d")) {
-            return CompanionResourceType.STONE;
-        }
-        if (normalized.contains("\u0437\u0435\u043c\u043b") || normalized.contains("\u0433\u0440\u044f\u0437")) {
-            return CompanionResourceType.DIRT;
-        }
-        if (normalized.contains("\u0434\u0435\u0440\u0435\u0432")
-                || normalized.contains("\u0431\u0440\u0435\u0432")
-                || normalized.contains("\u0434\u0440\u0435\u0432\u0435\u0441")) {
-            return CompanionResourceType.LOG;
-        }
-        return null;
+        return CompanionBlockRegistry.findTypeByMessage(normalized);
     }
 
-    private int parseAmount(String normalized, CompanionResourceType resourceType) {
+    private int parseAmount(String normalized, CompanionResourceType resourceType, CompanionTreeRequestMode treeMode) {
         Matcher matcher = NUMBER_PATTERN.matcher(normalized);
         if (matcher.find()) {
             try {
                 return Integer.parseInt(matcher.group(1));
             } catch (NumberFormatException ignored) {
-                return defaultAmount(normalized, resourceType);
+                return defaultAmount(normalized, resourceType, treeMode);
             }
         }
-        return defaultAmount(normalized, resourceType);
+        return defaultAmount(normalized, resourceType, treeMode);
     }
 
-    private int defaultAmount(String normalized, CompanionResourceType resourceType) {
+    private int defaultAmount(String normalized, CompanionResourceType resourceType, CompanionTreeRequestMode treeMode) {
+        if (treeMode != CompanionTreeRequestMode.NONE) {
+            return 1;
+        }
         if (resourceType.isBucketResource()) {
             return DEFAULT_BUCKET_AMOUNT;
         }
@@ -108,6 +95,19 @@ final class CompanionCommandParser {
             return SMALL_BLOCK_AMOUNT;
         }
         return DEFAULT_BLOCK_AMOUNT;
+    }
+
+    private CompanionTreeRequestMode parseTreeMode(String normalized, CompanionResourceType resourceType) {
+        if (resourceType != CompanionResourceType.LOG) {
+            return CompanionTreeRequestMode.NONE;
+        }
+        if (!normalized.contains("\u0434\u0435\u0440\u0435\u0432")) {
+            return CompanionTreeRequestMode.NONE;
+        }
+        if (normalized.contains("\u0431\u043b\u043e\u043a")) {
+            return CompanionTreeRequestMode.LOG_BLOCKS;
+        }
+        return CompanionTreeRequestMode.TREE_COUNT;
     }
 
     private String normalize(String message) {

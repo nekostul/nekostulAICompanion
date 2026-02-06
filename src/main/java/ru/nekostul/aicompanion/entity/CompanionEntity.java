@@ -163,6 +163,7 @@ public class CompanionEntity extends PathfinderMob {
     private final CompanionInventory inventory;
     private final CompanionEquipment equipment;
     private final CompanionGatheringController gatheringController;
+    private final CompanionTreeHarvestController treeHarvestController;
     private final CompanionDeliveryController deliveryController;
     private final CompanionBucketHandler bucketHandler;
     private final CompanionChestManager chestManager;
@@ -192,6 +193,7 @@ public class CompanionEntity extends PathfinderMob {
         this.inventory = new CompanionInventory(this, INVENTORY_SIZE);
         this.equipment = new CompanionEquipment(this, inventory);
         this.gatheringController = new CompanionGatheringController(this, inventory, equipment);
+        this.treeHarvestController = new CompanionTreeHarvestController(this, inventory, equipment);
         this.deliveryController = new CompanionDeliveryController(this, inventory);
         this.bucketHandler = new CompanionBucketHandler(this, inventory);
         this.chestManager = new CompanionChestManager(this, inventory);
@@ -199,7 +201,7 @@ public class CompanionEntity extends PathfinderMob {
         this.helpSystem = new CompanionHelpSystem();
         this.combatController = new CompanionCombatController(this, equipment);
         this.taskCoordinator = new CompanionTaskCoordinator(this, inventory, equipment, gatheringController,
-                deliveryController, bucketHandler, chestManager, commandParser, helpSystem);
+                treeHarvestController, deliveryController, bucketHandler, chestManager, commandParser, helpSystem);
         if (this.getNavigation() instanceof GroundPathNavigation navigation) {
             navigation.setCanOpenDoors(true);
             navigation.setCanPassDoors(true);

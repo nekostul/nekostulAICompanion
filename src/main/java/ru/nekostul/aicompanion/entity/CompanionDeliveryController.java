@@ -5,6 +5,7 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.ArrayList;
 import java.util.List;
 
 final class CompanionDeliveryController {
@@ -15,6 +16,8 @@ final class CompanionDeliveryController {
     private final CompanionInventory inventory;
     private int deliveredCount;
     private long nextDeliverTick;
+    private List<ItemStack> pendingDrops;
+    private int pendingDropIndex;
 
     CompanionDeliveryController(CompanionEntity owner, CompanionInventory inventory) {
         this.owner = owner;
@@ -24,6 +27,25 @@ final class CompanionDeliveryController {
     void startDelivery() {
         deliveredCount = 0;
         nextDeliverTick = -1L;
+        pendingDrops = null;
+        pendingDropIndex = 0;
+    }
+
+    void startDelivery(List<ItemStack> drops) {
+        deliveredCount = 0;
+        nextDeliverTick = -1L;
+        if (drops == null || drops.isEmpty()) {
+            pendingDrops = null;
+            pendingDropIndex = 0;
+            return;
+        }
+        pendingDrops = new ArrayList<>();
+        for (ItemStack stack : drops) {
+            if (!stack.isEmpty()) {
+                pendingDrops.add(stack);
+            }
+        }
+        pendingDropIndex = 0;
     }
 
     boolean tickDelivery(CompanionResourceRequest request, Player player, long gameTime) {
@@ -48,6 +70,31 @@ final class CompanionDeliveryController {
         int dropped = dropStacksNearPlayer(player, toDrop);
         deliveredCount += dropped;
         return deliveredCount >= request.getAmount();
+    }
+
+    boolean tickDeliveryStacks(Player player, long gameTime) {
+        if (player == null) {
+            return false;
+        }
+        if (pendingDrops == null || pendingDropIndex >= pendingDrops.size()) {
+            return true;
+        }
+        Vec3 target = player.position();
+        if (owner.distanceToSqr(target) > DELIVERY_RANGE_SQR) {
+            owner.getNavigation().moveTo(target.x, target.y, target.z, 1.1D);
+            return false;
+        }
+        owner.getNavigation().stop();
+        if (gameTime < nextDeliverTick) {
+            return false;
+        }
+        nextDeliverTick = gameTime + DELIVERY_COOLDOWN_TICKS;
+        ItemStack stack = pendingDrops.get(pendingDropIndex);
+        if (!stack.isEmpty()) {
+            dropStacksNearPlayer(player, List.of(stack));
+        }
+        pendingDropIndex++;
+        return pendingDropIndex >= pendingDrops.size();
     }
 
     private int dropStacksNearPlayer(Player player, List<ItemStack> stacks) {

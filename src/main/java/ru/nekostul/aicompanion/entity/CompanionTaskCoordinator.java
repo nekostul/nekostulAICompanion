@@ -10,13 +10,15 @@ final class CompanionTaskCoordinator {
         WAITING_BUCKETS,
         WAITING_CHEST,
         GATHERING,
-        DELIVERING
+        DELIVERING,
+        DELIVERING_ALL
     }
 
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
     private final CompanionEquipment equipment;
     private final CompanionGatheringController gathering;
+    private final CompanionTreeHarvestController treeHarvest;
     private final CompanionDeliveryController delivery;
     private final CompanionBucketHandler bucketHandler;
     private final CompanionChestManager chestManager;
@@ -30,6 +32,7 @@ final class CompanionTaskCoordinator {
                              CompanionInventory inventory,
                              CompanionEquipment equipment,
                              CompanionGatheringController gathering,
+                             CompanionTreeHarvestController treeHarvest,
                              CompanionDeliveryController delivery,
                              CompanionBucketHandler bucketHandler,
                              CompanionChestManager chestManager,
@@ -39,6 +42,7 @@ final class CompanionTaskCoordinator {
         this.inventory = inventory;
         this.equipment = equipment;
         this.gathering = gathering;
+        this.treeHarvest = treeHarvest;
         this.delivery = delivery;
         this.bucketHandler = bucketHandler;
         this.chestManager = chestManager;
@@ -95,6 +99,7 @@ final class CompanionTaskCoordinator {
         switch (taskState) {
             case GATHERING -> tickGathering(player, gameTime);
             case DELIVERING -> tickDelivery(player, gameTime);
+            case DELIVERING_ALL -> tickDeliveryAll(player, gameTime);
             default -> {
             }
         }
@@ -110,7 +115,8 @@ final class CompanionTaskCoordinator {
     }
 
     private void startRequest(Player player, CompanionCommandParser.CommandRequest parsed) {
-        activeRequest = new CompanionResourceRequest(player.getUUID(), parsed.getResourceType(), parsed.getAmount());
+        activeRequest = new CompanionResourceRequest(player.getUUID(), parsed.getResourceType(), parsed.getAmount(),
+                parsed.getTreeMode());
         if (parsed.getResourceType().isBucketResource()) {
             if (bucketHandler.ensureBuckets(activeRequest, player, owner.level().getGameTime())
                     == CompanionBucketHandler.BucketStatus.NEED_BUCKETS) {
@@ -119,7 +125,9 @@ final class CompanionTaskCoordinator {
             }
         }
         taskState = TaskState.GATHERING;
-        delivery.startDelivery();
+        if (!activeRequest.isTreeCountRequest()) {
+            delivery.startDelivery();
+        }
     }
 
     private void tickGathering(Player player, long gameTime) {
@@ -139,6 +147,33 @@ final class CompanionTaskCoordinator {
                 activeRequest = null;
                 taskState = TaskState.IDLE;
                 return;
+            }
+            return;
+        }
+        if (activeRequest.isTreeRequest()) {
+            CompanionTreeHarvestController.Result treeResult = treeHarvest.tick(activeRequest, gameTime);
+            if (treeResult == CompanionTreeHarvestController.Result.DONE) {
+                if (activeRequest.isTreeCountRequest()) {
+                    delivery.startDelivery(treeHarvest.takeCollectedDrops());
+                    taskState = TaskState.DELIVERING_ALL;
+                    return;
+                }
+                taskState = TaskState.DELIVERING;
+                delivery.startDelivery();
+                return;
+            }
+            if (treeResult == CompanionTreeHarvestController.Result.NOT_FOUND) {
+                owner.sendReply(player, Component.translatable(missingKey(activeRequest.getResourceType())));
+                activeRequest = null;
+                taskState = TaskState.IDLE;
+                return;
+            }
+            if (treeResult == CompanionTreeHarvestController.Result.NEED_CHEST) {
+                chestManager.requestChest(player, gameTime);
+                if (chestManager.hasChest()) {
+                    chestManager.depositToChest();
+                }
+                taskState = TaskState.WAITING_CHEST;
             }
             return;
         }
@@ -169,6 +204,17 @@ final class CompanionTaskCoordinator {
             return;
         }
         if (delivery.tickDelivery(activeRequest, player, gameTime)) {
+            activeRequest = null;
+            taskState = TaskState.IDLE;
+        }
+    }
+
+    private void tickDeliveryAll(Player player, long gameTime) {
+        if (activeRequest == null) {
+            taskState = TaskState.IDLE;
+            return;
+        }
+        if (delivery.tickDeliveryStacks(player, gameTime)) {
             activeRequest = null;
             taskState = TaskState.IDLE;
         }

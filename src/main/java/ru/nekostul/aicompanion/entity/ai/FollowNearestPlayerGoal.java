@@ -3,6 +3,8 @@ package ru.nekostul.aicompanion.entity.ai;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.util.Mth;
 
 import java.util.EnumSet;
 import java.util.function.BooleanSupplier;
@@ -10,21 +12,23 @@ import java.util.function.BooleanSupplier;
 public class FollowNearestPlayerGoal extends Goal {
     private final PathfinderMob mob;
     private final double maxSpeedModifier;
+    private final CompanionMovementController movementController;
     private final float startDistance;
     private final float stopDistance;
     private final BooleanSupplier followEnabled;
     private Player target;
     private int timeToRecalcPath;
-    private long nextJumpTick;
+    private Vec3 followPos;
+    private Vec3 lastPlayerPos;
+    private long nextTargetUpdateTick;
+    private final int sideSign;
 
-    private static final double MIN_SPEED_MOD = 0.9D;
-    private static final double WALK_SPEED_MOD = 1.0D;
-    private static final double RUN_SPEED_MOD = 1.15D;
-    private static final double SPRINT_SPEED_MOD = 1.25D;
-    private static final double CATCHUP_SPEED_MOD = 1.35D;
-    private static final double RUN_THRESHOLD = 0.08D;
-    private static final double SPRINT_THRESHOLD = 0.12D;
-    private static final int JUMP_COOLDOWN_TICKS = 20;
+    private static final double FOLLOW_BEHIND_DISTANCE = 2.6D;
+    private static final double FOLLOW_SIDE_DISTANCE = 1.2D;
+    private static final double FOLLOW_MIN_DISTANCE_SQR = 2.25D;
+    private static final double FOLLOW_MAX_DISTANCE_SQR = 20.25D;
+    private static final double PLAYER_MOVE_RECALC_SQR = 1.0D;
+    private static final int TARGET_UPDATE_TICKS = 10;
 
     public FollowNearestPlayerGoal(PathfinderMob mob, double speedModifier, float startDistance, float stopDistance) {
         this(mob, speedModifier, startDistance, stopDistance, () -> true);
@@ -37,6 +41,8 @@ public class FollowNearestPlayerGoal extends Goal {
         this.startDistance = startDistance;
         this.stopDistance = stopDistance;
         this.followEnabled = followEnabled;
+        this.movementController = new CompanionMovementController(mob, speedModifier);
+        this.sideSign = (mob.getUUID().hashCode() & 1) == 0 ? 1 : -1;
         this.setFlags(EnumSet.of(Goal.Flag.MOVE, Goal.Flag.LOOK));
     }
 
@@ -74,11 +80,17 @@ public class FollowNearestPlayerGoal extends Goal {
     @Override
     public void start() {
         this.timeToRecalcPath = 0;
+        this.followPos = null;
+        this.lastPlayerPos = null;
+        this.nextTargetUpdateTick = 0L;
+        this.movementController.reset();
     }
 
     @Override
     public void stop() {
         this.target = null;
+        this.followPos = null;
+        this.lastPlayerPos = null;
         this.mob.getNavigation().stop();
     }
 
@@ -87,52 +99,64 @@ public class FollowNearestPlayerGoal extends Goal {
         if (this.target == null) {
             return;
         }
-        this.mob.getLookControl().setLookAt(this.target, 10.0F, this.mob.getMaxHeadXRot());
-        double speed = getAdaptiveSpeed();
         double distanceSqr = this.mob.distanceToSqr(this.target);
+        long gameTime = this.mob.level().getGameTime();
+        updateFollowTarget(gameTime);
+        if (this.followPos == null) {
+            return;
+        }
+        double followDistanceSqr = this.mob.distanceToSqr(this.followPos);
+        if (followDistanceSqr <= (double) (this.stopDistance * this.stopDistance)) {
+            this.mob.getNavigation().stop();
+            return;
+        }
+        this.mob.getLookControl().setLookAt(this.followPos.x, this.followPos.y, this.followPos.z);
+        double speed = this.movementController.update(this.target, this.followPos, gameTime, distanceSqr);
         if (--this.timeToRecalcPath <= 0) {
             this.timeToRecalcPath = this.adjustedTickDelay(10);
-            this.mob.getNavigation().moveTo(this.target, speed);
+            this.mob.getNavigation().moveTo(this.followPos.x, this.followPos.y, this.followPos.z, speed);
         }
-        tryJump(speed, distanceSqr);
     }
 
-    private double getAdaptiveSpeed() {
-        if (this.target == null) {
-            return this.maxSpeedModifier;
+    private void updateFollowTarget(long gameTime) {
+        Vec3 playerPos = this.target.position();
+        if (this.followPos == null || this.lastPlayerPos == null) {
+            this.followPos = computeFollowPos(playerPos);
+            this.lastPlayerPos = playerPos;
+            this.nextTargetUpdateTick = gameTime + TARGET_UPDATE_TICKS;
+            return;
         }
-        double targetSpeed = this.target.getDeltaMovement().horizontalDistance();
-        double speed;
-        if (targetSpeed < 0.03D) {
-            speed = MIN_SPEED_MOD;
-        } else if (targetSpeed < RUN_THRESHOLD) {
-            speed = WALK_SPEED_MOD;
-        } else if (targetSpeed < SPRINT_THRESHOLD) {
-            speed = RUN_SPEED_MOD;
-        } else {
-            speed = SPRINT_SPEED_MOD;
+        if (gameTime < this.nextTargetUpdateTick) {
+            return;
         }
-        if (this.mob.distanceToSqr(this.target) > 256.0D) {
-            speed = Math.max(speed, CATCHUP_SPEED_MOD);
+        double moved = this.lastPlayerPos.distanceToSqr(playerPos);
+        double followToPlayer = this.followPos.distanceToSqr(playerPos);
+        if (moved < PLAYER_MOVE_RECALC_SQR
+                && followToPlayer >= FOLLOW_MIN_DISTANCE_SQR
+                && followToPlayer <= FOLLOW_MAX_DISTANCE_SQR) {
+            this.nextTargetUpdateTick = gameTime + TARGET_UPDATE_TICKS;
+            return;
         }
-        return Math.min(this.maxSpeedModifier, speed);
+        this.followPos = computeFollowPos(playerPos);
+        this.lastPlayerPos = playerPos;
+        this.nextTargetUpdateTick = gameTime + TARGET_UPDATE_TICKS;
     }
 
-    private void tryJump(double speed, double distanceSqr) {
-        if (speed < RUN_SPEED_MOD) {
-            return;
+    private Vec3 computeFollowPos(Vec3 playerPos) {
+        Vec3 look = this.target.getLookAngle();
+        Vec3 forward = new Vec3(look.x, 0.0D, look.z);
+        if (forward.lengthSqr() < 1.0E-4D) {
+            float yaw = this.target.getYRot() * ((float) Math.PI / 180.0F);
+            forward = new Vec3(-Mth.sin(yaw), 0.0D, Mth.cos(yaw));
         }
-        if (distanceSqr < 36.0D) {
-            return;
+        forward = forward.normalize();
+        Vec3 right = new Vec3(-forward.z, 0.0D, forward.x).scale(FOLLOW_SIDE_DISTANCE * sideSign);
+        Vec3 behind = forward.scale(-FOLLOW_BEHIND_DISTANCE);
+        Vec3 follow = new Vec3(playerPos.x + behind.x + right.x, playerPos.y, playerPos.z + behind.z + right.z);
+        if (follow.distanceToSqr(playerPos) < FOLLOW_MIN_DISTANCE_SQR) {
+            Vec3 farther = forward.scale(-(FOLLOW_BEHIND_DISTANCE + 1.0D));
+            follow = new Vec3(playerPos.x + farther.x, playerPos.y, playerPos.z + farther.z);
         }
-        if (!this.mob.onGround() || this.mob.isInWaterOrBubble()) {
-            return;
-        }
-        long gameTime = this.mob.level().getGameTime();
-        if (gameTime < this.nextJumpTick) {
-            return;
-        }
-        this.mob.getJumpControl().jump();
-        this.nextJumpTick = gameTime + JUMP_COOLDOWN_TICKS;
+        return follow;
     }
 }

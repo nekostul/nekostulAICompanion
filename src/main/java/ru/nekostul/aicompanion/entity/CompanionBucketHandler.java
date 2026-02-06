@@ -33,6 +33,7 @@ final class CompanionBucketHandler {
     private static final float FLUID_FOV_DOT = -1.0F;
     private static final double FLUID_USE_RANGE_SQR = 6.0D;
     private static final int FILL_COOLDOWN_TICKS = 10;
+    private static final int HIDDEN_RESCAN_TICKS = 20;
 
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
@@ -108,10 +109,19 @@ final class CompanionBucketHandler {
     }
 
     private BlockPos findFluidSource(CompanionResourceType type, long gameTime) {
-        if (gameTime < nextScanTick && cachedFluidPos != null) {
+        if (cachedFluidPos != null) {
             BlockState cached = owner.level().getBlockState(cachedFluidPos);
             if (type.matchesBlock(cached)) {
-                return cachedFluidPos;
+                boolean visible = hasLineOfSight(owner.getEyePosition(), Vec3.atCenterOf(cachedFluidPos),
+                        cachedFluidPos);
+                if (gameTime < nextScanTick) {
+                    if (visible) {
+                        return cachedFluidPos;
+                    }
+                    if (gameTime - lastScanTick < HIDDEN_RESCAN_TICKS) {
+                        return cachedFluidPos;
+                    }
+                }
             }
         }
         if (gameTime < nextScanTick) {
@@ -123,8 +133,10 @@ final class CompanionBucketHandler {
         Vec3 look = owner.getLookAngle().normalize();
         BlockPos origin = owner.blockPosition();
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        BlockPos best = null;
-        double bestDistance = Double.MAX_VALUE;
+        BlockPos bestVisible = null;
+        BlockPos bestHidden = null;
+        double bestVisibleDistance = Double.MAX_VALUE;
+        double bestHiddenDistance = Double.MAX_VALUE;
 
         for (int dx = -FLUID_SCAN_RADIUS; dx <= FLUID_SCAN_RADIUS; dx++) {
             for (int dy = -FLUID_SCAN_RADIUS; dy <= FLUID_SCAN_RADIUS; dy++) {
@@ -143,13 +155,20 @@ final class CompanionBucketHandler {
                     if (look.dot(toTarget.normalize()) < FLUID_FOV_DOT) {
                         continue;
                     }
-                    if (distanceSqr < bestDistance) {
-                        bestDistance = distanceSqr;
-                        best = pos.immutable();
+                    boolean visible = hasLineOfSight(eye, targetCenter, pos);
+                    if (visible) {
+                        if (distanceSqr < bestVisibleDistance) {
+                            bestVisibleDistance = distanceSqr;
+                            bestVisible = pos.immutable();
+                        }
+                    } else if (distanceSqr < bestHiddenDistance) {
+                        bestHiddenDistance = distanceSqr;
+                        bestHidden = pos.immutable();
                     }
                 }
             }
         }
+        BlockPos best = bestVisible != null ? bestVisible : bestHidden;
         if (best != null) {
             lastScanFound = true;
         }

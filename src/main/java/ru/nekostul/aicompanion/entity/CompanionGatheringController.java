@@ -2,7 +2,7 @@ package ru.nekostul.aicompanion.entity;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.ItemTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -32,7 +32,9 @@ final class CompanionGatheringController {
     private static final int RESOURCE_SCAN_COOLDOWN_TICKS = 80;
     private static final float RESOURCE_FOV_DOT = -1.0F;
     private static final double MINING_REACH_SQR = 9.0D;
-    private static final int MINING_SWING_COOLDOWN = 5;
+    private static final int LOCAL_RADIUS = 3;
+    private static final int LOCAL_HEIGHT = 4;
+    private static final int LOCAL_LOG_HEIGHT = 8;
     private static final int LOG_FROM_LEAVES_RADIUS = 2;
     private static final int LOG_FROM_LEAVES_MAX_DEPTH = 6;
     private static final int STONE_DIG_MAX_DEPTH = 8;
@@ -40,11 +42,13 @@ final class CompanionGatheringController {
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
     private final CompanionEquipment equipment;
+    private final CompanionMiningAnimator miningAnimator;
 
     private CompanionResourceType activeType;
     private int activeAmount;
     private BlockPos targetBlock;
     private BlockPos pendingResourceBlock;
+    private BlockPos pendingSightPos;
     private BlockPos digStonePos;
     private long nextScanTick = -1L;
     private BlockPos cachedTarget;
@@ -53,30 +57,32 @@ final class CompanionGatheringController {
     private BlockPos miningProgressPos;
     private float miningProgress;
     private int miningProgressStage = -1;
-    private long nextSwingTick = -1L;
+    private BlockPos resourceAnchor;
+    private BlockPos lastMinedBlock;
 
     CompanionGatheringController(CompanionEntity owner, CompanionInventory inventory, CompanionEquipment equipment) {
         this.owner = owner;
         this.inventory = inventory;
         this.equipment = equipment;
+        this.miningAnimator = new CompanionMiningAnimator(owner);
     }
 
     Result tick(CompanionResourceRequest request, long gameTime) {
         if (request == null) {
-            clearTarget();
+            resetRequestState();
             return Result.IDLE;
         }
         if (activeType != request.getResourceType() || activeAmount != request.getAmount()) {
             activeType = request.getResourceType();
             activeAmount = request.getAmount();
-            clearTarget();
+            resetRequestState();
         }
         if (inventory.isFull()) {
-            clearTarget();
+            clearTargetState();
             return Result.NEED_CHEST;
         }
         if (inventory.countMatching(activeType::matchesItem) >= activeAmount) {
-            clearTarget();
+            resetRequestState();
             return Result.DONE;
         }
         if (targetBlock == null || !isTargetValid()) {
@@ -87,9 +93,7 @@ final class CompanionGatheringController {
                 }
                 return Result.IN_PROGRESS;
             }
-            this.targetBlock = selection.target;
-            this.pendingResourceBlock = selection.pendingResource;
-            this.digStonePos = selection.digStonePos;
+            applySelection(selection);
             resetMiningProgress();
         }
         return tickMining(gameTime);
@@ -107,17 +111,14 @@ final class CompanionGatheringController {
                 resetMiningProgress();
                 return Result.IN_PROGRESS;
             }
-            if (pendingResourceBlock != null && owner.level().getBlockState(pendingResourceBlock).isSolid()) {
-                targetBlock = pendingResourceBlock;
-                pendingResourceBlock = null;
-                resetMiningProgress();
+            if (advancePendingTarget()) {
                 return Result.IN_PROGRESS;
             }
-            clearTarget();
+            clearTargetState();
             return Result.IN_PROGRESS;
         }
         if (!isBreakable(state, targetBlock)) {
-            clearTarget();
+            clearTargetState();
             return Result.IN_PROGRESS;
         }
         equipment.equipToolForBlock(state);
@@ -129,20 +130,16 @@ final class CompanionGatheringController {
             return Result.IN_PROGRESS;
         }
         owner.getNavigation().stop();
-        owner.getLookControl().setLookAt(center.x, center.y, center.z);
         if (miningProgressPos == null || !miningProgressPos.equals(targetBlock)) {
             resetMiningProgress();
             miningProgressPos = targetBlock;
         }
         float progressPerTick = getBreakProgress(state, targetBlock);
         if (progressPerTick <= 0.0F) {
-            clearTarget();
+            clearTargetState();
             return Result.IN_PROGRESS;
         }
-        if (gameTime >= nextSwingTick) {
-            owner.swing(InteractionHand.MAIN_HAND, true);
-            nextSwingTick = gameTime + MINING_SWING_COOLDOWN;
-        }
+        miningAnimator.tick(targetBlock, progressPerTick, gameTime);
         miningProgress += progressPerTick;
         int stage = Math.min(9, (int) (miningProgress * 10.0F));
         if (stage != miningProgressStage && owner.level() instanceof ServerLevel serverLevel) {
@@ -153,33 +150,44 @@ final class CompanionGatheringController {
             boolean mined = mineBlock(targetBlock);
             resetMiningProgress();
             if (!mined) {
-                clearTarget();
+                clearTargetState();
                 return Result.NEED_CHEST;
             }
+            lastMinedBlock = targetBlock;
             if (diggingForStone) {
                 if (targetBlock.equals(digStonePos)) {
-                    clearTarget();
+                    digStonePos = null;
+                    clearTargetState();
                     return Result.IN_PROGRESS;
                 }
                 BlockPos next = targetBlock.below();
                 if (next.getY() < digStonePos.getY()) {
-                    clearTarget();
+                    digStonePos = null;
+                    clearTargetState();
                     return Result.IN_PROGRESS;
                 }
                 targetBlock = next;
                 return Result.IN_PROGRESS;
             }
-            if (pendingResourceBlock != null && owner.level().getBlockState(pendingResourceBlock).isSolid()) {
-                targetBlock = pendingResourceBlock;
-                pendingResourceBlock = null;
+            if (advancePendingTarget()) {
                 return Result.IN_PROGRESS;
             }
-            clearTarget();
+            clearTargetState();
         }
         return Result.IN_PROGRESS;
     }
 
     private TargetSelection findTarget(CompanionResourceType type, long gameTime) {
+        if (resourceAnchor != null) {
+            if (owner.blockPosition().distSqr(resourceAnchor) <= (double) (RESOURCE_SCAN_RADIUS * RESOURCE_SCAN_RADIUS)) {
+                TargetSelection local = findLocalTarget(type);
+                if (local != null) {
+                    return local;
+                }
+            }
+            resourceAnchor = null;
+            lastMinedBlock = null;
+        }
         if (gameTime < nextScanTick && cachedTarget != null && isCachedTargetValid(type, cachedTarget)) {
             return new TargetSelection(cachedTarget, cachedTarget, cachedTarget, null);
         }
@@ -188,42 +196,9 @@ final class CompanionGatheringController {
         }
         lastScanTick = gameTime;
         lastScanFound = false;
-        Vec3 eye = owner.getEyePosition();
-        Vec3 look = owner.getLookAngle().normalize();
         BlockPos origin = owner.blockPosition();
-        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        TargetSelection best = null;
-        double bestDistance = Double.MAX_VALUE;
-
-        for (int dx = -RESOURCE_SCAN_RADIUS; dx <= RESOURCE_SCAN_RADIUS; dx++) {
-            for (int dy = -RESOURCE_SCAN_RADIUS; dy <= RESOURCE_SCAN_RADIUS; dy++) {
-                for (int dz = -RESOURCE_SCAN_RADIUS; dz <= RESOURCE_SCAN_RADIUS; dz++) {
-                    pos.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
-                    BlockState state = owner.level().getBlockState(pos);
-                    TargetSelection selection = resolveTargetSelection(type, pos.immutable(), state);
-                    if (selection == null) {
-                        continue;
-                    }
-                    Vec3 sightCenter = Vec3.atCenterOf(selection.sightPos);
-                    Vec3 toTarget = sightCenter.subtract(eye);
-                    double distance = toTarget.length();
-                    if (distance > RESOURCE_SCAN_RADIUS) {
-                        continue;
-                    }
-                    if (look.dot(toTarget.normalize()) < RESOURCE_FOV_DOT) {
-                        continue;
-                    }
-                    TargetSelection raySelection = resolveObstruction(selection.resourcePos, selection.sightPos);
-                    if (raySelection == null) {
-                        continue;
-                    }
-                    if (distance < bestDistance) {
-                        bestDistance = distance;
-                        best = raySelection;
-                    }
-                }
-            }
-        }
+        TargetSelection best = scanArea(type, origin, RESOURCE_SCAN_RADIUS, RESOURCE_SCAN_RADIUS, origin,
+                RESOURCE_SCAN_RADIUS, false);
         if (best == null && type == CompanionResourceType.STONE) {
             TargetSelection digTarget = findStoneDigTarget(gameTime);
             if (digTarget != null) {
@@ -238,12 +213,73 @@ final class CompanionGatheringController {
         return best;
     }
 
+    private TargetSelection findLocalTarget(CompanionResourceType type) {
+        BlockPos anchor = lastMinedBlock != null ? lastMinedBlock : resourceAnchor;
+        if (anchor == null) {
+            return null;
+        }
+        int radius = LOCAL_RADIUS;
+        int height = LOCAL_HEIGHT;
+        if (type == CompanionResourceType.LOG) {
+            height = LOCAL_LOG_HEIGHT;
+        }
+        return scanArea(type, anchor, radius, height, anchor, Math.max(radius, height) + 1, true);
+    }
+
+    private TargetSelection scanArea(CompanionResourceType type,
+                                     BlockPos origin,
+                                     int radius,
+                                     int height,
+                                     BlockPos distanceOrigin,
+                                     double maxDistance,
+                                     boolean scoreByTarget) {
+        Vec3 eye = owner.getEyePosition();
+        Vec3 look = owner.getLookAngle().normalize();
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        TargetSelection best = null;
+        double bestDistance = Double.MAX_VALUE;
+        double maxDistanceSqr = maxDistance * maxDistance;
+
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -height; dy <= height; dy++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    pos.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
+                    BlockState state = owner.level().getBlockState(pos);
+                    TargetSelection selection = resolveTargetSelection(type, pos.immutable(), state);
+                    if (selection == null) {
+                        continue;
+                    }
+                    Vec3 sightCenter = Vec3.atCenterOf(selection.sightPos);
+                    Vec3 toTarget = sightCenter.subtract(eye);
+                    double distanceSqr = toTarget.lengthSqr();
+                    if (distanceSqr > maxDistanceSqr) {
+                        continue;
+                    }
+                    if (look.dot(toTarget.normalize()) < RESOURCE_FOV_DOT) {
+                        continue;
+                    }
+                    TargetSelection raySelection = resolveObstruction(selection.resourcePos, selection.sightPos);
+                    if (raySelection == null) {
+                        continue;
+                    }
+                    BlockPos scorePos = scoreByTarget ? raySelection.target : raySelection.resourcePos;
+                    double score = distanceOrigin.distSqr(scorePos);
+                    if (score < bestDistance) {
+                        bestDistance = score;
+                        best = raySelection;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
     private TargetSelection resolveTargetSelection(CompanionResourceType type, BlockPos pos, BlockState state) {
         if (type == CompanionResourceType.LOG) {
-            if (state.is(BlockTags.LOGS)) {
+            if (CompanionBlockRegistry.isLog(state)) {
                 return new TargetSelection(pos, pos, pos, null);
             }
-            if (state.is(BlockTags.LEAVES)) {
+            if (CompanionBlockRegistry.isLeaves(state)) {
                 BlockPos logPos = resolveLogFromLeaves(pos);
                 if (logPos != null) {
                     return new TargetSelection(logPos, logPos, pos, null);
@@ -294,7 +330,7 @@ final class CompanionGatheringController {
                     continue;
                 }
                 BlockState surfaceState = owner.level().getBlockState(surface);
-                if (!surfaceState.is(BlockTags.MINEABLE_WITH_SHOVEL)) {
+                if (!CompanionBlockRegistry.isShovelMineable(surfaceState)) {
                     continue;
                 }
                 BlockPos stonePos = findStoneBelow(surface, pos);
@@ -316,10 +352,11 @@ final class CompanionGatheringController {
         for (int y = start.getY() - 1; y >= minY; y--) {
             pos.set(start.getX(), y, start.getZ());
             BlockState state = owner.level().getBlockState(pos);
-            if (state.is(BlockTags.BASE_STONE_OVERWORLD)) {
+            if (CompanionBlockRegistry.isStoneBlock(state)) {
                 return pos.immutable();
             }
-            if (!state.is(BlockTags.MINEABLE_WITH_SHOVEL)) {
+            if (!CompanionBlockRegistry.isShovelMineable(state)
+                    && !CompanionBlockRegistry.isPickaxeMineable(state)) {
                 return null;
             }
         }
@@ -333,7 +370,7 @@ final class CompanionGatheringController {
             for (int dx = -LOG_FROM_LEAVES_RADIUS; dx <= LOG_FROM_LEAVES_RADIUS; dx++) {
                 for (int dz = -LOG_FROM_LEAVES_RADIUS; dz <= LOG_FROM_LEAVES_RADIUS; dz++) {
                     pos.set(leafPos.getX() + dx, y, leafPos.getZ() + dz);
-                    if (owner.level().getBlockState(pos).is(BlockTags.LOGS)) {
+                    if (CompanionBlockRegistry.isLog(owner.level().getBlockState(pos))) {
                         return resolveLogTarget(pos.immutable());
                     }
                 }
@@ -345,7 +382,7 @@ final class CompanionGatheringController {
     private BlockPos resolveLogTarget(BlockPos pos) {
         BlockPos current = pos;
         BlockPos below = current.below();
-        while (owner.level().getBlockState(below).is(BlockTags.LOGS)) {
+        while (CompanionBlockRegistry.isLog(owner.level().getBlockState(below))) {
             current = below;
             below = current.below();
         }
@@ -366,7 +403,7 @@ final class CompanionGatheringController {
     private boolean isCachedTargetValid(CompanionResourceType type, BlockPos pos) {
         BlockState state = owner.level().getBlockState(pos);
         if (type == CompanionResourceType.LOG) {
-            return state.is(BlockTags.LOGS);
+            return CompanionBlockRegistry.isLog(state);
         }
         return type.matchesBlock(state);
     }
@@ -392,7 +429,9 @@ final class CompanionGatheringController {
         ItemStack tool = owner.getMainHandItem();
         List<ItemStack> drops = Block.getDrops(state, serverLevel, pos, owner.level().getBlockEntity(pos),
                 owner, tool);
-        if (drops.isEmpty()) {
+        if (CompanionBlockRegistry.isLeaves(state)) {
+            drops = filterLeafDrops(drops);
+        } else if (drops.isEmpty()) {
             Item item = state.getBlock().asItem();
             if (item != Items.AIR) {
                 drops = List.of(new ItemStack(item));
@@ -407,6 +446,23 @@ final class CompanionGatheringController {
             tool.hurtAndBreak(1, owner, entity -> entity.broadcastBreakEvent(InteractionHand.MAIN_HAND));
         }
         return true;
+    }
+
+    private List<ItemStack> filterLeafDrops(List<ItemStack> drops) {
+        if (drops.isEmpty()) {
+            return drops;
+        }
+        List<ItemStack> filtered = new java.util.ArrayList<>();
+        for (ItemStack stack : drops) {
+            if (stack.isEmpty()) {
+                continue;
+            }
+            if (stack.is(ItemTags.LEAVES)) {
+                continue;
+            }
+            filtered.add(stack);
+        }
+        return filtered;
     }
 
     private float getBreakProgress(BlockState state, BlockPos pos) {
@@ -434,7 +490,7 @@ final class CompanionGatheringController {
         miningProgressPos = null;
         miningProgress = 0.0F;
         miningProgressStage = -1;
-        nextSwingTick = -1L;
+        miningAnimator.reset();
     }
 
     private boolean isTargetValid() {
@@ -442,20 +498,61 @@ final class CompanionGatheringController {
             return false;
         }
         BlockState state = owner.level().getBlockState(targetBlock);
+        if (pendingResourceBlock != null) {
+            return isBreakable(state, targetBlock);
+        }
         if (activeType == CompanionResourceType.LOG) {
-            return state.is(BlockTags.LOGS);
+            return CompanionBlockRegistry.isLog(state);
         }
         if (activeType == CompanionResourceType.STONE && digStonePos != null) {
-            return state.is(BlockTags.MINEABLE_WITH_SHOVEL) || state.is(BlockTags.BASE_STONE_OVERWORLD);
+            return CompanionBlockRegistry.isShovelMineable(state) || CompanionBlockRegistry.isPickaxeMineable(state);
         }
         return activeType.matchesBlock(state);
     }
 
-    private void clearTarget() {
+    private void applySelection(TargetSelection selection) {
+        targetBlock = selection.target;
+        pendingResourceBlock = selection.pendingResource;
+        pendingSightPos = selection.pendingResource != null ? selection.sightPos : null;
+        digStonePos = selection.digStonePos;
+        BlockPos anchorCandidate = selection.pendingResource != null ? selection.target : selection.resourcePos;
+        if (resourceAnchor == null
+                || owner.blockPosition().distSqr(resourceAnchor)
+                > (double) (RESOURCE_SCAN_RADIUS * RESOURCE_SCAN_RADIUS)) {
+            resourceAnchor = anchorCandidate;
+        }
+    }
+
+    private boolean advancePendingTarget() {
+        if (pendingResourceBlock == null) {
+            return false;
+        }
+        BlockPos sight = pendingSightPos != null ? pendingSightPos : pendingResourceBlock;
+        TargetSelection selection = resolveObstruction(pendingResourceBlock, sight);
+        if (selection == null) {
+            pendingResourceBlock = null;
+            pendingSightPos = null;
+            return false;
+        }
+        targetBlock = selection.target;
+        pendingResourceBlock = selection.pendingResource;
+        pendingSightPos = selection.pendingResource != null ? selection.sightPos : null;
+        resetMiningProgress();
+        return true;
+    }
+
+    private void clearTargetState() {
         targetBlock = null;
         pendingResourceBlock = null;
+        pendingSightPos = null;
         digStonePos = null;
         resetMiningProgress();
+    }
+
+    private void resetRequestState() {
+        clearTargetState();
+        resourceAnchor = null;
+        lastMinedBlock = null;
     }
 
     private static final class TargetSelection {

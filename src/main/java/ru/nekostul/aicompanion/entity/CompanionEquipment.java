@@ -1,6 +1,5 @@
 package ru.nekostul.aicompanion.entity;
 
-import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.ItemTags;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.entity.EquipmentSlot;
@@ -22,15 +21,15 @@ final class CompanionEquipment {
     }
 
     void equipToolForBlock(BlockState state) {
-        if (state.is(BlockTags.LOGS)) {
+        if (CompanionBlockRegistry.isLog(state)) {
             if (equipBestTool(ItemTags.AXES)) {
                 return;
             }
-        } else if (state.is(BlockTags.BASE_STONE_OVERWORLD)) {
+        } else if (CompanionBlockRegistry.isPickaxeMineable(state)) {
             if (equipBestTool(ItemTags.PICKAXES)) {
                 return;
             }
-        } else if (state.is(BlockTags.MINEABLE_WITH_SHOVEL)) {
+        } else if (CompanionBlockRegistry.isShovelMineable(state)) {
             equipBestTool(ItemTags.SHOVELS);
         }
     }
