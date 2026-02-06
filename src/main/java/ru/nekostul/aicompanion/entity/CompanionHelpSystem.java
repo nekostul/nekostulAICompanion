@@ -1,0 +1,39 @@
+package ru.nekostul.aicompanion.entity;
+
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.entity.player.Player;
+
+import java.util.Locale;
+
+final class CompanionHelpSystem {
+    private static final String HELP_GENERAL_KEY = "entity.aicompanion.companion.help.general";
+    private static final String HELP_CHEST_KEY = "entity.aicompanion.companion.help.chest";
+
+    boolean handleHelp(Player player, String message) {
+        if (player == null || message == null) {
+            return false;
+        }
+        String normalized = normalize(message);
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        if (normalized.contains("\u043f\u043e\u043c\u043e\u0449\u044c \u0441\u0443\u043d\u0434\u0443\u043a")
+                || normalized.contains("help chest")) {
+            player.sendSystemMessage(Component.translatable(HELP_CHEST_KEY));
+            return true;
+        }
+        if (normalized.equals("\u043f\u043e\u043c\u043e\u0449\u044c") || normalized.equals("help")
+                || normalized.startsWith("\u043f\u043e\u043c\u043e\u0449\u044c ")
+                || normalized.startsWith("help ")) {
+            player.sendSystemMessage(Component.translatable(HELP_GENERAL_KEY));
+            return true;
+        }
+        return false;
+    }
+
+    private String normalize(String message) {
+        return message.trim()
+                .toLowerCase(Locale.ROOT)
+                .replace('\u0451', '\u0435');
+    }
+}

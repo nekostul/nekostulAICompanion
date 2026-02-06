@@ -1,0 +1,33 @@
+modLoader="javafml"
+loaderVersion="${loader_version_range}"
+license="${mod_license}"
+
+[[mods]]
+modId="aicompanion"
+version="${mod_version}"
+displayName="nekostulAI Companion"
+authors="${mod_authors}"
+description='''
+An AI companion stuck in your Minecraft world.
+Explains mods, answers questions,
+and questions every single decision you make.
+
+-- RU
+ИИ-компаньон, застрявший в твоём мире Minecraft.
+Объясняет моды, отвечает на вопросы
+и каждый раз задаётся вопросом, какого хуя ты вообще так играешь.
+'''
+
+[[dependencies.aicompanion]]
+modId="forge"
+mandatory=true
+versionRange="${forge_version_range}"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.aicompanion]]
+modId="minecraft"
+mandatory=true
+versionRange="${minecraft_version_range}"
+ordering="NONE"
+side="BOTH"

@@ -1,0 +1,14 @@
+/run/
+/build/
+/out/
+/.idea/
+/*.iml
+
+# Forge / Gradle
+/.gradle/
+/logs/
+
+# Configs
+*.toml
+!src/main/resources/META-INF/mods.toml
+*.log
