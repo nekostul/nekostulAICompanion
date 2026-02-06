@@ -183,6 +183,11 @@ final class CompanionTaskCoordinator {
             delivery.startDelivery();
             return;
         }
+        if (result == CompanionGatheringController.Result.TOOL_REQUIRED) {
+            activeRequest = null;
+            taskState = TaskState.IDLE;
+            return;
+        }
         if (result == CompanionGatheringController.Result.NOT_FOUND) {
             owner.sendReply(player, Component.translatable(missingKey(activeRequest.getResourceType())));
             activeRequest = null;

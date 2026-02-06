@@ -67,6 +67,7 @@ public class CompanionEntity extends PathfinderMob {
     private static final String GREETED_NBT = "CompanionGreeted";
     private static final String INVENTORY_NBT = "CompanionInventory";
     private static final String CHEST_NBT = "CompanionChest";
+    private static final String HUNGER_NBT = "CompanionHunger";
     private static final String CHAT_COOLDOWNS_NBT = "CompanionChatCooldowns";
     private static final String TELEPORT_CYCLE_NBT = "CompanionTeleportCycleTick";
     private static final String TELEPORT_ORIGINAL_NBT = "CompanionTeleportOriginalTick";
@@ -162,6 +163,7 @@ public class CompanionEntity extends PathfinderMob {
     private boolean hasGreeted;
     private final CompanionInventory inventory;
     private final CompanionEquipment equipment;
+    private final CompanionToolHandler toolHandler;
     private final CompanionGatheringController gatheringController;
     private final CompanionTreeHarvestController treeHarvestController;
     private final CompanionDeliveryController deliveryController;
@@ -169,6 +171,9 @@ public class CompanionEntity extends PathfinderMob {
     private final CompanionChestManager chestManager;
     private final CompanionCommandParser commandParser;
     private final CompanionHelpSystem helpSystem;
+    private final CompanionGratitudeResponder gratitudeResponder;
+    private final CompanionPickupGratitude pickupGratitude;
+    private final CompanionHungerSystem hungerSystem;
     private final CompanionCombatController combatController;
     private final CompanionTaskCoordinator taskCoordinator;
     private final EnumMap<ChatGroup, Long> chatGroupCooldowns = new EnumMap<>(ChatGroup.class);
@@ -192,13 +197,17 @@ public class CompanionEntity extends PathfinderMob {
         this.setCustomNameVisible(true);
         this.inventory = new CompanionInventory(this, INVENTORY_SIZE);
         this.equipment = new CompanionEquipment(this, inventory);
-        this.gatheringController = new CompanionGatheringController(this, inventory, equipment);
-        this.treeHarvestController = new CompanionTreeHarvestController(this, inventory, equipment);
+        this.toolHandler = new CompanionToolHandler(this, inventory, equipment);
+        this.gatheringController = new CompanionGatheringController(this, inventory, equipment, toolHandler);
+        this.treeHarvestController = new CompanionTreeHarvestController(this, inventory, equipment, toolHandler);
         this.deliveryController = new CompanionDeliveryController(this, inventory);
         this.bucketHandler = new CompanionBucketHandler(this, inventory);
         this.chestManager = new CompanionChestManager(this, inventory);
         this.commandParser = new CompanionCommandParser();
         this.helpSystem = new CompanionHelpSystem();
+        this.gratitudeResponder = new CompanionGratitudeResponder(this);
+        this.pickupGratitude = new CompanionPickupGratitude(this);
+        this.hungerSystem = new CompanionHungerSystem(this, inventory);
         this.combatController = new CompanionCombatController(this, equipment);
         this.taskCoordinator = new CompanionTaskCoordinator(this, inventory, equipment, gatheringController,
                 treeHarvestController, deliveryController, bucketHandler, chestManager, commandParser, helpSystem);
@@ -206,6 +215,12 @@ public class CompanionEntity extends PathfinderMob {
             navigation.setCanOpenDoors(true);
             navigation.setCanPassDoors(true);
         }
+    }
+
+    @Override
+    public void onAddedToWorld() {
+        super.onAddedToWorld();
+        CompanionSingleNpcManager.register(this);
     }
 
     @Override
@@ -251,6 +266,10 @@ public class CompanionEntity extends PathfinderMob {
         return this.taskCoordinator.handlePlayerMessage(player, message);
     }
 
+    public boolean handleThanks(ServerPlayer player, String message) {
+        return this.gratitudeResponder.handle(player, message, this.level().getGameTime());
+    }
+
     void onInventoryUpdated() {
         this.taskCoordinator.onInventoryUpdated();
     }
@@ -263,6 +282,9 @@ public class CompanionEntity extends PathfinderMob {
         CompoundTag inventoryTag = new CompoundTag();
         this.inventory.saveToTag(inventoryTag);
         tag.put(INVENTORY_NBT, inventoryTag);
+        CompoundTag hungerTag = new CompoundTag();
+        this.hungerSystem.saveToTag(hungerTag);
+        tag.put(HUNGER_NBT, hungerTag);
         CompoundTag chestTag = new CompoundTag();
         this.chestManager.saveToTag(chestTag);
         if (!chestTag.isEmpty()) {
@@ -303,6 +325,10 @@ public class CompanionEntity extends PathfinderMob {
             CompoundTag inventoryTag = tag.getCompound(INVENTORY_NBT);
             this.inventory.loadFromTag(inventoryTag);
         }
+        if (tag.contains(HUNGER_NBT)) {
+            CompoundTag hungerTag = tag.getCompound(HUNGER_NBT);
+            this.hungerSystem.loadFromTag(hungerTag);
+        }
         if (tag.contains(CHEST_NBT)) {
             CompoundTag chestTag = tag.getCompound(CHEST_NBT);
             this.chestManager.loadFromTag(chestTag);
@@ -339,10 +365,13 @@ public class CompanionEntity extends PathfinderMob {
     public void aiStep() {
         super.aiStep();
         if (!this.level().isClientSide) {
+            long gameTime = this.level().getGameTime();
+            Player nearest = this.level().getNearestPlayer(this, FOLLOW_SEARCH_DISTANCE);
             tickGreeting();
             tickChestStatus();
             tickItemPickup();
             tickAutonomousBehavior();
+            this.hungerSystem.tick(nearest, gameTime);
             tickAmbientChat();
             tickTeleportRequest();
         }
@@ -387,6 +416,7 @@ public class CompanionEntity extends PathfinderMob {
     public void remove(RemovalReason reason) {
         clearTeleportRequest();
         clearTeleportReminder();
+        CompanionSingleNpcManager.unregister(this);
         super.remove(reason);
     }
 
@@ -439,7 +469,13 @@ public class CompanionEntity extends PathfinderMob {
                 continue;
             }
             int before = stack.getCount();
+            ItemStack pickedCopy = stack.copy();
             inventory.add(stack);
+            int pickedCount = before - stack.getCount();
+            if (pickedCount > 0) {
+                pickedCopy.setCount(pickedCount);
+                pickupGratitude.onPickup(itemEntity, pickedCopy, gameTime);
+            }
             if (stack.isEmpty()) {
                 itemEntity.discard();
             } else {
@@ -467,7 +503,7 @@ public class CompanionEntity extends PathfinderMob {
                         .withColor(ChatFormatting.AQUA)
                         .withBold(true)
                         .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND,
-                                "/aicompanion msg " + commandText)));
+                                "/ainpc msg " + commandText)));
     }
 
     private void tickGreeting() {
@@ -632,12 +668,12 @@ public class CompanionEntity extends PathfinderMob {
                 .withStyle(style -> style
                         .withColor(ChatFormatting.GREEN)
                         .withBold(true)
-                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/aicompanion tp yes")));
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ainpc tp yes")));
         Component noButton = Component.translatable(TELEPORT_NO_KEY)
                 .withStyle(style -> style
                         .withColor(ChatFormatting.RED)
                         .withBold(true)
-                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/aicompanion tp no")));
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ainpc tp no")));
         Component message = Component.translatable(messageKey)
                 .append(Component.literal(" "))
                 .append(Component.literal("["))

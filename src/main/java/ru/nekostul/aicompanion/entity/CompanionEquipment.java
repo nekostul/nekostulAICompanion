@@ -111,14 +111,12 @@ final class CompanionEquipment {
             return false;
         }
         ItemStack current = owner.getMainHandItem();
-        if (!current.isEmpty()) {
-            if (!inventory.add(current.copy())) {
-                return false;
-            }
-            owner.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
-        }
         owner.setItemInHand(InteractionHand.MAIN_HAND, candidate.copy());
-        inventory.getItems().set(slotIndex, ItemStack.EMPTY);
+        if (current.isEmpty()) {
+            inventory.getItems().set(slotIndex, ItemStack.EMPTY);
+        } else {
+            inventory.getItems().set(slotIndex, current.copy());
+        }
         return true;
     }
 
@@ -128,14 +126,8 @@ final class CompanionEquipment {
             return false;
         }
         ItemStack current = owner.getMainHandItem();
-        if (!current.isEmpty()) {
-            if (!inventory.add(current.copy())) {
-                return false;
-            }
-            owner.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
-        }
         owner.setItemInHand(InteractionHand.MAIN_HAND, offhand.copy());
-        owner.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
+        owner.setItemInHand(InteractionHand.OFF_HAND, current.isEmpty() ? ItemStack.EMPTY : current.copy());
         return true;
     }
 

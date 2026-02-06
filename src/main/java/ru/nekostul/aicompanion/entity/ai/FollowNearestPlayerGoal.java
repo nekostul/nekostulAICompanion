@@ -112,6 +112,10 @@ public class FollowNearestPlayerGoal extends Goal {
         }
         this.mob.getLookControl().setLookAt(this.followPos.x, this.followPos.y, this.followPos.z);
         double speed = this.movementController.update(this.target, this.followPos, gameTime, distanceSqr);
+        if (this.movementController.shouldHoldPosition() || speed <= 0.01D) {
+            this.mob.getNavigation().stop();
+            return;
+        }
         if (--this.timeToRecalcPath <= 0) {
             this.timeToRecalcPath = this.adjustedTickDelay(10);
             this.mob.getNavigation().moveTo(this.followPos.x, this.followPos.y, this.followPos.z, speed);

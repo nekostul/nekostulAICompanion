@@ -156,7 +156,7 @@ final class CompanionBlockRegistry {
                     false,
                     state -> state.is(Blocks.STONE),
                     stack -> stack.is(Items.COBBLESTONE) || stack.is(Items.STONE),
-                    new String[]{"камн", "булыж", "stone", "cobble"}
+                    new String[]{"камн", "камен", "булыж", "stone", "cobble"}
             ),
             new ResourceEntry(
                     CompanionResourceType.ANDESITE,
@@ -249,6 +249,30 @@ final class CompanionBlockRegistry {
 
     static boolean isPickaxeMineable(BlockState state) {
         return state.is(BlockTags.MINEABLE_WITH_PICKAXE);
+    }
+
+    static boolean isShovelResource(BlockState state) {
+        return matchesBlock(CompanionResourceType.DIRT, state)
+                || matchesBlock(CompanionResourceType.SAND, state)
+                || matchesBlock(CompanionResourceType.GRAVEL, state)
+                || matchesBlock(CompanionResourceType.CLAY, state);
+    }
+
+    static boolean isPickaxeResource(BlockState state) {
+        return matchesBlock(CompanionResourceType.STONE, state)
+                || matchesBlock(CompanionResourceType.ANDESITE, state)
+                || matchesBlock(CompanionResourceType.DIORITE, state)
+                || matchesBlock(CompanionResourceType.GRANITE, state)
+                || matchesBlock(CompanionResourceType.BASALT, state)
+                || matchesBlock(CompanionResourceType.ORE, state)
+                || matchesBlock(CompanionResourceType.COAL_ORE, state)
+                || matchesBlock(CompanionResourceType.IRON_ORE, state)
+                || matchesBlock(CompanionResourceType.COPPER_ORE, state)
+                || matchesBlock(CompanionResourceType.GOLD_ORE, state)
+                || matchesBlock(CompanionResourceType.REDSTONE_ORE, state)
+                || matchesBlock(CompanionResourceType.LAPIS_ORE, state)
+                || matchesBlock(CompanionResourceType.DIAMOND_ORE, state)
+                || matchesBlock(CompanionResourceType.EMERALD_ORE, state);
     }
 
     private static final class ResourceEntry {

@@ -13,7 +13,9 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
 import ru.nekostul.aicompanion.AiCompanionMod;
+import ru.nekostul.aicompanion.CompanionConfig;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
+import ru.nekostul.aicompanion.entity.CompanionSingleNpcManager;
 
 import java.util.Map;
 import java.util.UUID;
@@ -22,6 +24,8 @@ import java.util.concurrent.ConcurrentHashMap;
 @Mod.EventBusSubscriber(modid = AiCompanionMod.MOD_ID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class CompanionCommands {
     private static final String TELEPORT_NONE_KEY = "entity.aicompanion.companion.teleport.none";
+    private static final String TREECHOP_ENABLED_KEY = "entity.aicompanion.companion.treechop.enabled";
+    private static final String TREECHOP_DISABLED_KEY = "entity.aicompanion.companion.treechop.disabled";
     private static final int NO_REQUEST_COOLDOWN_TICKS = 1200;
     private static final Map<UUID, Long> NO_REQUEST_MESSAGE_TICKS = new ConcurrentHashMap<>();
 
@@ -32,7 +36,7 @@ public final class CompanionCommands {
     public static void onRegisterCommands(RegisterCommandsEvent event) {
         CommandDispatcher<CommandSourceStack> dispatcher = event.getDispatcher();
         dispatcher.register(
-                Commands.literal("aicompanion")
+                Commands.literal("ainpc")
                         .then(Commands.literal("tp")
                                 .then(Commands.literal("yes")
                                         .executes(context -> handleTeleport(context, true)))
@@ -41,6 +45,11 @@ public final class CompanionCommands {
                         .then(Commands.literal("msg")
                                 .then(Commands.argument("text", StringArgumentType.greedyString())
                                         .executes(CompanionCommands::handleMessage)))
+                        .then(Commands.literal("treechop")
+                                .then(Commands.literal("on")
+                                        .executes(context -> handleTreeChop(context, true)))
+                                .then(Commands.literal("off")
+                                        .executes(context -> handleTreeChop(context, false))))
         );
     }
 
@@ -66,5 +75,19 @@ public final class CompanionCommands {
         String message = StringArgumentType.getString(context, "text");
         boolean handled = CompanionChatEvents.handlePlayerMessage(player, message);
         return handled ? 1 : 0;
+    }
+
+    private static int handleTreeChop(CommandContext<CommandSourceStack> context, boolean enabled)
+            throws CommandSyntaxException {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        CompanionConfig.setFullTreeChopEnabled(enabled);
+        Component message = Component.translatable(enabled ? TREECHOP_ENABLED_KEY : TREECHOP_DISABLED_KEY);
+        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
+        if (companion != null) {
+            companion.sendReply(player, message);
+        } else {
+            context.getSource().sendSuccess(() -> message, false);
+        }
+        return 1;
     }
 }

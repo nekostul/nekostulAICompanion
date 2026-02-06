@@ -1,6 +1,5 @@
 package ru.nekostul.aicompanion.entity;
 
-import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -111,11 +110,6 @@ final class CompanionCommandParser {
     }
 
     private String normalize(String message) {
-        if (message == null) {
-            return "";
-        }
-        return message.trim()
-                .toLowerCase(Locale.ROOT)
-                .replace('\u0451', '\u0435');
+        return CompanionRussianNormalizer.normalize(message);
     }
 }

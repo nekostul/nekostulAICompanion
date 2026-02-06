@@ -4,6 +4,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.ItemTags;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -17,6 +18,7 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.List;
+import java.util.UUID;
 
 final class CompanionGatheringController {
     enum Result {
@@ -24,14 +26,14 @@ final class CompanionGatheringController {
         IN_PROGRESS,
         DONE,
         NEED_CHEST,
-        NOT_FOUND
+        NOT_FOUND,
+        TOOL_REQUIRED
     }
 
     private static final int CHUNK_RADIUS = 6;
     private static final int RESOURCE_SCAN_RADIUS = CHUNK_RADIUS * 16;
     private static final int RESOURCE_SCAN_COOLDOWN_TICKS = 80;
     private static final float RESOURCE_FOV_DOT = -1.0F;
-    private static final double MINING_REACH_SQR = 9.0D;
     private static final int LOCAL_RADIUS = 3;
     private static final int LOCAL_HEIGHT = 4;
     private static final int LOCAL_LOG_HEIGHT = 8;
@@ -42,10 +44,14 @@ final class CompanionGatheringController {
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
     private final CompanionEquipment equipment;
+    private final CompanionToolHandler toolHandler;
     private final CompanionMiningAnimator miningAnimator;
+    private final CompanionMiningReach miningReach;
+    private final CompanionOreToolGate oreToolGate;
 
     private CompanionResourceType activeType;
     private int activeAmount;
+    private UUID requestPlayerId;
     private BlockPos targetBlock;
     private BlockPos pendingResourceBlock;
     private BlockPos pendingSightPos;
@@ -60,11 +66,17 @@ final class CompanionGatheringController {
     private BlockPos resourceAnchor;
     private BlockPos lastMinedBlock;
 
-    CompanionGatheringController(CompanionEntity owner, CompanionInventory inventory, CompanionEquipment equipment) {
+    CompanionGatheringController(CompanionEntity owner,
+                                 CompanionInventory inventory,
+                                 CompanionEquipment equipment,
+                                 CompanionToolHandler toolHandler) {
         this.owner = owner;
         this.inventory = inventory;
         this.equipment = equipment;
+        this.toolHandler = toolHandler;
         this.miningAnimator = new CompanionMiningAnimator(owner);
+        this.miningReach = new CompanionMiningReach(owner);
+        this.oreToolGate = new CompanionOreToolGate(owner, inventory);
     }
 
     Result tick(CompanionResourceRequest request, long gameTime) {
@@ -75,6 +87,7 @@ final class CompanionGatheringController {
         if (activeType != request.getResourceType() || activeAmount != request.getAmount()) {
             activeType = request.getResourceType();
             activeAmount = request.getAmount();
+            requestPlayerId = request.getPlayerId();
             resetRequestState();
         }
         if (inventory.isFull()) {
@@ -84,6 +97,11 @@ final class CompanionGatheringController {
         if (inventory.countMatching(activeType::matchesItem) >= activeAmount) {
             resetRequestState();
             return Result.DONE;
+        }
+        Player requestPlayer = owner.getPlayerById(requestPlayerId);
+        if (oreToolGate.isRequestBlocked(activeType, requestPlayer)) {
+            resetRequestState();
+            return Result.TOOL_REQUIRED;
         }
         if (targetBlock == null || !isTargetValid()) {
             TargetSelection selection = findTarget(activeType, gameTime);
@@ -121,15 +139,26 @@ final class CompanionGatheringController {
             clearTargetState();
             return Result.IN_PROGRESS;
         }
-        equipment.equipToolForBlock(state);
         Vec3 center = Vec3.atCenterOf(targetBlock);
-        double distanceSqr = owner.distanceToSqr(center);
-        if (distanceSqr > MINING_REACH_SQR) {
+        if (!miningReach.canMine(targetBlock)) {
             owner.getNavigation().moveTo(center.x, center.y, center.z, 1.0D);
             resetMiningProgress();
             return Result.IN_PROGRESS;
         }
         owner.getNavigation().stop();
+        if (oreToolGate.isBlockBlocked(state)) {
+            clearTargetState();
+            return Result.IN_PROGRESS;
+        }
+        Player player = owner.getPlayerById(requestPlayerId);
+        if (!toolHandler.ensureStonePickaxe(state, targetBlock, player, gameTime)) {
+            resetMiningProgress();
+            return Result.IN_PROGRESS;
+        }
+        if (!toolHandler.prepareTool(state, targetBlock, player, gameTime)) {
+            resetMiningProgress();
+            return Result.IN_PROGRESS;
+        }
         if (miningProgressPos == null || !miningProgressPos.equals(targetBlock)) {
             resetMiningProgress();
             miningProgressPos = targetBlock;
@@ -288,6 +317,9 @@ final class CompanionGatheringController {
             return null;
         }
         if (type.matchesBlock(state)) {
+            if (oreToolGate.isBlockBlocked(state)) {
+                return null;
+            }
             return new TargetSelection(pos, pos, pos, null);
         }
         return null;
@@ -507,6 +539,9 @@ final class CompanionGatheringController {
         if (activeType == CompanionResourceType.STONE && digStonePos != null) {
             return CompanionBlockRegistry.isShovelMineable(state) || CompanionBlockRegistry.isPickaxeMineable(state);
         }
+        if (oreToolGate.isBlockBlocked(state)) {
+            return false;
+        }
         return activeType.matchesBlock(state);
     }
 
@@ -553,6 +588,7 @@ final class CompanionGatheringController {
         clearTargetState();
         resourceAnchor = null;
         lastMinedBlock = null;
+        requestPlayerId = null;
     }
 
     private static final class TargetSelection {

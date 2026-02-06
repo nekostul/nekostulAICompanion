@@ -64,6 +64,10 @@ public final class CompanionChatEvents {
             return false;
         }
 
+        if (companion.handleThanks(player, message)) {
+            return true;
+        }
+
         if (containsCommandsKeyword(message)) {
             if (companion.getMode() == CompanionEntity.CompanionMode.STOPPED) {
                 companion.sendCommandList(player);

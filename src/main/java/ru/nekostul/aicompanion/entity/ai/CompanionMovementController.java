@@ -4,7 +4,6 @@ import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
-import net.minecraft.util.Mth;
 
 final class CompanionMovementController {
     private enum MoveState {
@@ -19,6 +18,10 @@ final class CompanionMovementController {
     private static final double RUN_DISTANCE_SQR = 196.0D;
     private static final double JUMP_DISTANCE_SQR = 144.0D;
     private static final double CATCHUP_DISTANCE_SQR = 400.0D;
+    private static final double HOLD_DISTANCE_SQR = 36.0D;
+    private static final double PLAYER_IDLE_SPEED = 0.02D;
+    private static final double PLAYER_WALK_RATIO_MIN = 0.6D;
+    private static final double PLAYER_WALK_RATIO_MAX = 1.2D;
     private static final int STATE_LOCK_TICKS = 20;
     private static final int JUMP_COOLDOWN_TICKS = 8;
     private static final double SPEED_STEP_UP = 0.05D;
@@ -26,14 +29,18 @@ final class CompanionMovementController {
 
     private final PathfinderMob mob;
     private final double maxSpeedModifier;
+    private final CompanionSafeMovement safeMovement;
     private MoveState state = MoveState.WALK;
     private long stateLockUntilTick;
     private long nextJumpTick;
     private double currentSpeed;
+    private boolean holdPosition;
+    private CompanionSafeMovement.SafetyLevel safetyLevel = CompanionSafeMovement.SafetyLevel.SAFE;
 
     CompanionMovementController(PathfinderMob mob, double maxSpeedModifier) {
         this.mob = mob;
         this.maxSpeedModifier = maxSpeedModifier;
+        this.safeMovement = new CompanionSafeMovement(mob);
         this.currentSpeed = Math.min(WALK_SPEED, maxSpeedModifier);
     }
 
@@ -41,16 +48,21 @@ final class CompanionMovementController {
         if (target == null || followPos == null) {
             return currentSpeed;
         }
-        MoveState desired = chooseState(target, distanceSqr);
+        safetyLevel = safeMovement.evaluate(followPos);
+        holdPosition = shouldHold(target, distanceSqr);
+        if (holdPosition || safetyLevel == CompanionSafeMovement.SafetyLevel.DANGER) {
+            currentSpeed = approach(currentSpeed, 0.0D, SPEED_STEP_UP, SPEED_STEP_DOWN);
+            return currentSpeed;
+        }
+        double playerRatio = playerSpeedRatio(target);
+        MoveState desired = chooseState(target, distanceSqr, playerRatio);
         if (gameTime >= stateLockUntilTick && desired != state) {
             state = desired;
             stateLockUntilTick = gameTime + STATE_LOCK_TICKS;
         }
-        double wantedSpeed = desiredSpeed(distanceSqr);
+        double wantedSpeed = desiredSpeed(distanceSqr, playerRatio);
         currentSpeed = approach(currentSpeed, wantedSpeed, SPEED_STEP_UP, SPEED_STEP_DOWN);
         tryJump(gameTime, distanceSqr);
-        applyHorizontalSpeed(followPos);
-        applyFacing(followPos);
         return currentSpeed;
     }
 
@@ -59,13 +71,22 @@ final class CompanionMovementController {
         stateLockUntilTick = 0L;
         nextJumpTick = 0L;
         currentSpeed = Math.min(WALK_SPEED, maxSpeedModifier);
+        holdPosition = false;
+        safetyLevel = CompanionSafeMovement.SafetyLevel.SAFE;
     }
 
-    private MoveState chooseState(Player target, double distanceSqr) {
+    boolean shouldHoldPosition() {
+        return holdPosition;
+    }
+
+    private MoveState chooseState(Player target, double distanceSqr, double playerRatio) {
         boolean far = distanceSqr > RUN_DISTANCE_SQR;
         boolean veryFar = distanceSqr > CATCHUP_DISTANCE_SQR;
-        boolean sprinting = target.isSprinting();
+        boolean sprinting = target.isSprinting() || playerRatio > 1.2D;
 
+        if (safetyLevel != CompanionSafeMovement.SafetyLevel.SAFE) {
+            return MoveState.WALK;
+        }
         if (state == MoveState.RUN_JUMP) {
             if (!sprinting && distanceSqr < JUMP_DISTANCE_SQR) {
                 return MoveState.RUN;
@@ -88,15 +109,19 @@ final class CompanionMovementController {
         return MoveState.WALK;
     }
 
-    private double desiredSpeed(double distanceSqr) {
+    private double desiredSpeed(double distanceSqr, double playerRatio) {
         double speed;
         if (distanceSqr <= WALK_DISTANCE_SQR) {
-            speed = WALK_SPEED;
+            speed = WALK_SPEED * clamp(playerRatio, PLAYER_WALK_RATIO_MIN, PLAYER_WALK_RATIO_MAX);
         } else if (distanceSqr >= RUN_DISTANCE_SQR) {
             speed = RUN_SPEED;
         } else {
             double t = (distanceSqr - WALK_DISTANCE_SQR) / (RUN_DISTANCE_SQR - WALK_DISTANCE_SQR);
-            speed = lerp(WALK_SPEED, RUN_SPEED, t);
+            double walkSpeed = WALK_SPEED * clamp(playerRatio, PLAYER_WALK_RATIO_MIN, PLAYER_WALK_RATIO_MAX);
+            speed = lerp(walkSpeed, RUN_SPEED, t);
+        }
+        if (safetyLevel == CompanionSafeMovement.SafetyLevel.CAUTION) {
+            speed = Math.min(speed, WALK_SPEED * 0.85D);
         }
         return Math.min(speed, maxSpeedModifier);
     }
@@ -106,6 +131,9 @@ final class CompanionMovementController {
             return;
         }
         if (distanceSqr < JUMP_DISTANCE_SQR) {
+            return;
+        }
+        if (safetyLevel != CompanionSafeMovement.SafetyLevel.SAFE) {
             return;
         }
         if (!mob.onGround() || mob.isInWaterOrBubble()) {
@@ -118,48 +146,25 @@ final class CompanionMovementController {
         nextJumpTick = gameTime + JUMP_COOLDOWN_TICKS;
     }
 
-    private void applyHorizontalSpeed(Vec3 targetPos) {
-        double desiredHorizontal = currentSpeed * mob.getAttributeValue(Attributes.MOVEMENT_SPEED);
-        if (desiredHorizontal <= 0.0D) {
-            return;
+    private boolean shouldHold(Player target, double distanceSqr) {
+        double playerSpeed = horizontalSpeed(target);
+        if (playerSpeed < PLAYER_IDLE_SPEED && distanceSqr <= HOLD_DISTANCE_SQR) {
+            return true;
         }
-        Vec3 delta = mob.getDeltaMovement();
-        double horizontal = Math.hypot(delta.x, delta.z);
-        if (horizontal < 1.0E-4D) {
-            Vec3 dir = directionToTarget(targetPos);
-            if (dir == null) {
-                return;
-            }
-            mob.setDeltaMovement(dir.x * desiredHorizontal, delta.y, dir.z * desiredHorizontal);
-            return;
-        }
-        double scale = desiredHorizontal / horizontal;
-        mob.setDeltaMovement(delta.x * scale, delta.y, delta.z * scale);
+        return false;
     }
 
-    private Vec3 directionToTarget(Vec3 targetPos) {
-        if (targetPos == null) {
-            return null;
+    private double playerSpeedRatio(Player target) {
+        double base = target.getAttributeValue(Attributes.MOVEMENT_SPEED);
+        if (base <= 0.0D) {
+            return 0.0D;
         }
-        double dx = targetPos.x - mob.getX();
-        double dz = targetPos.z - mob.getZ();
-        double length = Math.hypot(dx, dz);
-        if (length < 1.0E-4D) {
-            return null;
-        }
-        return new Vec3(dx / length, 0.0D, dz / length);
+        return horizontalSpeed(target) / base;
     }
 
-    private void applyFacing(Vec3 targetPos) {
-        Vec3 dir = directionToTarget(targetPos);
-        if (dir == null) {
-            return;
-        }
-        float targetYaw = (float) (Mth.atan2(dir.z, dir.x) * (180.0F / (float) Math.PI)) - 90.0F;
-        float currentYaw = mob.getYRot();
-        float newYaw = Mth.approachDegrees(currentYaw, targetYaw, 8.0F);
-        mob.setYRot(newYaw);
-        mob.setYBodyRot(newYaw);
+    private double horizontalSpeed(Player target) {
+        Vec3 delta = target.getDeltaMovement();
+        return Math.hypot(delta.x, delta.z);
     }
 
     private double approach(double current, double target, double stepUp, double stepDown) {
@@ -181,5 +186,9 @@ final class CompanionMovementController {
 
     private double lerp(double from, double to, double t) {
         return from + (to - from) * t;
+    }
+
+    private double clamp(double value, double min, double max) {
+        return Math.min(max, Math.max(min, value));
     }
 }

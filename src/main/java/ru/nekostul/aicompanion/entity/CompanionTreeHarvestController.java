@@ -3,6 +3,7 @@ package ru.nekostul.aicompanion.entity;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.ItemTags;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -22,6 +23,9 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+
+import ru.nekostul.aicompanion.CompanionConfig;
 
 final class CompanionTreeHarvestController {
     enum Result {
@@ -36,7 +40,6 @@ final class CompanionTreeHarvestController {
     private static final int RESOURCE_SCAN_RADIUS = CHUNK_RADIUS * 16;
     private static final int RESOURCE_SCAN_COOLDOWN_TICKS = 80;
     private static final float RESOURCE_FOV_DOT = -1.0F;
-    private static final double MINING_REACH_SQR = 9.0D;
     private static final int LOG_FROM_LEAVES_RADIUS = 2;
     private static final int LOG_FROM_LEAVES_MAX_DEPTH = 6;
     private static final int TREE_MAX_RADIUS = 7;
@@ -45,13 +48,16 @@ final class CompanionTreeHarvestController {
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
     private final CompanionEquipment equipment;
+    private final CompanionToolHandler toolHandler;
     private final CompanionMiningAnimator miningAnimator;
+    private final CompanionMiningReach miningReach;
 
     private CompanionTreeRequestMode treeMode = CompanionTreeRequestMode.NONE;
     private int requestAmount;
     private int treesRemaining;
     private int logsRequired;
     private int logsCollected;
+    private UUID requestPlayerId;
     private BlockPos targetBlock;
     private BlockPos pendingResourceBlock;
     private BlockPos pendingSightPos;
@@ -67,11 +73,14 @@ final class CompanionTreeHarvestController {
 
     CompanionTreeHarvestController(CompanionEntity owner,
                                    CompanionInventory inventory,
-                                   CompanionEquipment equipment) {
+                                   CompanionEquipment equipment,
+                                   CompanionToolHandler toolHandler) {
         this.owner = owner;
         this.inventory = inventory;
         this.equipment = equipment;
+        this.toolHandler = toolHandler;
         this.miningAnimator = new CompanionMiningAnimator(owner);
+        this.miningReach = new CompanionMiningReach(owner);
     }
 
     Result tick(CompanionResourceRequest request, long gameTime) {
@@ -83,6 +92,7 @@ final class CompanionTreeHarvestController {
             resetRequestState();
             treeMode = request.getTreeMode();
             requestAmount = request.getAmount();
+            requestPlayerId = request.getPlayerId();
             if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
                 treesRemaining = requestAmount;
             } else {
@@ -146,15 +156,18 @@ final class CompanionTreeHarvestController {
             clearTargetState();
             return Result.IN_PROGRESS;
         }
-        equipment.equipToolForBlock(state);
         Vec3 center = Vec3.atCenterOf(targetBlock);
-        double distanceSqr = owner.distanceToSqr(center);
-        if (distanceSqr > MINING_REACH_SQR) {
+        if (!miningReach.canMine(targetBlock)) {
             owner.getNavigation().moveTo(center.x, center.y, center.z, 1.0D);
             resetMiningProgress();
             return Result.IN_PROGRESS;
         }
         owner.getNavigation().stop();
+        Player player = owner.getPlayerById(requestPlayerId);
+        if (!toolHandler.prepareTool(state, targetBlock, player, gameTime)) {
+            resetMiningProgress();
+            return Result.IN_PROGRESS;
+        }
         if (miningProgressPos == null || !miningProgressPos.equals(targetBlock)) {
             resetMiningProgress();
             miningProgressPos = targetBlock;
@@ -179,15 +192,23 @@ final class CompanionTreeHarvestController {
                 return Result.NEED_CHEST;
             }
             if (treeBasePos != null && targetBlock.equals(treeBasePos)) {
-                boolean harvested = harvestTree(treeBasePos);
-                treeBasePos = null;
-                resetScanCache();
-                if (!harvested) {
+                if (CompanionConfig.isFullTreeChopEnabled()) {
+                    boolean harvested = harvestTree(treeBasePos);
+                    treeBasePos = null;
+                    resetScanCache();
+                    if (!harvested) {
+                        clearTargetState();
+                        return Result.NEED_CHEST;
+                    }
+                    if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
+                        treesRemaining = Math.max(0, treesRemaining - 1);
+                    }
                     clearTargetState();
-                    return Result.NEED_CHEST;
+                    return Result.IN_PROGRESS;
                 }
                 if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
                     treesRemaining = Math.max(0, treesRemaining - 1);
+                    resetScanCache();
                 }
                 clearTargetState();
                 return Result.IN_PROGRESS;
@@ -598,6 +619,7 @@ final class CompanionTreeHarvestController {
         treesRemaining = 0;
         logsRequired = 0;
         logsCollected = 0;
+        requestPlayerId = null;
         collectedDrops.clear();
         resetScanCache();
     }

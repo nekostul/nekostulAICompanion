@@ -1,4 +1,4 @@
-{
+﻿{
   "entity.aicompanion.companion": "AI-компаньон",
   "item.aicompanion.companion_spawn_egg": "Яйцо призыва AI-компаньона",
   "entity.aicompanion.companion.teleport.request": "Ты слишком далеко. Телепортироваться к тебе? Ответь в течение 30 сек.",
@@ -317,5 +317,37 @@
   "entity.aicompanion.companion.bucket.missing.lava": "Не знаю, где найти лаву поблизости.",
   "entity.aicompanion.companion.gather.missing": "Не могу найти нужный ресурс поблизости.",
   "entity.aicompanion.companion.help.general": "Я добываю ресурсы по команде и приношу их. Примеры: «принеси дерево», «принеси 4 ведра воды». Есть личный сундук — подробности: «помощь сундук».",
-  "entity.aicompanion.companion.help.chest": "Сундук назначается так: 1) поставь сундук, 2) наведи на него прицел, 3) напиши «вот твой сундук». Без наведения я сундук не приму. Сундук может быть только один, повторно назначить нельзя."
+  "entity.aicompanion.companion.help.chest": "Сундук назначается так: 1) поставь сундук, 2) наведи на него прицел, 3) напиши «вот твой сундук». Без наведения я сундук не приму. Сундук может быть только один, повторно назначить нельзя.",
+
+  "entity.aicompanion.companion.thanks.1": "Пожалуйста!",
+  "entity.aicompanion.companion.thanks.2": "Всегда рад помочь.",
+  "entity.aicompanion.companion.thanks.3": "Обращайся.",
+  "entity.aicompanion.companion.thanks.4": "Рад быть полезным.",
+  "entity.aicompanion.companion.thanks.5": "Не за что.",
+  "entity.aicompanion.companion.thanks.6": "Всегда к услугам.",
+  "entity.aicompanion.companion.thanks.7": "Если что — зови.",
+  "entity.aicompanion.companion.thanks.8": "Без проблем.",
+  "entity.aicompanion.companion.thanks.9": "Рад помочь.",
+  "entity.aicompanion.companion.thanks.10": "Старался.",
+  "entity.aicompanion.companion.thanks.11": "Всегда рядом.",
+  "entity.aicompanion.companion.thanks.12": "На здоровье.",
+  "entity.aicompanion.companion.thanks.13": "Да без вопросов.",
+  "entity.aicompanion.companion.thanks.14": "Рад, что пригодился.",
+  "entity.aicompanion.companion.thanks.pickup.1": "Спасибо! Это пригодится.",
+  "entity.aicompanion.companion.thanks.pickup.2": "Отлично, спасибо.",
+  "entity.aicompanion.companion.thanks.pickup.3": "Благодарю, с этим будет проще.",
+  "entity.aicompanion.companion.thanks.pickup.4": "Принял, спасибо.",
+  "entity.aicompanion.companion.thanks.pickup.5": "Спасибо, пригодится в работе.",
+  "entity.aicompanion.companion.thanks.pickup.6": "Отлично, беру в дело.",
+
+  "entity.aicompanion.companion.treechop.enabled": "Полная рубка деревьев включена.",
+  "entity.aicompanion.companion.treechop.disabled": "Полная рубка деревьев выключена.",
+
+  "entity.aicompanion.companion.food.need": "Мне нужна еда. Подкинь что-нибудь поесть.",
+  "entity.aicompanion.companion.tool.suggest.axe": "Я могу копать и без топора, но с ним быстрее.",
+  "entity.aicompanion.companion.tool.suggest.shovel": "Я могу копать и без лопаты, но с ней быстрее.",
+  "entity.aicompanion.companion.tool.suggest.pickaxe": "Я могу копать и без кирки, но с ней быстрее.",
+  "entity.aicompanion.companion.tool.require.pickaxe": "Чтобы добыть камень, мне нужна кирка.",
+  "entity.aicompanion.companion.ore.require.stone": "Для добычи этой руды мне нужна хотя бы каменная кирка.",
+  "entity.aicompanion.companion.ore.require.iron": "Для добычи этой руды мне нужна хотя бы железная кирка."
 }
