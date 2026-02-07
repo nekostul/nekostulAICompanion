@@ -1,4 +1,4 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.tool;
 
 import net.minecraft.tags.ItemTags;
 import net.minecraft.world.entity.player.Player;
@@ -7,7 +7,13 @@ import net.minecraft.tags.TagKey;
 import net.minecraft.world.item.Item;
 import net.minecraft.core.BlockPos;
 
-final class CompanionToolHandler {
+import ru.nekostul.aicompanion.entity.CompanionBlockRegistry;
+import ru.nekostul.aicompanion.entity.CompanionEntity;
+import ru.nekostul.aicompanion.entity.CompanionEquipment;
+import ru.nekostul.aicompanion.entity.CompanionInventory;
+import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
+
+public final class CompanionToolHandler {
     enum ToolType {
         AXE,
         SHOVEL,
@@ -19,14 +25,14 @@ final class CompanionToolHandler {
     private final CompanionEquipment equipment;
     private final CompanionToolNotifier notifier;
 
-    CompanionToolHandler(CompanionEntity owner, CompanionInventory inventory, CompanionEquipment equipment) {
+    public CompanionToolHandler(CompanionEntity owner, CompanionInventory inventory, CompanionEquipment equipment) {
         this.owner = owner;
         this.inventory = inventory;
         this.equipment = equipment;
         this.notifier = new CompanionToolNotifier(owner);
     }
 
-    boolean prepareTool(BlockState state, BlockPos targetPos, Player player, long gameTime) {
+    public boolean prepareTool(BlockState state, BlockPos targetPos, Player player, long gameTime) {
         ToolType required = requiredTool(state);
         if (required == null) {
             return true;
@@ -46,20 +52,18 @@ final class CompanionToolHandler {
         return true;
     }
 
-    boolean ensureStonePickaxe(BlockState state, BlockPos targetPos, Player player, long gameTime) {
-        if (!CompanionBlockRegistry.isStoneBlock(state)) {
+    public boolean ensurePickaxeForRequest(CompanionResourceType type, Player player, long gameTime) {
+        if (!requiresPickaxe(type)) {
             return true;
         }
-        TagKey<Item> pickaxeTag = ItemTags.PICKAXES;
-        if (owner.getMainHandItem().is(pickaxeTag)) {
+        return ensurePickaxeAvailable(player, owner.blockPosition(), gameTime);
+    }
+
+    public boolean ensurePickaxeForBlock(BlockState state, BlockPos targetPos, Player player, long gameTime) {
+        if (requiredTool(state) != ToolType.PICKAXE) {
             return true;
         }
-        if (hasTool(pickaxeTag)) {
-            equipment.equipBestTool(pickaxeTag);
-            return owner.getMainHandItem().is(pickaxeTag);
-        }
-        notifier.notifyRequiredTool(player, ToolType.PICKAXE, targetPos, gameTime);
-        return false;
+        return ensurePickaxeAvailable(player, targetPos, gameTime);
     }
 
     private ToolType requiredTool(BlockState state) {
@@ -78,12 +82,37 @@ final class CompanionToolHandler {
         return null;
     }
 
+    private boolean requiresPickaxe(CompanionResourceType type) {
+        if (type == null) {
+            return false;
+        }
+        return switch (type) {
+            case STONE, ANDESITE, DIORITE, GRANITE, BASALT,
+                 ORE, COAL_ORE, IRON_ORE, COPPER_ORE, GOLD_ORE,
+                 REDSTONE_ORE, LAPIS_ORE, DIAMOND_ORE, EMERALD_ORE -> true;
+            default -> false;
+        };
+    }
+
     private TagKey<Item> toolTag(ToolType tool) {
         return switch (tool) {
             case AXE -> ItemTags.AXES;
             case SHOVEL -> ItemTags.SHOVELS;
             case PICKAXE -> ItemTags.PICKAXES;
         };
+    }
+
+    private boolean ensurePickaxeAvailable(Player player, BlockPos targetPos, long gameTime) {
+        TagKey<Item> pickaxeTag = ItemTags.PICKAXES;
+        if (owner.getMainHandItem().is(pickaxeTag)) {
+            return true;
+        }
+        if (hasTool(pickaxeTag)) {
+            equipment.equipBestTool(pickaxeTag);
+            return owner.getMainHandItem().is(pickaxeTag);
+        }
+        notifier.notifyRequiredTool(player, ToolType.PICKAXE, targetPos, gameTime);
+        return false;
     }
 
     private boolean hasTool(TagKey<Item> tag) {

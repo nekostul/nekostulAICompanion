@@ -13,28 +13,28 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Predicate;
 
-final class CompanionInventory {
+public final class CompanionInventory {
     private final CompanionEntity owner;
     private final NonNullList<ItemStack> items;
 
-    CompanionInventory(CompanionEntity owner, int size) {
+    public CompanionInventory(CompanionEntity owner, int size) {
         this.owner = owner;
         this.items = NonNullList.withSize(size, ItemStack.EMPTY);
     }
 
-    NonNullList<ItemStack> getItems() {
+    public NonNullList<ItemStack> getItems() {
         return items;
     }
 
-    void saveToTag(CompoundTag tag) {
+    public void saveToTag(CompoundTag tag) {
         ContainerHelper.saveAllItems(tag, items);
     }
 
-    void loadFromTag(CompoundTag tag) {
+    public void loadFromTag(CompoundTag tag) {
         ContainerHelper.loadAllItems(tag, items);
     }
 
-    boolean isFull() {
+    public boolean isFull() {
         for (ItemStack stack : items) {
             if (stack.isEmpty()) {
                 return false;
@@ -46,7 +46,7 @@ final class CompanionInventory {
         return true;
     }
 
-    boolean add(ItemStack stack) {
+    public boolean add(ItemStack stack) {
         if (stack.isEmpty()) {
             return true;
         }
@@ -57,7 +57,7 @@ final class CompanionInventory {
         return added;
     }
 
-    boolean addAll(List<ItemStack> stacks) {
+    public boolean addAll(List<ItemStack> stacks) {
         boolean changed = false;
         for (ItemStack stack : stacks) {
             if (stack.isEmpty()) {
@@ -74,7 +74,7 @@ final class CompanionInventory {
         return changed;
     }
 
-    boolean canStoreAll(List<ItemStack> drops) {
+    public boolean canStoreAll(List<ItemStack> drops) {
         NonNullList<ItemStack> copy = NonNullList.withSize(items.size(), ItemStack.EMPTY);
         for (int i = 0; i < items.size(); i++) {
             copy.set(i, items.get(i).copy());
@@ -87,7 +87,7 @@ final class CompanionInventory {
         return true;
     }
 
-    int countItem(Item item) {
+    public int countItem(Item item) {
         int total = 0;
         for (ItemStack stack : items) {
             if (stack.is(item)) {
@@ -97,7 +97,7 @@ final class CompanionInventory {
         return total;
     }
 
-    int countTag(TagKey<Item> tag) {
+    public int countTag(TagKey<Item> tag) {
         int total = 0;
         for (ItemStack stack : items) {
             if (stack.is(tag)) {
@@ -107,7 +107,7 @@ final class CompanionInventory {
         return total;
     }
 
-    int countMatching(Predicate<ItemStack> predicate) {
+    public int countMatching(Predicate<ItemStack> predicate) {
         int total = 0;
         for (ItemStack stack : items) {
             if (predicate.test(stack)) {
@@ -117,7 +117,7 @@ final class CompanionInventory {
         return total;
     }
 
-    boolean hasItem(Item item) {
+    public boolean hasItem(Item item) {
         for (ItemStack stack : items) {
             if (stack.is(item)) {
                 return true;
@@ -126,7 +126,7 @@ final class CompanionInventory {
         return false;
     }
 
-    boolean hasItemTag(TagKey<Item> tag) {
+    public boolean hasItemTag(TagKey<Item> tag) {
         for (ItemStack stack : items) {
             if (stack.is(tag)) {
                 return true;
@@ -135,7 +135,7 @@ final class CompanionInventory {
         return false;
     }
 
-    boolean consumeItem(Item item, int count) {
+    public boolean consumeItem(Item item, int count) {
         int remaining = count;
         for (int i = 0; i < items.size(); i++) {
             ItemStack stack = items.get(i);
@@ -159,7 +159,7 @@ final class CompanionInventory {
         return false;
     }
 
-    boolean consumeTag(TagKey<Item> tag, int count) {
+    public boolean consumeTag(TagKey<Item> tag, int count) {
         int remaining = count;
         for (int i = 0; i < items.size(); i++) {
             ItemStack stack = items.get(i);
@@ -183,7 +183,7 @@ final class CompanionInventory {
         return false;
     }
 
-    int transferToPlayer(Player player, Predicate<ItemStack> predicate, int maxCount) {
+    public int transferToPlayer(Player player, Predicate<ItemStack> predicate, int maxCount) {
         int remaining = maxCount;
         boolean changed = false;
         for (int i = 0; i < items.size(); i++) {
@@ -213,7 +213,7 @@ final class CompanionInventory {
         return maxCount - remaining;
     }
 
-    List<ItemStack> takeMatching(Predicate<ItemStack> predicate, int maxCount) {
+    public List<ItemStack> takeMatching(Predicate<ItemStack> predicate, int maxCount) {
         int remaining = maxCount;
         boolean changed = false;
         List<ItemStack> removed = new ArrayList<>();
@@ -242,7 +242,7 @@ final class CompanionInventory {
         return removed;
     }
 
-    int transferToContainer(Container container) {
+    public int transferToContainer(Container container) {
         int moved = 0;
         boolean changed = false;
         for (int i = 0; i < items.size(); i++) {

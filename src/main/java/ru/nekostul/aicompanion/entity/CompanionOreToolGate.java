@@ -6,6 +6,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.TieredItem;
 import net.minecraft.world.level.block.state.BlockState;
+import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
 
 final class CompanionOreToolGate {
     private enum Requirement {

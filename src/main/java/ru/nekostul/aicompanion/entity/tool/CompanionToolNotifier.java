@@ -1,8 +1,10 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.tool;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Player;
+
+import ru.nekostul.aicompanion.entity.CompanionEntity;
 
 final class CompanionToolNotifier {
     private static final String TOOL_AXE_KEY = "entity.aicompanion.companion.tool.suggest.axe";

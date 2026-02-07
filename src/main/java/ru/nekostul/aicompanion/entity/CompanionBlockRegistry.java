@@ -12,12 +12,13 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.Fluids;
+import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
 
 import java.util.EnumMap;
 import java.util.List;
 import java.util.function.Predicate;
 
-final class CompanionBlockRegistry {
+public final class CompanionBlockRegistry {
     private static final TagKey<Block> ORES_TAG =
             TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath("minecraft", "ores"));
     private static final TagKey<Item> ORES_ITEM_TAG =
@@ -200,7 +201,7 @@ final class CompanionBlockRegistry {
     private CompanionBlockRegistry() {
     }
 
-    static CompanionResourceType findTypeByMessage(String normalized) {
+    public static CompanionResourceType findTypeByMessage(String normalized) {
         if (normalized == null || normalized.isEmpty()) {
             return null;
         }
@@ -212,53 +213,53 @@ final class CompanionBlockRegistry {
         return null;
     }
 
-    static boolean matchesBlock(CompanionResourceType type, BlockState state) {
+    public static boolean matchesBlock(CompanionResourceType type, BlockState state) {
         ResourceEntry entry = BY_TYPE.get(type);
         return entry != null && entry.blockPredicate.test(state);
     }
 
-    static boolean matchesItem(CompanionResourceType type, ItemStack stack) {
+    public static boolean matchesItem(CompanionResourceType type, ItemStack stack) {
         ResourceEntry entry = BY_TYPE.get(type);
         return entry != null && entry.itemPredicate.test(stack);
     }
 
-    static boolean isBucketResource(CompanionResourceType type) {
+    public static boolean isBucketResource(CompanionResourceType type) {
         ResourceEntry entry = BY_TYPE.get(type);
         return entry != null && entry.bucketResource;
     }
 
-    static boolean isLog(BlockState state) {
+    public static boolean isLog(BlockState state) {
         return matchesBlock(CompanionResourceType.LOG, state);
     }
 
-    static boolean isLeaves(BlockState state) {
+    public static boolean isLeaves(BlockState state) {
         return state.is(BlockTags.LEAVES);
     }
 
-    static boolean isBaseStone(BlockState state) {
+    public static boolean isBaseStone(BlockState state) {
         return state.is(BlockTags.BASE_STONE_OVERWORLD);
     }
 
-    static boolean isStoneBlock(BlockState state) {
+    public static boolean isStoneBlock(BlockState state) {
         return state.is(Blocks.STONE);
     }
 
-    static boolean isShovelMineable(BlockState state) {
+    public static boolean isShovelMineable(BlockState state) {
         return state.is(BlockTags.MINEABLE_WITH_SHOVEL);
     }
 
-    static boolean isPickaxeMineable(BlockState state) {
+    public static boolean isPickaxeMineable(BlockState state) {
         return state.is(BlockTags.MINEABLE_WITH_PICKAXE);
     }
 
-    static boolean isShovelResource(BlockState state) {
+    public static boolean isShovelResource(BlockState state) {
         return matchesBlock(CompanionResourceType.DIRT, state)
                 || matchesBlock(CompanionResourceType.SAND, state)
                 || matchesBlock(CompanionResourceType.GRAVEL, state)
                 || matchesBlock(CompanionResourceType.CLAY, state);
     }
 
-    static boolean isPickaxeResource(BlockState state) {
+    public static boolean isPickaxeResource(BlockState state) {
         return matchesBlock(CompanionResourceType.STONE, state)
                 || matchesBlock(CompanionResourceType.ANDESITE, state)
                 || matchesBlock(CompanionResourceType.DIORITE, state)

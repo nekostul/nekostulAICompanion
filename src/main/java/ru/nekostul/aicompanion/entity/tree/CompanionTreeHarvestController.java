@@ -1,4 +1,4 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.tree;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -26,9 +26,18 @@ import java.util.Set;
 import java.util.UUID;
 
 import ru.nekostul.aicompanion.CompanionConfig;
+import ru.nekostul.aicompanion.entity.CompanionBlockRegistry;
+import ru.nekostul.aicompanion.entity.CompanionEntity;
+import ru.nekostul.aicompanion.entity.CompanionEquipment;
+import ru.nekostul.aicompanion.entity.CompanionInventory;
+import ru.nekostul.aicompanion.entity.mining.CompanionMiningAnimator;
+import ru.nekostul.aicompanion.entity.mining.CompanionMiningReach;
+import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
+import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
+import ru.nekostul.aicompanion.entity.tool.CompanionToolHandler;
 
-final class CompanionTreeHarvestController {
-    enum Result {
+public final class CompanionTreeHarvestController {
+    public enum Result {
         IDLE,
         IN_PROGRESS,
         DONE,
@@ -42,8 +51,8 @@ final class CompanionTreeHarvestController {
     private static final float RESOURCE_FOV_DOT = -1.0F;
     private static final int LOG_FROM_LEAVES_RADIUS = 2;
     private static final int LOG_FROM_LEAVES_MAX_DEPTH = 6;
-    private static final int TREE_MAX_RADIUS = 7;
-    private static final int TREE_MAX_BLOCKS = 512;
+    private static final int TREE_MAX_RADIUS = 9;
+    private static final int TREE_MAX_BLOCKS = 1024;
 
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
@@ -71,10 +80,10 @@ final class CompanionTreeHarvestController {
     private int miningProgressStage = -1;
     private final Map<Item, Integer> collectedDrops = new HashMap<>();
 
-    CompanionTreeHarvestController(CompanionEntity owner,
-                                   CompanionInventory inventory,
-                                   CompanionEquipment equipment,
-                                   CompanionToolHandler toolHandler) {
+    public CompanionTreeHarvestController(CompanionEntity owner,
+                                          CompanionInventory inventory,
+                                          CompanionEquipment equipment,
+                                          CompanionToolHandler toolHandler) {
         this.owner = owner;
         this.inventory = inventory;
         this.equipment = equipment;
@@ -83,7 +92,7 @@ final class CompanionTreeHarvestController {
         this.miningReach = new CompanionMiningReach(owner);
     }
 
-    Result tick(CompanionResourceRequest request, long gameTime) {
+    public Result tick(CompanionResourceRequest request, long gameTime) {
         if (request == null || !request.isTreeRequest()) {
             resetRequestState();
             return Result.IDLE;
@@ -123,7 +132,7 @@ final class CompanionTreeHarvestController {
         return tickMining(gameTime);
     }
 
-    List<ItemStack> takeCollectedDrops() {
+    public List<ItemStack> takeCollectedDrops() {
         if (collectedDrops.isEmpty()) {
             return List.of();
         }
@@ -227,9 +236,9 @@ final class CompanionTreeHarvestController {
             if (CompanionBlockRegistry.isLog(cached)) {
                 BlockPos base = findTreeBase(cachedTarget);
                 if (base != null) {
-                    return new TargetSelection(base, base, cachedTarget);
+                    return resolveTreeObstruction(new TargetSelection(base, base, cachedTarget));
                 }
-                return new TargetSelection(cachedTarget, cachedTarget, cachedTarget);
+                return resolveTreeObstruction(new TargetSelection(cachedTarget, cachedTarget, cachedTarget));
             }
         }
         if (gameTime < nextScanTick) {
@@ -253,6 +262,10 @@ final class CompanionTreeHarvestController {
                     if (selection == null) {
                         continue;
                     }
+                    TargetSelection resolved = resolveTreeObstruction(selection);
+                    if (resolved == null) {
+                        continue;
+                    }
                     Vec3 sightCenter = Vec3.atCenterOf(selection.sightPos);
                     Vec3 toTarget = sightCenter.subtract(eye);
                     double distance = toTarget.length();
@@ -262,10 +275,10 @@ final class CompanionTreeHarvestController {
                     if (look.dot(toTarget.normalize()) < RESOURCE_FOV_DOT) {
                         continue;
                     }
-                    double score = origin.distSqr(selection.treeBase);
+                    double score = origin.distSqr(resolved.treeBase);
                     if (score < bestDistance) {
                         bestDistance = score;
-                        best = selection;
+                        best = resolved;
                     }
                 }
             }
@@ -311,14 +324,27 @@ final class CompanionTreeHarvestController {
             return null;
         }
         BlockPos hitPos = hit.getBlockPos();
-        if (hitPos.equals(resourcePos) || hitPos.equals(sightPos)) {
+        if (hitPos.equals(resourcePos)) {
             return new TargetSelection(resourcePos, resourcePos, sightPos);
+        }
+        if (hitPos.equals(sightPos)) {
+            BlockState hitState = owner.level().getBlockState(hitPos);
+            if (!CompanionBlockRegistry.isLeaves(hitState)) {
+                return new TargetSelection(resourcePos, resourcePos, sightPos);
+            }
         }
         BlockState hitState = owner.level().getBlockState(hitPos);
         if (!isBreakable(hitState, hitPos)) {
             return null;
         }
         return new TargetSelection(hitPos, resourcePos, sightPos, resourcePos, sightPos);
+    }
+
+    private TargetSelection resolveTreeObstruction(TargetSelection selection) {
+        if (selection == null || selection.treeBase == null) {
+            return selection;
+        }
+        return resolveObstruction(selection.treeBase, selection.sightPos);
     }
 
     private boolean advancePendingTarget() {

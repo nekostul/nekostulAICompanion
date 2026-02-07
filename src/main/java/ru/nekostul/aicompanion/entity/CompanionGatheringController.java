@@ -20,6 +20,12 @@ import net.minecraft.world.phys.Vec3;
 import java.util.List;
 import java.util.UUID;
 
+import ru.nekostul.aicompanion.entity.mining.CompanionMiningAnimator;
+import ru.nekostul.aicompanion.entity.mining.CompanionMiningReach;
+import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
+import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
+import ru.nekostul.aicompanion.entity.tool.CompanionToolHandler;
+
 final class CompanionGatheringController {
     enum Result {
         IDLE,
@@ -99,6 +105,10 @@ final class CompanionGatheringController {
             return Result.DONE;
         }
         Player requestPlayer = owner.getPlayerById(requestPlayerId);
+        if (!toolHandler.ensurePickaxeForRequest(activeType, requestPlayer, gameTime)) {
+            clearTargetState();
+            return Result.IN_PROGRESS;
+        }
         if (oreToolGate.isRequestBlocked(activeType, requestPlayer)) {
             resetRequestState();
             return Result.TOOL_REQUIRED;
@@ -151,7 +161,7 @@ final class CompanionGatheringController {
             return Result.IN_PROGRESS;
         }
         Player player = owner.getPlayerById(requestPlayerId);
-        if (!toolHandler.ensureStonePickaxe(state, targetBlock, player, gameTime)) {
+        if (!toolHandler.ensurePickaxeForBlock(state, targetBlock, player, gameTime)) {
             resetMiningProgress();
             return Result.IN_PROGRESS;
         }

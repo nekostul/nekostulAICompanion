@@ -11,16 +11,16 @@ import net.minecraft.world.item.TieredItem;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.InteractionHand;
 
-final class CompanionEquipment {
+public final class CompanionEquipment {
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
 
-    CompanionEquipment(CompanionEntity owner, CompanionInventory inventory) {
+    public CompanionEquipment(CompanionEntity owner, CompanionInventory inventory) {
         this.owner = owner;
         this.inventory = inventory;
     }
 
-    void equipToolForBlock(BlockState state) {
+    public void equipToolForBlock(BlockState state) {
         if (CompanionBlockRegistry.isLog(state)) {
             if (equipBestTool(ItemTags.AXES)) {
                 return;
@@ -34,14 +34,14 @@ final class CompanionEquipment {
         }
     }
 
-    void equipBestWeapon() {
+    public void equipBestWeapon() {
         if (equipBestTool(ItemTags.SWORDS)) {
             return;
         }
         equipBestTool(ItemTags.AXES);
     }
 
-    void equipBestArmor() {
+    public void equipBestArmor() {
         for (EquipmentSlot slot : new EquipmentSlot[]{EquipmentSlot.HEAD, EquipmentSlot.CHEST,
                 EquipmentSlot.LEGS, EquipmentSlot.FEET}) {
             ItemStack current = owner.getItemBySlot(slot);
@@ -67,7 +67,7 @@ final class CompanionEquipment {
         }
     }
 
-    boolean equipBestTool(TagKey<Item> tag) {
+    public boolean equipBestTool(TagKey<Item> tag) {
         if (owner.getMainHandItem().is(tag)) {
             return true;
         }

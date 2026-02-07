@@ -1,9 +1,10 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.resource;
 
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.state.BlockState;
+import ru.nekostul.aicompanion.entity.CompanionBlockRegistry;
 
-enum CompanionResourceType {
+public enum CompanionResourceType {
     LOG,
     DIRT,
     STONE,
@@ -26,15 +27,15 @@ enum CompanionResourceType {
     WATER,
     LAVA;
 
-    boolean matchesBlock(BlockState state) {
+    public boolean matchesBlock(BlockState state) {
         return CompanionBlockRegistry.matchesBlock(this, state);
     }
 
-    boolean matchesItem(ItemStack stack) {
+    public boolean matchesItem(ItemStack stack) {
         return CompanionBlockRegistry.matchesItem(this, stack);
     }
 
-    boolean isBucketResource() {
+    public boolean isBucketResource() {
         return CompanionBlockRegistry.isBucketResource(this);
     }
 }

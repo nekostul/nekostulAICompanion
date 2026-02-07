@@ -1,4 +1,4 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.tool;
 
 import java.util.EnumMap;
 

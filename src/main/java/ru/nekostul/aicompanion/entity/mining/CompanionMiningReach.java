@@ -1,22 +1,23 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.mining;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import ru.nekostul.aicompanion.entity.CompanionEntity;
 
-final class CompanionMiningReach {
+public final class CompanionMiningReach {
     private static final double MAX_DISTANCE = 5.0D;
     private static final double MAX_DISTANCE_SQR = MAX_DISTANCE * MAX_DISTANCE;
 
     private final CompanionEntity owner;
 
-    CompanionMiningReach(CompanionEntity owner) {
+    public CompanionMiningReach(CompanionEntity owner) {
         this.owner = owner;
     }
 
-    boolean canMine(BlockPos target) {
+    public boolean canMine(BlockPos target) {
         if (target == null) {
             return false;
         }

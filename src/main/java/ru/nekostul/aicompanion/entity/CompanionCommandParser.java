@@ -3,6 +3,9 @@ package ru.nekostul.aicompanion.entity;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
+import ru.nekostul.aicompanion.entity.tree.CompanionTreeRequestMode;
+
 final class CompanionCommandParser {
     static final class CommandRequest {
         private final CompanionResourceType resourceType;

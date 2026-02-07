@@ -31,6 +31,8 @@ import net.minecraft.world.phys.AABB;
 
 import ru.nekostul.aicompanion.entity.ai.FollowNearestPlayerGoal;
 import ru.nekostul.aicompanion.entity.ai.HoldPositionGoal;
+import ru.nekostul.aicompanion.entity.tool.CompanionToolHandler;
+import ru.nekostul.aicompanion.entity.tree.CompanionTreeHarvestController;
 
 import java.util.EnumMap;
 import java.util.Map;
@@ -821,7 +823,7 @@ public class CompanionEntity extends PathfinderMob {
         return keys[this.random.nextInt(keys.length)];
     }
 
-    Player getPlayerById(UUID playerId) {
+    public Player getPlayerById(UUID playerId) {
         return findPlayerById(playerId);
     }
 

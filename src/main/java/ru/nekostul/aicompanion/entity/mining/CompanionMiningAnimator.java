@@ -1,18 +1,19 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.mining;
 
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.Vec3;
+import ru.nekostul.aicompanion.entity.CompanionEntity;
 
-final class CompanionMiningAnimator {
+public final class CompanionMiningAnimator {
     private final CompanionEntity owner;
 
-    CompanionMiningAnimator(CompanionEntity owner) {
+    public CompanionMiningAnimator(CompanionEntity owner) {
         this.owner = owner;
     }
 
-    void tick(BlockPos target, float progressPerTick, long gameTime) {
+    public void tick(BlockPos target, float progressPerTick, long gameTime) {
         if (target == null) {
             return;
         }
@@ -23,7 +24,7 @@ final class CompanionMiningAnimator {
         }
     }
 
-    void reset() {
+    public void reset() {
     }
 
     private void lookAt(Vec3 target) {

@@ -4,6 +4,10 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 
+import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
+import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
+import ru.nekostul.aicompanion.entity.tree.CompanionTreeHarvestController;
+
 final class CompanionTaskCoordinator {
     private enum TaskState {
         IDLE,
