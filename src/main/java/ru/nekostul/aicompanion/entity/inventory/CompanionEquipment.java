@@ -12,11 +12,13 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.InteractionHand;
 
 import ru.nekostul.aicompanion.entity.CompanionEntity;
+import ru.nekostul.aicompanion.entity.tool.CompanionToolSlot;
 import ru.nekostul.aicompanion.entity.resource.CompanionBlockRegistry;
 
 public final class CompanionEquipment {
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
+    private CompanionToolSlot activeToolSlot;
 
     public CompanionEquipment(CompanionEntity owner, CompanionInventory inventory) {
         this.owner = owner;
@@ -42,6 +44,19 @@ public final class CompanionEquipment {
             return;
         }
         equipBestTool(ItemTags.AXES);
+    }
+
+    public void equipIdleHand() {
+        if (!storeActiveTool()) {
+            return;
+        }
+        if (equipFromToolSlot(CompanionToolSlot.SWORD)) {
+            return;
+        }
+        if (owner.getMainHandItem().isEmpty()) {
+            owner.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+            activeToolSlot = null;
+        }
     }
 
     public void equipBestArmor() {
@@ -75,12 +90,18 @@ public final class CompanionEquipment {
             return true;
         }
         if (owner.getOffhandItem().is(tag)) {
+            activeToolSlot = null;
             return moveOffhandToMainHand();
+        }
+        CompanionToolSlot toolSlot = CompanionToolSlot.fromTag(tag);
+        if (toolSlot != null && equipFromToolSlot(toolSlot)) {
+            return owner.getMainHandItem().is(tag);
         }
         int slot = findBestToolSlot(tag);
         if (slot < 0) {
             return false;
         }
+        activeToolSlot = null;
         return moveInventoryToMainHand(slot);
     }
 
@@ -120,6 +141,7 @@ public final class CompanionEquipment {
         } else {
             inventory.getItems().set(slotIndex, current.copy());
         }
+        activeToolSlot = null;
         return true;
     }
 
@@ -131,7 +153,74 @@ public final class CompanionEquipment {
         ItemStack current = owner.getMainHandItem();
         owner.setItemInHand(InteractionHand.MAIN_HAND, offhand.copy());
         owner.setItemInHand(InteractionHand.OFF_HAND, current.isEmpty() ? ItemStack.EMPTY : current.copy());
+        activeToolSlot = null;
         return true;
+    }
+
+    private boolean equipFromToolSlot(CompanionToolSlot slot) {
+        if (slot == null) {
+            return false;
+        }
+        if (activeToolSlot == slot && owner.getMainHandItem().is(slot.getTag())) {
+            return true;
+        }
+        if (!storeActiveTool()) {
+            return false;
+        }
+        if (!storeMainHandIfUntracked()) {
+            return false;
+        }
+        ItemStack tool = owner.takeToolSlot(slot);
+        if (tool.isEmpty()) {
+            return false;
+        }
+        owner.setItemInHand(InteractionHand.MAIN_HAND, tool);
+        activeToolSlot = slot;
+        return true;
+    }
+
+    private boolean storeActiveTool() {
+        if (activeToolSlot == null) {
+            return true;
+        }
+        ItemStack mainHand = owner.getMainHandItem();
+        if (mainHand.isEmpty()) {
+            activeToolSlot = null;
+            return true;
+        }
+        if (owner.getToolSlot(activeToolSlot).isEmpty()) {
+            owner.setToolSlot(activeToolSlot, mainHand);
+            owner.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+            activeToolSlot = null;
+            return true;
+        }
+        if (inventory.add(mainHand.copy())) {
+            owner.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+            activeToolSlot = null;
+            return true;
+        }
+        return false;
+    }
+
+    private boolean storeMainHandIfUntracked() {
+        if (activeToolSlot != null) {
+            return true;
+        }
+        ItemStack mainHand = owner.getMainHandItem();
+        if (mainHand.isEmpty()) {
+            return true;
+        }
+        CompanionToolSlot slot = CompanionToolSlot.fromStack(mainHand);
+        if (slot != null && owner.getToolSlot(slot).isEmpty()) {
+            owner.setToolSlot(slot, mainHand);
+            owner.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+            return true;
+        }
+        if (inventory.add(mainHand.copy())) {
+            owner.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+            return true;
+        }
+        return false;
     }
 
     private int armorScore(ItemStack stack) {

@@ -8,6 +8,7 @@ import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 
 import ru.nekostul.aicompanion.registry.ModEntities;
 import ru.nekostul.aicompanion.registry.ModItems;
+import ru.nekostul.aicompanion.registry.ModMenus;
 
 @Mod(AiCompanionMod.MOD_ID)
 public class AiCompanionMod {
@@ -17,6 +18,7 @@ public class AiCompanionMod {
         IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
         ModEntities.ENTITY_TYPES.register(modEventBus);
         ModItems.ITEMS.register(modEventBus);
+        ModMenus.MENUS.register(modEventBus);
         modEventBus.addListener(ModEntities::registerAttributes);
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, CompanionConfig.SPEC);
     }

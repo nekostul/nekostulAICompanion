@@ -8,12 +8,15 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.SimpleMenuProvider;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.network.NetworkHooks;
 
 import ru.nekostul.aicompanion.AiCompanionMod;
 import ru.nekostul.aicompanion.CompanionConfig;
+import ru.nekostul.aicompanion.client.gui.CompanionEquipmentMenu;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
 import ru.nekostul.aicompanion.entity.CompanionSingleNpcManager;
 
@@ -45,6 +48,8 @@ public final class CompanionCommands {
                         .then(Commands.literal("msg")
                                 .then(Commands.argument("text", StringArgumentType.greedyString())
                                         .executes(CompanionCommands::handleMessage)))
+                        .then(Commands.literal("gui")
+                                .executes(CompanionCommands::handleGui))
                         .then(Commands.literal("treechop")
                                 .then(Commands.literal("on")
                                         .executes(context -> handleTreeChop(context, true)))
@@ -75,6 +80,21 @@ public final class CompanionCommands {
         String message = StringArgumentType.getString(context, "text");
         boolean handled = CompanionChatEvents.handlePlayerMessage(player, message);
         return handled ? 1 : 0;
+    }
+
+    private static int handleGui(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
+        if (companion == null) {
+            return 0;
+        }
+        NetworkHooks.openScreen(player, new SimpleMenuProvider(
+                (containerId, inventory, p) -> new CompanionEquipmentMenu(containerId, inventory, companion, true),
+                companion.getDisplayName()), buffer -> {
+            buffer.writeInt(companion.getId());
+            buffer.writeBoolean(true);
+        });
+        return 1;
     }
 
     private static int handleTreeChop(CommandContext<CommandSourceStack> context, boolean enabled)

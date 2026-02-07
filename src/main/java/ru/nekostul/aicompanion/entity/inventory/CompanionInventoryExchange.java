@@ -3,11 +3,15 @@ package ru.nekostul.aicompanion.entity.inventory;
 import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.tags.ItemTags;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 
 import ru.nekostul.aicompanion.entity.CompanionEntity;
+import ru.nekostul.aicompanion.entity.tool.CompanionToolSlot;
 
 import java.lang.reflect.Method;
 import java.util.ArrayDeque;
@@ -21,8 +25,15 @@ public final class CompanionInventoryExchange {
     private static final int CONFIRM_THRESHOLD = 9;
     private static final String DROP_CONFIRM_KEY = "entity.aicompanion.companion.inventory.drop.confirm";
     private static final String DROP_CONFIRM_BUTTON_KEY = "entity.aicompanion.companion.inventory.drop.confirm.button";
+    private static final String DROP_TOOLS_NOTICE_KEY = "entity.aicompanion.companion.inventory.drop.tools.notice";
+    private static final String DROP_TOOLS_BUTTON_KEY = "entity.aicompanion.companion.inventory.drop.tools.button";
     private static final String RETURN_EMPTY_KEY = "entity.aicompanion.companion.inventory.return.empty";
+    private static final String RETURN_EMPTY_INVENTORY_KEY = "entity.aicompanion.companion.inventory.return.empty.inventory";
+    private static final String RETURN_TOOL_KEY = "entity.aicompanion.companion.inventory.return.tool";
+    private static final String RETURN_FOOD_KEY = "entity.aicompanion.companion.inventory.return.food";
     private static final String CONFIRM_COMMAND_TEXT = "\u0434\u0430, \u0441\u043a\u0438\u0434\u044b\u0432\u0430\u0439";
+    private static final String TOOL_DROP_COMMAND_TEXT = "\u0441\u043a\u0438\u043d\u0443\u0442\u044c";
+    private static final int TOOL_DROP_WINDOW_TICKS = 100;
 
     private static Method ownerMethod;
     private static Method throwerMethod;
@@ -33,6 +44,9 @@ public final class CompanionInventoryExchange {
     private final CompanionInventory inventory;
     private final Deque<ItemStack> returnStack = new ArrayDeque<>();
     private UUID pendingDropPlayerId;
+    private boolean pendingDropKeepToolsAndFood;
+    private UUID pendingToolDropPlayerId;
+    private long pendingToolDropUntilTick = -1L;
 
     public CompanionInventoryExchange(CompanionEntity owner, CompanionInventory inventory) {
         this.owner = owner;
@@ -47,11 +61,16 @@ public final class CompanionInventoryExchange {
         if (normalized.isEmpty()) {
             return false;
         }
+        long gameTime = owner.level().getGameTime();
+        expireToolDropIfNeeded(gameTime);
         if (isConfirmCommand(normalized)) {
-            return handleConfirm(player);
+            return handleConfirm(player, gameTime);
+        }
+        if (isToolDropCommand(normalized)) {
+            return handleToolDrop(player, gameTime);
         }
         if (isDropAllCommand(normalized)) {
-            handleDropAll(player);
+            handleDropAll(player, normalized.contains("\u043e\u0442\u0434\u0430\u0439"), gameTime);
             return true;
         }
         if (isReturnCommand(normalized)) {
@@ -72,29 +91,42 @@ public final class CompanionInventoryExchange {
         returnStack.push(pickedStack.copy());
     }
 
-    private boolean handleConfirm(Player player) {
+    private boolean handleConfirm(Player player, long gameTime) {
         if (pendingDropPlayerId == null || !pendingDropPlayerId.equals(player.getUUID())) {
             return false;
         }
+        boolean keepToolsAndFood = pendingDropKeepToolsAndFood;
         pendingDropPlayerId = null;
-        dropAll(player);
+        pendingDropKeepToolsAndFood = false;
+        dropAll(player, keepToolsAndFood, gameTime);
         return true;
     }
 
-    private void handleDropAll(Player player) {
+    private void handleDropAll(Player player, boolean keepToolsAndFood, long gameTime) {
+        clearToolDropRequest();
+        if (isInventoryEmpty()) {
+            owner.sendReply(player, Component.translatable(RETURN_EMPTY_INVENTORY_KEY));
+            return;
+        }
         int occupied = countOccupiedSlots();
         if (occupied >= CONFIRM_THRESHOLD) {
             if (pendingDropPlayerId == null) {
                 pendingDropPlayerId = player.getUUID();
+                pendingDropKeepToolsAndFood = keepToolsAndFood;
                 sendConfirm(player);
             }
             return;
         }
         pendingDropPlayerId = null;
-        dropAll(player);
+        pendingDropKeepToolsAndFood = false;
+        dropAll(player, keepToolsAndFood, gameTime);
     }
 
     private void handleReturn(Player player) {
+        if (returnStack.isEmpty() && isInventoryEmpty()) {
+            owner.sendReply(player, Component.translatable(RETURN_EMPTY_INVENTORY_KEY));
+            return;
+        }
         if (returnStack.isEmpty()) {
             owner.sendReply(player, Component.translatable(RETURN_EMPTY_KEY));
             return;
@@ -105,27 +137,62 @@ public final class CompanionInventoryExchange {
                     stack -> ItemStack.isSameItemSameTags(stack, requested),
                     requested.getCount());
             if (removed.isEmpty()) {
-                continue;
+                ItemStack equipped = takeEquippedTool(requested);
+                if (equipped.isEmpty()) {
+                    continue;
+                }
+                dropStacksNearPlayer(player, List.of(equipped));
+                sendReturnNotice(player, equipped);
+                return;
             }
             dropStacksNearPlayer(player, removed);
+            sendReturnNotice(player, requested);
             return;
         }
         owner.sendReply(player, Component.translatable(RETURN_EMPTY_KEY));
     }
 
-    private void dropAll(Player player) {
+    private void dropAll(Player player, boolean keepToolsAndFood, long gameTime) {
         List<ItemStack> drops = new ArrayList<>();
+        boolean hasTools = false;
+        boolean hasFood = false;
         for (int i = 0; i < inventory.getItems().size(); i++) {
             ItemStack stack = inventory.getItems().get(i);
             if (stack.isEmpty()) {
                 continue;
             }
+            if (keepToolsAndFood && (isTool(stack) || isFood(stack))) {
+                if (isTool(stack)) {
+                    hasTools = true;
+                }
+                if (isFood(stack)) {
+                    hasFood = true;
+                }
+                continue;
+            }
             drops.add(stack.copy());
             inventory.getItems().set(i, ItemStack.EMPTY);
+        }
+        if (keepToolsAndFood) {
+            if (isTool(owner.getMainHandItem()) || isTool(owner.getOffhandItem())) {
+                hasTools = true;
+            }
+            if (isFood(owner.getMainHandItem()) || isFood(owner.getOffhandItem())) {
+                hasFood = true;
+            }
+            for (CompanionToolSlot slot : CompanionToolSlot.values()) {
+                if (!owner.getToolSlot(slot).isEmpty()) {
+                    hasTools = true;
+                    break;
+                }
+            }
         }
         if (!drops.isEmpty()) {
             owner.onInventoryUpdated();
             dropStacksNearPlayer(player, drops);
+        }
+        if (keepToolsAndFood && (hasTools || hasFood)) {
+            sendToolDropNotice(player, gameTime);
         }
     }
 
@@ -150,6 +217,40 @@ public final class CompanionInventoryExchange {
         }
     }
 
+    private void dropTools(Player player) {
+        List<ItemStack> drops = new ArrayList<>();
+        for (int i = 0; i < inventory.getItems().size(); i++) {
+            ItemStack stack = inventory.getItems().get(i);
+            if (stack.isEmpty() || (!isTool(stack) && !isFood(stack))) {
+                continue;
+            }
+            drops.add(stack.copy());
+            inventory.getItems().set(i, ItemStack.EMPTY);
+        }
+        for (CompanionToolSlot slot : CompanionToolSlot.values()) {
+            ItemStack stack = owner.getToolSlot(slot);
+            if (stack.isEmpty()) {
+                continue;
+            }
+            drops.add(stack.copy());
+            owner.setToolSlot(slot, ItemStack.EMPTY);
+        }
+        ItemStack mainHand = owner.getMainHandItem();
+        if (isTool(mainHand) || isFood(mainHand)) {
+            drops.add(mainHand.copy());
+            owner.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+        }
+        ItemStack offhand = owner.getOffhandItem();
+        if (isTool(offhand) || isFood(offhand)) {
+            drops.add(offhand.copy());
+            owner.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
+        }
+        if (!drops.isEmpty()) {
+            owner.onInventoryUpdated();
+            dropStacksNearPlayer(player, drops);
+        }
+    }
+
     private void sendConfirm(Player player) {
         Component button = Component.translatable(DROP_CONFIRM_BUTTON_KEY)
                 .withStyle(style -> style
@@ -158,6 +259,26 @@ public final class CompanionInventoryExchange {
                         .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND,
                                 "/ainpc msg " + CONFIRM_COMMAND_TEXT)));
         Component message = Component.translatable(DROP_CONFIRM_KEY)
+                .append(Component.literal(" "))
+                .append(Component.literal("["))
+                .append(button)
+                .append(Component.literal("]"));
+        owner.sendReply(player, message);
+    }
+
+    private void sendToolDropNotice(Player player, long gameTime) {
+        if (player == null) {
+            return;
+        }
+        pendingToolDropPlayerId = player.getUUID();
+        pendingToolDropUntilTick = gameTime + TOOL_DROP_WINDOW_TICKS;
+        Component button = Component.translatable(DROP_TOOLS_BUTTON_KEY)
+                .withStyle(style -> style
+                        .withColor(ChatFormatting.AQUA)
+                        .withBold(true)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND,
+                                "/ainpc msg " + TOOL_DROP_COMMAND_TEXT)));
+        Component message = Component.translatable(DROP_TOOLS_NOTICE_KEY)
                 .append(Component.literal(" "))
                 .append(Component.literal("["))
                 .append(button)
@@ -175,6 +296,15 @@ public final class CompanionInventoryExchange {
         return occupied;
     }
 
+    private boolean isInventoryEmpty() {
+        for (ItemStack stack : inventory.getItems()) {
+            if (!stack.isEmpty()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private boolean isDropAllCommand(String normalized) {
         if (!normalized.contains("\u0432\u0441\u0435")) {
             return false;
@@ -182,6 +312,10 @@ public final class CompanionInventoryExchange {
         return normalized.contains("\u0441\u043a\u0438\u043d\u044c")
                 || normalized.contains("\u0432\u044b\u0431\u0440\u043e\u0441\u044c")
                 || normalized.contains("\u043e\u0442\u0434\u0430\u0439");
+    }
+
+    private boolean isToolDropCommand(String normalized) {
+        return normalized.equals(TOOL_DROP_COMMAND_TEXT);
     }
 
     private boolean isReturnCommand(String normalized) {
@@ -200,6 +334,88 @@ public final class CompanionInventoryExchange {
         return message.trim()
                 .toLowerCase(Locale.ROOT)
                 .replace('\u0451', '\u0435');
+    }
+
+    private boolean handleToolDrop(Player player, long gameTime) {
+        if (pendingToolDropPlayerId == null || !pendingToolDropPlayerId.equals(player.getUUID())) {
+            return false;
+        }
+        if (gameTime >= pendingToolDropUntilTick) {
+            clearToolDropRequest();
+            return false;
+        }
+        clearToolDropRequest();
+        dropTools(player);
+        return true;
+    }
+
+    private void clearToolDropRequest() {
+        pendingToolDropPlayerId = null;
+        pendingToolDropUntilTick = -1L;
+    }
+
+    private void expireToolDropIfNeeded(long gameTime) {
+        if (pendingToolDropPlayerId == null) {
+            return;
+        }
+        if (gameTime >= pendingToolDropUntilTick) {
+            clearToolDropRequest();
+        }
+    }
+
+    private void sendReturnNotice(Player player, ItemStack stack) {
+        if (player == null || stack == null || stack.isEmpty()) {
+            return;
+        }
+        if (isTool(stack)) {
+            owner.sendReply(player, Component.translatable(RETURN_TOOL_KEY));
+            return;
+        }
+        if (stack.isEdible()) {
+            owner.sendReply(player, Component.translatable(RETURN_FOOD_KEY));
+        }
+    }
+
+    private ItemStack takeEquippedTool(ItemStack requested) {
+        if (!isTool(requested)) {
+            return ItemStack.EMPTY;
+        }
+        ItemStack mainHand = owner.getMainHandItem();
+        if (matchesReturnItem(mainHand, requested)) {
+            ItemStack result = mainHand.copy();
+            owner.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+            return result;
+        }
+        ItemStack offhand = owner.getOffhandItem();
+        if (matchesReturnItem(offhand, requested)) {
+            ItemStack result = offhand.copy();
+            owner.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
+            return result;
+        }
+        return ItemStack.EMPTY;
+    }
+
+    private boolean matchesReturnItem(ItemStack candidate, ItemStack requested) {
+        if (candidate == null || candidate.isEmpty() || requested == null || requested.isEmpty()) {
+            return false;
+        }
+        return ItemStack.isSameItemSameTags(candidate, requested);
+    }
+
+    private boolean isFood(ItemStack stack) {
+        return stack != null && !stack.isEmpty() && stack.isEdible();
+    }
+
+    private boolean isTool(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return false;
+        }
+        return stack.is(ItemTags.AXES)
+                || stack.is(ItemTags.PICKAXES)
+                || stack.is(ItemTags.SHOVELS)
+                || stack.is(ItemTags.SWORDS)
+                || stack.is(ItemTags.HOES)
+                || stack.is(Items.SHEARS);
     }
 
     private Player resolveDropper(ItemEntity itemEntity) {
