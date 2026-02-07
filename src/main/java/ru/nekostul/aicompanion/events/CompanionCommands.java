@@ -90,7 +90,11 @@ public final class CompanionCommands {
         }
         NetworkHooks.openScreen(player, new SimpleMenuProvider(
                 (containerId, inventory, p) -> new CompanionEquipmentMenu(containerId, inventory, companion, true),
+<<<<<<< HEAD
                 Component.translatable("container.crafting")), buffer -> {
+=======
+                companion.getDisplayName()), buffer -> {
+>>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
             buffer.writeInt(companion.getId());
             buffer.writeBoolean(true);
         });

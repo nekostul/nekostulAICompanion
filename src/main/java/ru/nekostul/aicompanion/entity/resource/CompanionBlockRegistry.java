@@ -55,7 +55,11 @@ public final class CompanionBlockRegistry {
                     false,
                     state -> state.is(Blocks.COAL_ORE) || state.is(Blocks.DEEPSLATE_COAL_ORE),
                     stack -> stack.is(Items.COAL),
+<<<<<<< HEAD
                     new String[]{"уголь", "угл", "coal"}
+=======
+                    new String[]{"уголь", "coal"}
+>>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
             ),
             new ResourceEntry(
                     CompanionResourceType.IRON_ORE,
