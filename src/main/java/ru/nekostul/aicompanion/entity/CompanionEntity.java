@@ -31,6 +31,17 @@ import net.minecraft.world.phys.AABB;
 
 import ru.nekostul.aicompanion.entity.ai.FollowNearestPlayerGoal;
 import ru.nekostul.aicompanion.entity.ai.HoldPositionGoal;
+import ru.nekostul.aicompanion.entity.command.CompanionCommandParser;
+import ru.nekostul.aicompanion.entity.food.CompanionFoodHuntController;
+import ru.nekostul.aicompanion.entity.food.CompanionHungerSystem;
+import ru.nekostul.aicompanion.entity.gratitude.CompanionGratitudeResponder;
+import ru.nekostul.aicompanion.entity.gratitude.CompanionPickupGratitude;
+import ru.nekostul.aicompanion.entity.inventory.CompanionDeliveryController;
+import ru.nekostul.aicompanion.entity.inventory.CompanionDropTracker;
+import ru.nekostul.aicompanion.entity.inventory.CompanionEquipment;
+import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
+import ru.nekostul.aicompanion.entity.inventory.CompanionInventoryExchange;
+import ru.nekostul.aicompanion.entity.mining.CompanionGatheringController;
 import ru.nekostul.aicompanion.entity.tool.CompanionToolHandler;
 import ru.nekostul.aicompanion.entity.tree.CompanionTreeHarvestController;
 
@@ -165,6 +176,7 @@ public class CompanionEntity extends PathfinderMob {
     private boolean hasGreeted;
     private final CompanionInventory inventory;
     private final CompanionEquipment equipment;
+    private final CompanionInventoryExchange inventoryExchange;
     private final CompanionToolHandler toolHandler;
     private final CompanionGatheringController gatheringController;
     private final CompanionTreeHarvestController treeHarvestController;
@@ -176,8 +188,10 @@ public class CompanionEntity extends PathfinderMob {
     private final CompanionGratitudeResponder gratitudeResponder;
     private final CompanionPickupGratitude pickupGratitude;
     private final CompanionHungerSystem hungerSystem;
+    private final CompanionFoodHuntController foodHuntController;
     private final CompanionCombatController combatController;
     private final CompanionTaskCoordinator taskCoordinator;
+    private final CompanionTorchHandler torchHandler;
     private final EnumMap<ChatGroup, Long> chatGroupCooldowns = new EnumMap<>(ChatGroup.class);
     private String lastAmbientKey;
     private long nextAmbientChatTick = -1L;
@@ -199,6 +213,7 @@ public class CompanionEntity extends PathfinderMob {
         this.setCustomNameVisible(true);
         this.inventory = new CompanionInventory(this, INVENTORY_SIZE);
         this.equipment = new CompanionEquipment(this, inventory);
+        this.inventoryExchange = new CompanionInventoryExchange(this, inventory);
         this.toolHandler = new CompanionToolHandler(this, inventory, equipment);
         this.gatheringController = new CompanionGatheringController(this, inventory, equipment, toolHandler);
         this.treeHarvestController = new CompanionTreeHarvestController(this, inventory, equipment, toolHandler);
@@ -210,9 +225,12 @@ public class CompanionEntity extends PathfinderMob {
         this.gratitudeResponder = new CompanionGratitudeResponder(this);
         this.pickupGratitude = new CompanionPickupGratitude(this);
         this.hungerSystem = new CompanionHungerSystem(this, inventory);
+        this.foodHuntController = new CompanionFoodHuntController(this, inventory, equipment, hungerSystem);
         this.combatController = new CompanionCombatController(this, equipment);
+        this.torchHandler = new CompanionTorchHandler(this, inventory);
         this.taskCoordinator = new CompanionTaskCoordinator(this, inventory, equipment, gatheringController,
-                treeHarvestController, deliveryController, bucketHandler, chestManager, commandParser, helpSystem);
+                treeHarvestController, deliveryController, bucketHandler, chestManager, commandParser, helpSystem,
+                inventoryExchange, torchHandler);
         if (this.getNavigation() instanceof GroundPathNavigation navigation) {
             navigation.setCanOpenDoors(true);
             navigation.setCanPassDoors(true);
@@ -272,7 +290,7 @@ public class CompanionEntity extends PathfinderMob {
         return this.gratitudeResponder.handle(player, message, this.level().getGameTime());
     }
 
-    void onInventoryUpdated() {
+    public void onInventoryUpdated() {
         this.taskCoordinator.onInventoryUpdated();
     }
 
@@ -466,6 +484,10 @@ public class CompanionEntity extends PathfinderMob {
             if (CompanionDropTracker.isDroppedBy(itemEntity, this.getUUID())) {
                 continue;
             }
+            if (CompanionDropTracker.isMobDrop(itemEntity)
+                    && !CompanionDropTracker.isMobDropFrom(itemEntity, this.getUUID())) {
+                continue;
+            }
             ItemStack stack = itemEntity.getItem();
             if (stack.isEmpty()) {
                 continue;
@@ -476,6 +498,7 @@ public class CompanionEntity extends PathfinderMob {
             int pickedCount = before - stack.getCount();
             if (pickedCount > 0) {
                 pickedCopy.setCount(pickedCount);
+                inventoryExchange.recordPickup(itemEntity, pickedCopy);
                 pickupGratitude.onPickup(itemEntity, pickedCopy, gameTime);
             }
             if (stack.isEmpty()) {
@@ -531,6 +554,9 @@ public class CompanionEntity extends PathfinderMob {
         long gameTime = this.level().getGameTime();
         Player nearest = this.level().getNearestPlayer(this, FOLLOW_SEARCH_DISTANCE);
         if (combatController.tick(nearest, gameTime)) {
+            return;
+        }
+        if (foodHuntController.tick(nearest, gameTime, taskCoordinator.isBusy())) {
             return;
         }
         this.taskCoordinator.tick(this.mode, gameTime);

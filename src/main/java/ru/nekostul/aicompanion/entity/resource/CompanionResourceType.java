@@ -2,10 +2,11 @@ package ru.nekostul.aicompanion.entity.resource;
 
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.state.BlockState;
-import ru.nekostul.aicompanion.entity.CompanionBlockRegistry;
+import ru.nekostul.aicompanion.entity.resource.CompanionBlockRegistry;
 
 public enum CompanionResourceType {
     LOG,
+    TORCH,
     DIRT,
     STONE,
     SAND,

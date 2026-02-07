@@ -1,4 +1,4 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.gratitude;
 
 import net.minecraft.network.chat.Component;
 import net.minecraft.tags.ItemTags;
@@ -7,11 +7,13 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 
+import ru.nekostul.aicompanion.entity.CompanionEntity;
+
 import java.lang.reflect.Method;
 import java.util.Random;
 import java.util.UUID;
 
-final class CompanionPickupGratitude {
+public final class CompanionPickupGratitude {
     private static final String[] THANK_KEYS = range("entity.aicompanion.companion.thanks.pickup.", 1, 6);
     private static final int THANK_COOLDOWN_TICKS = 200;
 
@@ -25,11 +27,11 @@ final class CompanionPickupGratitude {
     private long nextThankTick = -1L;
     private int lastIndex = -1;
 
-    CompanionPickupGratitude(CompanionEntity owner) {
+    public CompanionPickupGratitude(CompanionEntity owner) {
         this.owner = owner;
     }
 
-    void onPickup(ItemEntity itemEntity, ItemStack pickedStack, long gameTime) {
+    public void onPickup(ItemEntity itemEntity, ItemStack pickedStack, long gameTime) {
         if (pickedStack == null || pickedStack.isEmpty()) {
             return;
         }
@@ -149,3 +151,4 @@ final class CompanionPickupGratitude {
         return keys;
     }
 }
+

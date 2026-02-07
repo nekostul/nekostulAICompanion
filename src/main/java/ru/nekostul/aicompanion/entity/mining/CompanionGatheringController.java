@@ -1,4 +1,4 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.mining;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -20,14 +20,17 @@ import net.minecraft.world.phys.Vec3;
 import java.util.List;
 import java.util.UUID;
 
-import ru.nekostul.aicompanion.entity.mining.CompanionMiningAnimator;
-import ru.nekostul.aicompanion.entity.mining.CompanionMiningReach;
+import ru.nekostul.aicompanion.entity.CompanionEntity;
+import ru.nekostul.aicompanion.entity.inventory.CompanionEquipment;
+import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
+import ru.nekostul.aicompanion.entity.resource.CompanionBlockRegistry;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
+import ru.nekostul.aicompanion.entity.tool.CompanionOreToolGate;
 import ru.nekostul.aicompanion.entity.tool.CompanionToolHandler;
 
-final class CompanionGatheringController {
-    enum Result {
+public final class CompanionGatheringController {
+    public enum Result {
         IDLE,
         IN_PROGRESS,
         DONE,
@@ -72,10 +75,10 @@ final class CompanionGatheringController {
     private BlockPos resourceAnchor;
     private BlockPos lastMinedBlock;
 
-    CompanionGatheringController(CompanionEntity owner,
-                                 CompanionInventory inventory,
-                                 CompanionEquipment equipment,
-                                 CompanionToolHandler toolHandler) {
+    public CompanionGatheringController(CompanionEntity owner,
+                               CompanionInventory inventory,
+                               CompanionEquipment equipment,
+                               CompanionToolHandler toolHandler) {
         this.owner = owner;
         this.inventory = inventory;
         this.equipment = equipment;
@@ -85,7 +88,7 @@ final class CompanionGatheringController {
         this.oreToolGate = new CompanionOreToolGate(owner, inventory);
     }
 
-    Result tick(CompanionResourceRequest request, long gameTime) {
+    public Result tick(CompanionResourceRequest request, long gameTime) {
         if (request == null) {
             resetRequestState();
             return Result.IDLE;
@@ -622,3 +625,4 @@ final class CompanionGatheringController {
         }
     }
 }
+

@@ -6,6 +6,8 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
+import ru.nekostul.aicompanion.entity.inventory.CompanionEquipment;
+
 final class CompanionCombatController {
     private static final int DEFENSE_RADIUS = 12;
     private static final double DEFENSE_RADIUS_SQR = DEFENSE_RADIUS * DEFENSE_RADIUS;

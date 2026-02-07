@@ -7,10 +7,10 @@ import net.minecraft.tags.TagKey;
 import net.minecraft.world.item.Item;
 import net.minecraft.core.BlockPos;
 
-import ru.nekostul.aicompanion.entity.CompanionBlockRegistry;
+import ru.nekostul.aicompanion.entity.resource.CompanionBlockRegistry;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
-import ru.nekostul.aicompanion.entity.CompanionEquipment;
-import ru.nekostul.aicompanion.entity.CompanionInventory;
+import ru.nekostul.aicompanion.entity.inventory.CompanionEquipment;
+import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
 
 public final class CompanionToolHandler {

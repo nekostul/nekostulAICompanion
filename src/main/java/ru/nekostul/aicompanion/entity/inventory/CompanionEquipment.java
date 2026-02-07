@@ -1,4 +1,4 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.inventory;
 
 import net.minecraft.tags.ItemTags;
 import net.minecraft.tags.TagKey;
@@ -10,6 +10,9 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.TieredItem;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.InteractionHand;
+
+import ru.nekostul.aicompanion.entity.CompanionEntity;
+import ru.nekostul.aicompanion.entity.resource.CompanionBlockRegistry;
 
 public final class CompanionEquipment {
     private final CompanionEntity owner;
@@ -154,3 +157,4 @@ public final class CompanionEquipment {
         inventory.getItems().set(inventorySlot, ItemStack.EMPTY);
     }
 }
+

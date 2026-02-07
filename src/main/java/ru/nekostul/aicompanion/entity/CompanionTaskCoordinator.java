@@ -4,6 +4,12 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 
+import ru.nekostul.aicompanion.entity.command.CompanionCommandParser;
+import ru.nekostul.aicompanion.entity.inventory.CompanionDeliveryController;
+import ru.nekostul.aicompanion.entity.inventory.CompanionEquipment;
+import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
+import ru.nekostul.aicompanion.entity.inventory.CompanionInventoryExchange;
+import ru.nekostul.aicompanion.entity.mining.CompanionGatheringController;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
 import ru.nekostul.aicompanion.entity.tree.CompanionTreeHarvestController;
@@ -12,6 +18,7 @@ final class CompanionTaskCoordinator {
     private enum TaskState {
         IDLE,
         WAITING_BUCKETS,
+        WAITING_TORCH_RESOURCES,
         WAITING_CHEST,
         GATHERING,
         DELIVERING,
@@ -28,6 +35,8 @@ final class CompanionTaskCoordinator {
     private final CompanionChestManager chestManager;
     private final CompanionCommandParser commandParser;
     private final CompanionHelpSystem helpSystem;
+    private final CompanionInventoryExchange inventoryExchange;
+    private final CompanionTorchHandler torchHandler;
 
     private CompanionResourceRequest activeRequest;
     private TaskState taskState = TaskState.IDLE;
@@ -41,7 +50,9 @@ final class CompanionTaskCoordinator {
                              CompanionBucketHandler bucketHandler,
                              CompanionChestManager chestManager,
                              CompanionCommandParser commandParser,
-                             CompanionHelpSystem helpSystem) {
+                             CompanionHelpSystem helpSystem,
+                             CompanionInventoryExchange inventoryExchange,
+                             CompanionTorchHandler torchHandler) {
         this.owner = owner;
         this.inventory = inventory;
         this.equipment = equipment;
@@ -52,6 +63,8 @@ final class CompanionTaskCoordinator {
         this.chestManager = chestManager;
         this.commandParser = commandParser;
         this.helpSystem = helpSystem;
+        this.inventoryExchange = inventoryExchange;
+        this.torchHandler = torchHandler;
     }
 
     boolean handlePlayerMessage(ServerPlayer player, String message) {
@@ -61,9 +74,16 @@ final class CompanionTaskCoordinator {
         if (chestManager.handleChestAssignment(player, message)) {
             return true;
         }
+        if (inventoryExchange.handleMessage(player, message)) {
+            return true;
+        }
         CompanionCommandParser.CommandRequest parsed = commandParser.parse(message);
         if (parsed == null) {
             return false;
+        }
+        if (taskState == TaskState.WAITING_TORCH_RESOURCES
+                && parsed.getResourceType() == CompanionResourceType.TORCH) {
+            return true;
         }
         startRequest(player, parsed);
         return true;
@@ -100,6 +120,17 @@ final class CompanionTaskCoordinator {
                 return;
             }
         }
+        if (taskState == TaskState.WAITING_TORCH_RESOURCES) {
+            CompanionTorchHandler.Result torchResult = torchHandler.tick(activeRequest, player, gameTime);
+            if (torchResult == CompanionTorchHandler.Result.READY) {
+                taskState = TaskState.DELIVERING;
+                delivery.startDelivery();
+            } else if (torchResult == CompanionTorchHandler.Result.TIMED_OUT) {
+                activeRequest = null;
+                taskState = TaskState.IDLE;
+            }
+            return;
+        }
         switch (taskState) {
             case GATHERING -> tickGathering(player, gameTime);
             case DELIVERING -> tickDelivery(player, gameTime);
@@ -111,7 +142,8 @@ final class CompanionTaskCoordinator {
 
     boolean isBusy() {
         return activeRequest != null && taskState != TaskState.IDLE
-                && taskState != TaskState.WAITING_BUCKETS;
+                && taskState != TaskState.WAITING_BUCKETS
+                && taskState != TaskState.WAITING_TORCH_RESOURCES;
     }
 
     void onInventoryUpdated() {
@@ -137,6 +169,19 @@ final class CompanionTaskCoordinator {
     private void tickGathering(Player player, long gameTime) {
         if (activeRequest == null) {
             taskState = TaskState.IDLE;
+            return;
+        }
+        if (activeRequest.getResourceType() == CompanionResourceType.TORCH) {
+            CompanionTorchHandler.Result torchResult = torchHandler.tick(activeRequest, player, gameTime);
+            if (torchResult == CompanionTorchHandler.Result.READY) {
+                taskState = TaskState.DELIVERING;
+                delivery.startDelivery();
+            } else if (torchResult == CompanionTorchHandler.Result.WAITING_RESOURCES) {
+                taskState = TaskState.WAITING_TORCH_RESOURCES;
+            } else if (torchResult == CompanionTorchHandler.Result.TIMED_OUT) {
+                activeRequest = null;
+                taskState = TaskState.IDLE;
+            }
             return;
         }
         if (activeRequest.getResourceType().isBucketResource()) {

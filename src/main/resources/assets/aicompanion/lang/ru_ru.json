@@ -316,8 +316,12 @@
   "entity.aicompanion.companion.bucket.missing.water": "Не знаю, где найти воду поблизости.",
   "entity.aicompanion.companion.bucket.missing.lava": "Не знаю, где найти лаву поблизости.",
   "entity.aicompanion.companion.gather.missing": "Не могу найти нужный ресурс поблизости.",
-  "entity.aicompanion.companion.help.general": "Я добываю ресурсы по команде и приношу их. Примеры: «принеси дерево», «принеси 4 ведра воды». Есть личный сундук — подробности: «помощь сундук».",
+  "entity.aicompanion.companion.help.general": "Я добываю ресурсы по команде и приношу их. Примеры: «принеси дерево», «принеси 4 ведра воды». Есть личный сундук — «помощь сундук». Про инвентарь — «помощь инвентарь».",
   "entity.aicompanion.companion.help.chest": "Сундук назначается так: 1) поставь сундук, 2) наведи на него прицел, 3) напиши «вот твой сундук». Без наведения я сундук не приму. Сундук может быть только один, повторно назначить нельзя.",
+  "entity.aicompanion.companion.help.inventory": "Инвентарь: «скинь всё / выбрось всё / отдай всё». Если занято 9+ слотов — спрошу подтверждение. «отдай / верни / верни предмет» возвращает последние предметы в обратном порядке.",
+  "entity.aicompanion.companion.inventory.drop.confirm": "В инвентаре много предметов. Точно скинуть всё?",
+  "entity.aicompanion.companion.inventory.drop.confirm.button": "Да, скидывай",
+  "entity.aicompanion.companion.inventory.return.empty": "Мне нечего возвращать.",
 
   "entity.aicompanion.companion.thanks.1": "Пожалуйста!",
   "entity.aicompanion.companion.thanks.2": "Всегда рад помочь.",
@@ -348,6 +352,12 @@
   "entity.aicompanion.companion.tool.suggest.shovel": "Я могу копать и без лопаты, но с ней быстрее.",
   "entity.aicompanion.companion.tool.suggest.pickaxe": "Я могу копать и без кирки, но с ней быстрее.",
   "entity.aicompanion.companion.tool.require.pickaxe": "Чтобы добыть камень, мне нужна кирка.",
+  "entity.aicompanion.companion.torch.need.coal": "Для факелов мне нужно %s угля или древесного угля.",
+  "entity.aicompanion.companion.torch.need.sticks": "Для факелов мне нужно %s палок.",
+  "entity.aicompanion.companion.torch.need.both": "Для крафта факелов мне нужно %s и %s.",
+  "entity.aicompanion.companion.torch.need.coal.only": "Для крафта факелов мне нужно %s, палки у меня есть.",
+  "entity.aicompanion.companion.torch.need.sticks.only": "Для крафта факелов мне нужно %s, уголь у меня есть.",
+  "entity.aicompanion.companion.torch.ready": "Сделаю факелы и принесу.",
   "entity.aicompanion.companion.ore.require.stone": "Для добычи этой руды мне нужна хотя бы каменная кирка.",
   "entity.aicompanion.companion.ore.require.iron": "Для добычи этой руды мне нужна хотя бы железная кирка."
 }

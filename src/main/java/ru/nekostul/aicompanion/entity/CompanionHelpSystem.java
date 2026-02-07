@@ -8,6 +8,7 @@ import java.util.Locale;
 final class CompanionHelpSystem {
     private static final String HELP_GENERAL_KEY = "entity.aicompanion.companion.help.general";
     private static final String HELP_CHEST_KEY = "entity.aicompanion.companion.help.chest";
+    private static final String HELP_INVENTORY_KEY = "entity.aicompanion.companion.help.inventory";
 
     boolean handleHelp(Player player, String message) {
         if (player == null || message == null) {
@@ -20,6 +21,11 @@ final class CompanionHelpSystem {
         if (normalized.contains("\u043f\u043e\u043c\u043e\u0449\u044c \u0441\u0443\u043d\u0434\u0443\u043a")
                 || normalized.contains("help chest")) {
             player.sendSystemMessage(Component.translatable(HELP_CHEST_KEY));
+            return true;
+        }
+        if (normalized.contains("\u043f\u043e\u043c\u043e\u0449\u044c \u0438\u043d\u0432\u0435\u043d\u0442\u0430\u0440\u044c")
+                || normalized.contains("help inventory")) {
+            player.sendSystemMessage(Component.translatable(HELP_INVENTORY_KEY));
             return true;
         }
         if (normalized.equals("\u043f\u043e\u043c\u043e\u0449\u044c") || normalized.equals("help")

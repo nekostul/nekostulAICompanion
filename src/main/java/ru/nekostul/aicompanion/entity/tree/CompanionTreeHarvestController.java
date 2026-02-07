@@ -26,10 +26,10 @@ import java.util.Set;
 import java.util.UUID;
 
 import ru.nekostul.aicompanion.CompanionConfig;
-import ru.nekostul.aicompanion.entity.CompanionBlockRegistry;
+import ru.nekostul.aicompanion.entity.resource.CompanionBlockRegistry;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
-import ru.nekostul.aicompanion.entity.CompanionEquipment;
-import ru.nekostul.aicompanion.entity.CompanionInventory;
+import ru.nekostul.aicompanion.entity.inventory.CompanionEquipment;
+import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
 import ru.nekostul.aicompanion.entity.mining.CompanionMiningAnimator;
 import ru.nekostul.aicompanion.entity.mining.CompanionMiningReach;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;

@@ -1,4 +1,4 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.command;
 
 import java.util.Locale;
 import java.util.regex.Matcher;
@@ -63,3 +63,4 @@ final class CompanionRussianNormalizer {
         return word;
     }
 }
+

@@ -1,4 +1,4 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.tool;
 
 import net.minecraft.network.chat.Component;
 import net.minecraft.tags.ItemTags;
@@ -6,9 +6,11 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.TieredItem;
 import net.minecraft.world.level.block.state.BlockState;
+import ru.nekostul.aicompanion.entity.CompanionEntity;
+import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
 
-final class CompanionOreToolGate {
+public final class CompanionOreToolGate {
     private enum Requirement {
         NONE,
         STONE,
@@ -21,12 +23,12 @@ final class CompanionOreToolGate {
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
 
-    CompanionOreToolGate(CompanionEntity owner, CompanionInventory inventory) {
+    public CompanionOreToolGate(CompanionEntity owner, CompanionInventory inventory) {
         this.owner = owner;
         this.inventory = inventory;
     }
 
-    boolean isRequestBlocked(CompanionResourceType type, Player player) {
+    public boolean isRequestBlocked(CompanionResourceType type, Player player) {
         Requirement requirement = requirementFor(type);
         if (requirement == Requirement.NONE) {
             return false;
@@ -38,7 +40,7 @@ final class CompanionOreToolGate {
         return true;
     }
 
-    boolean isBlockBlocked(BlockState state) {
+    public boolean isBlockBlocked(BlockState state) {
         CompanionResourceType type = findOreType(state);
         if (type == null) {
             return false;
@@ -123,3 +125,4 @@ final class CompanionOreToolGate {
         owner.sendReply(resolved, Component.translatable(key));
     }
 }
+

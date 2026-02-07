@@ -1,13 +1,14 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.command;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import ru.nekostul.aicompanion.entity.resource.CompanionBlockRegistry;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
 import ru.nekostul.aicompanion.entity.tree.CompanionTreeRequestMode;
 
-final class CompanionCommandParser {
-    static final class CommandRequest {
+public final class CompanionCommandParser {
+    public static final class CommandRequest {
         private final CompanionResourceType resourceType;
         private final int amount;
         private final CompanionTreeRequestMode treeMode;
@@ -18,15 +19,15 @@ final class CompanionCommandParser {
             this.treeMode = treeMode;
         }
 
-        CompanionResourceType getResourceType() {
+        public CompanionResourceType getResourceType() {
             return resourceType;
         }
 
-        int getAmount() {
+        public int getAmount() {
             return amount;
         }
 
-        CompanionTreeRequestMode getTreeMode() {
+        public CompanionTreeRequestMode getTreeMode() {
             return treeMode;
         }
     }
@@ -36,7 +37,7 @@ final class CompanionCommandParser {
     private static final int SMALL_BLOCK_AMOUNT = 8;
     private static final int DEFAULT_BUCKET_AMOUNT = 1;
 
-    CommandRequest parse(String message) {
+    public CommandRequest parse(String message) {
         String normalized = normalize(message);
         if (normalized.isEmpty()) {
             return null;
@@ -60,6 +61,8 @@ final class CompanionCommandParser {
         return normalized.contains("\u0434\u043e\u0431\u0443\u0434")
                 || normalized.contains("\u0434\u043e\u0431\u044b")
                 || normalized.contains("\u043f\u0440\u0438\u043d\u0435\u0441")
+                || normalized.contains("\u0434\u0430\u0439")
+                || normalized.contains("\u0441\u0434\u0435\u043b")
                 || normalized.contains("\u0441\u043e\u0431\u0435\u0440")
                 || normalized.contains("\u0434\u043e\u0441\u0442\u0430\u043d")
                 || normalized.contains("\u0434\u043e\u0441\u0442\u0430\u0442")
@@ -116,3 +119,4 @@ final class CompanionCommandParser {
         return CompanionRussianNormalizer.normalize(message);
     }
 }
+

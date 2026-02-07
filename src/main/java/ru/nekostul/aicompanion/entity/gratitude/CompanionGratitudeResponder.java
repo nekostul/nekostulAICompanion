@@ -1,11 +1,13 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.gratitude;
 
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Player;
 
+import ru.nekostul.aicompanion.entity.CompanionEntity;
+
 import java.util.Locale;
 
-final class CompanionGratitudeResponder {
+public final class CompanionGratitudeResponder {
     private static final int COOLDOWN_TICKS = 40;
     private static final String[] THANKS_KEYS = range("entity.aicompanion.companion.thanks.", 1, 14);
     private static final String[] THANKS_KEYWORDS = {"спасибо", "спс", "thanks"};
@@ -14,11 +16,11 @@ final class CompanionGratitudeResponder {
     private String lastKey;
     private long nextReplyTick = -1L;
 
-    CompanionGratitudeResponder(CompanionEntity owner) {
+    public CompanionGratitudeResponder(CompanionEntity owner) {
         this.owner = owner;
     }
 
-    boolean handle(Player player, String message, long gameTime) {
+    public boolean handle(Player player, String message, long gameTime) {
         if (player == null) {
             return false;
         }
@@ -68,3 +70,4 @@ final class CompanionGratitudeResponder {
         return key;
     }
 }
+

@@ -16,6 +16,8 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
+import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
+
 import java.util.Locale;
 
 final class CompanionChestManager {

@@ -1,4 +1,4 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.food;
 
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
@@ -9,7 +9,10 @@ import net.minecraft.world.food.FoodProperties;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 
-final class CompanionHungerSystem {
+import ru.nekostul.aicompanion.entity.CompanionEntity;
+import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
+
+public final class CompanionHungerSystem {
     private static final String HUNGER_NBT = "Hunger";
     private static final int MAX_HUNGER = 20;
     private static final int LOW_HUNGER = 6;
@@ -26,12 +29,12 @@ final class CompanionHungerSystem {
     private long nextFoodRequestTick = -1L;
     private long nextEatTick = -1L;
 
-    CompanionHungerSystem(CompanionEntity owner, CompanionInventory inventory) {
+    public CompanionHungerSystem(CompanionEntity owner, CompanionInventory inventory) {
         this.owner = owner;
         this.inventory = inventory;
     }
 
-    void tick(Player player, long gameTime) {
+    public void tick(Player player, long gameTime) {
         updateHunger(gameTime);
         if (!needsFood()) {
             return;
@@ -50,11 +53,11 @@ final class CompanionHungerSystem {
         }
     }
 
-    void saveToTag(CompoundTag tag) {
+    public void saveToTag(CompoundTag tag) {
         tag.putInt(HUNGER_NBT, hunger);
     }
 
-    void loadFromTag(CompoundTag tag) {
+    public void loadFromTag(CompoundTag tag) {
         if (tag.contains(HUNGER_NBT)) {
             hunger = Math.max(0, Math.min(MAX_HUNGER, tag.getInt(HUNGER_NBT)));
         }
@@ -71,7 +74,7 @@ final class CompanionHungerSystem {
         }
     }
 
-    private boolean needsFood() {
+    boolean needsFood() {
         return hunger <= LOW_HUNGER || owner.getHealth() <= LOW_HEALTH;
     }
 
@@ -104,3 +107,4 @@ final class CompanionHungerSystem {
         nextEatTick = gameTime + EAT_COOLDOWN_TICKS;
     }
 }
+

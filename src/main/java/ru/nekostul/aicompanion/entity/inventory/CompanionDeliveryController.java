@@ -1,15 +1,16 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.inventory;
 
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
+import ru.nekostul.aicompanion.entity.CompanionEntity;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
 
 import java.util.ArrayList;
 import java.util.List;
 
-final class CompanionDeliveryController {
+public final class CompanionDeliveryController {
     private static final double DELIVERY_RANGE_SQR = 9.0D;
     private static final int DELIVERY_COOLDOWN_TICKS = 10;
 
@@ -20,19 +21,19 @@ final class CompanionDeliveryController {
     private List<ItemStack> pendingDrops;
     private int pendingDropIndex;
 
-    CompanionDeliveryController(CompanionEntity owner, CompanionInventory inventory) {
+    public CompanionDeliveryController(CompanionEntity owner, CompanionInventory inventory) {
         this.owner = owner;
         this.inventory = inventory;
     }
 
-    void startDelivery() {
+    public void startDelivery() {
         deliveredCount = 0;
         nextDeliverTick = -1L;
         pendingDrops = null;
         pendingDropIndex = 0;
     }
 
-    void startDelivery(List<ItemStack> drops) {
+    public void startDelivery(List<ItemStack> drops) {
         deliveredCount = 0;
         nextDeliverTick = -1L;
         if (drops == null || drops.isEmpty()) {
@@ -49,7 +50,7 @@ final class CompanionDeliveryController {
         pendingDropIndex = 0;
     }
 
-    boolean tickDelivery(CompanionResourceRequest request, Player player, long gameTime) {
+    public boolean tickDelivery(CompanionResourceRequest request, Player player, long gameTime) {
         if (request == null || player == null) {
             return false;
         }
@@ -73,7 +74,7 @@ final class CompanionDeliveryController {
         return deliveredCount >= request.getAmount();
     }
 
-    boolean tickDeliveryStacks(Player player, long gameTime) {
+    public boolean tickDeliveryStacks(Player player, long gameTime) {
         if (player == null) {
             return false;
         }
@@ -119,3 +120,4 @@ final class CompanionDeliveryController {
         return dropped;
     }
 }
+

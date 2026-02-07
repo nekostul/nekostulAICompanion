@@ -1,4 +1,4 @@
-package ru.nekostul.aicompanion.entity;
+package ru.nekostul.aicompanion.entity.inventory;
 
 import net.minecraft.core.NonNullList;
 import net.minecraft.nbt.CompoundTag;
@@ -8,6 +8,8 @@ import net.minecraft.world.ContainerHelper;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+
+import ru.nekostul.aicompanion.entity.CompanionEntity;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -340,3 +342,4 @@ public final class CompanionInventory {
         return stack;
     }
 }
+
