@@ -6,10 +6,7 @@ import net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
-<<<<<<< HEAD
 import net.minecraft.world.InteractionHand;
-=======
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.Mob;
@@ -50,13 +47,8 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
     public static final int USE_ROW_SLOT_END = 45;
     public static final int SHIELD_SLOT = 45;
 
-<<<<<<< HEAD
     public static final int NPC_PANEL_WIDTH = 101;
     public static final int NPC_PANEL_HEIGHT = 87;
-=======
-    public static final int NPC_PANEL_WIDTH = 104;
-    public static final int NPC_PANEL_HEIGHT = 166;
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
 
     private static final EquipmentSlot[] PLAYER_ARMOR_SLOTS = new EquipmentSlot[]{
             EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET
@@ -66,26 +58,13 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
     private static final int NPC_SLOT_Y = 8;
     private static final int NPC_SLOT_SPACING = 18;
     private static final int NPC_ARMOR_X = 8;
-<<<<<<< HEAD
     private static final int NPC_TOOL_X = 77;
-=======
-    private static final int NPC_TOOL_X = 78;
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
     private static final ResourceLocation[] PLAYER_ARMOR_EMPTY = new ResourceLocation[]{
             InventoryMenu.EMPTY_ARMOR_SLOT_BOOTS,
             InventoryMenu.EMPTY_ARMOR_SLOT_LEGGINGS,
             InventoryMenu.EMPTY_ARMOR_SLOT_CHESTPLATE,
             InventoryMenu.EMPTY_ARMOR_SLOT_HELMET
     };
-<<<<<<< HEAD
-=======
-    private static final ResourceLocation[] NPC_ARMOR_EMPTY = new ResourceLocation[]{
-            InventoryMenu.EMPTY_ARMOR_SLOT_HELMET,
-            InventoryMenu.EMPTY_ARMOR_SLOT_CHESTPLATE,
-            InventoryMenu.EMPTY_ARMOR_SLOT_LEGGINGS,
-            InventoryMenu.EMPTY_ARMOR_SLOT_BOOTS
-    };
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
 
     private final CraftingContainer craftSlots = new TransientCraftingContainer(this, 2, 2);
     private final ResultContainer resultSlots = new ResultContainer();
@@ -223,7 +202,6 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
         return npcToolSlots[index];
     }
 
-<<<<<<< HEAD
     public boolean isNpcSlot(Slot slot) {
         if (slot == null) {
             return false;
@@ -241,8 +219,6 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
         return false;
     }
 
-=======
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
     @Override
     public void fillCraftSlotsStackedContents(StackedContents contents) {
         this.craftSlots.fillStackedContents(contents);
@@ -391,10 +367,6 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
             EquipmentSlot slot = PLAYER_ARMOR_SLOTS[i];
             CompanionArmorSlot armorSlot = new CompanionArmorSlot(npcContainer, i,
                     armorX, NPC_SLOT_Y + i * NPC_SLOT_SPACING, slot, companion);
-<<<<<<< HEAD
-=======
-            armorSlot.setBackground(InventoryMenu.BLOCK_ATLAS, NPC_ARMOR_EMPTY[i]);
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
             npcArmorSlots[i] = this.addSlot(armorSlot);
         }
     }
@@ -403,17 +375,10 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
         int toolX = -NPC_PANEL_WIDTH + NPC_TOOL_X;
         npcToolSlots[0] = this.addSlot(new CompanionToolSlotSlot(npcContainer, NPC_ARMOR_COUNT + 0,
                 toolX, NPC_SLOT_Y, CompanionToolSlot.PICKAXE));
-<<<<<<< HEAD
         npcToolSlots[1] = this.addSlot(new CompanionToolSlotSlot(npcContainer, NPC_ARMOR_COUNT + 2,
                 toolX, NPC_SLOT_Y + NPC_SLOT_SPACING, CompanionToolSlot.SHOVEL));
         npcToolSlots[2] = this.addSlot(new CompanionToolSlotSlot(npcContainer, NPC_ARMOR_COUNT + 1,
                 toolX, NPC_SLOT_Y + NPC_SLOT_SPACING * 2, CompanionToolSlot.AXE));
-=======
-        npcToolSlots[1] = this.addSlot(new CompanionToolSlotSlot(npcContainer, NPC_ARMOR_COUNT + 1,
-                toolX, NPC_SLOT_Y + NPC_SLOT_SPACING, CompanionToolSlot.AXE));
-        npcToolSlots[2] = this.addSlot(new CompanionToolSlotSlot(npcContainer, NPC_ARMOR_COUNT + 2,
-                toolX, NPC_SLOT_Y + NPC_SLOT_SPACING * 2, CompanionToolSlot.SHOVEL));
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
         npcToolSlots[3] = this.addSlot(new CompanionToolSlotSlot(npcContainer, NPC_ARMOR_COUNT + 3,
                 toolX, NPC_SLOT_Y + NPC_SLOT_SPACING * 3, CompanionToolSlot.SWORD));
     }
@@ -466,13 +431,8 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
     private static int toolSlotIndex(CompanionToolSlot slot) {
         return switch (slot) {
             case PICKAXE -> 0;
-<<<<<<< HEAD
             case SHOVEL -> 1;
             case AXE -> 2;
-=======
-            case AXE -> 1;
-            case SHOVEL -> 2;
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
             case SWORD -> 3;
         };
     }
@@ -547,38 +507,25 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
             if (companion == null) {
                 return ItemStack.EMPTY;
             }
-<<<<<<< HEAD
             CompanionToolSlot toolSlot = getToolSlotByIndex(index);
             if (toolSlot != null) {
                 return getToolSlotItem(toolSlot);
             }
-=======
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
             return switch (index) {
                 case 0 -> companion.getItemBySlot(EquipmentSlot.HEAD);
                 case 1 -> companion.getItemBySlot(EquipmentSlot.CHEST);
                 case 2 -> companion.getItemBySlot(EquipmentSlot.LEGS);
                 case 3 -> companion.getItemBySlot(EquipmentSlot.FEET);
-<<<<<<< HEAD
-=======
-                case 4 -> companion.getToolSlot(CompanionToolSlot.PICKAXE);
-                case 5 -> companion.getToolSlot(CompanionToolSlot.AXE);
-                case 6 -> companion.getToolSlot(CompanionToolSlot.SHOVEL);
-                case 7 -> companion.getToolSlot(CompanionToolSlot.SWORD);
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
                 default -> ItemStack.EMPTY;
             };
         }
 
         @Override
         public ItemStack removeItem(int index, int count) {
-<<<<<<< HEAD
             CompanionToolSlot toolSlot = getToolSlotByIndex(index);
             if (toolSlot != null) {
                 return removeToolSlotItem(toolSlot, count);
             }
-=======
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
             ItemStack current = getItem(index);
             if (current.isEmpty()) {
                 return ItemStack.EMPTY;
@@ -590,13 +537,10 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
 
         @Override
         public ItemStack removeItemNoUpdate(int index) {
-<<<<<<< HEAD
             CompanionToolSlot toolSlot = getToolSlotByIndex(index);
             if (toolSlot != null) {
                 return removeToolSlotItemNoUpdate(toolSlot);
             }
-=======
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
             ItemStack current = getItem(index);
             setItem(index, ItemStack.EMPTY);
             return current;
@@ -608,26 +552,16 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
                 return;
             }
             ItemStack toStore = stack == null ? ItemStack.EMPTY : stack;
-<<<<<<< HEAD
             CompanionToolSlot toolSlot = getToolSlotByIndex(index);
             if (toolSlot != null) {
                 setToolSlotItem(toolSlot, toStore);
                 return;
             }
-=======
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
             switch (index) {
                 case 0 -> companion.setItemSlot(EquipmentSlot.HEAD, toStore);
                 case 1 -> companion.setItemSlot(EquipmentSlot.CHEST, toStore);
                 case 2 -> companion.setItemSlot(EquipmentSlot.LEGS, toStore);
                 case 3 -> companion.setItemSlot(EquipmentSlot.FEET, toStore);
-<<<<<<< HEAD
-=======
-                case 4 -> companion.setToolSlot(CompanionToolSlot.PICKAXE, toStore);
-                case 5 -> companion.setToolSlot(CompanionToolSlot.AXE, toStore);
-                case 6 -> companion.setToolSlot(CompanionToolSlot.SHOVEL, toStore);
-                case 7 -> companion.setToolSlot(CompanionToolSlot.SWORD, toStore);
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
                 default -> {
                 }
             }
@@ -648,7 +582,6 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
                 setItem(i, ItemStack.EMPTY);
             }
         }
-<<<<<<< HEAD
 
         private CompanionToolSlot getToolSlotByIndex(int index) {
             return switch (index) {
@@ -717,8 +650,6 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
                 companion.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
             }
         }
-=======
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
     }
 
     private class CompanionArmorSlot extends Slot {
@@ -754,14 +685,11 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
         }
 
         @Override
-<<<<<<< HEAD
         public Pair<ResourceLocation, ResourceLocation> getNoItemIcon() {
             return Pair.of(InventoryMenu.BLOCK_ATLAS, PLAYER_ARMOR_EMPTY[equipmentSlot.getIndex()]);
         }
 
         @Override
-=======
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
         public boolean isActive() {
             return CompanionEquipmentMenu.this.npcPanelVisible;
         }

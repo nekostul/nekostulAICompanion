@@ -9,10 +9,6 @@ import net.minecraft.client.gui.screens.recipebook.RecipeBookComponent;
 import net.minecraft.client.gui.screens.recipebook.RecipeUpdateListener;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
-<<<<<<< HEAD
-=======
-import net.minecraft.util.Mth;
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.inventory.Slot;
@@ -27,7 +23,6 @@ public final class CompanionEquipmentScreen extends EffectRenderingInventoryScre
         implements RecipeUpdateListener {
     private static final ResourceLocation INVENTORY_LOCATION =
             new ResourceLocation("textures/gui/container/inventory.png");
-<<<<<<< HEAD
     private static final ResourceLocation NPC_PANEL_LOCATION =
             new ResourceLocation(AiCompanionMod.MOD_ID, "textures/gui/inventorynpc.png");
     private static final ResourceLocation RECIPE_BUTTON_LOCATION =
@@ -41,19 +36,6 @@ public final class CompanionEquipmentScreen extends EffectRenderingInventoryScre
     private static final ResourceLocation AXE_ICON_LOCATION =
             new ResourceLocation(AiCompanionMod.MOD_ID, "textures/gui/axe.png");
     private static final ResourceLocation SWORD_ICON_LOCATION =
-=======
-    private static final ResourceLocation RECIPE_BUTTON_LOCATION =
-            new ResourceLocation("textures/gui/recipe_button.png");
-    private static final ResourceLocation NPC_BUTTON_LOCATION =
-            new ResourceLocation(AiCompanionMod.MOD_ID, "textures/gui/npc_button.png");
-    private static final ResourceLocation PICKAXE_ICON =
-            new ResourceLocation(AiCompanionMod.MOD_ID, "textures/gui/pickaxe.png");
-    private static final ResourceLocation AXE_ICON =
-            new ResourceLocation(AiCompanionMod.MOD_ID, "textures/gui/axe.png");
-    private static final ResourceLocation SHOVEL_ICON =
-            new ResourceLocation(AiCompanionMod.MOD_ID, "textures/gui/shovel.png");
-    private static final ResourceLocation SWORD_ICON =
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
             new ResourceLocation(AiCompanionMod.MOD_ID, "textures/gui/sword.png");
 
     private float xMouse;
@@ -80,18 +62,12 @@ public final class CompanionEquipmentScreen extends EffectRenderingInventoryScre
                     this.minecraft.options.operatorItemsTab().get()));
         } else {
             this.recipeBookComponent.tick();
-<<<<<<< HEAD
             if (this.recipeBookComponent.isVisible() && this.npcPanelOpen) {
                 this.npcPanelOpen = false;
             }
             float target = this.npcPanelOpen ? 1.0F : 0.0F;
             if (this.npcPanelProgress != target) {
                 this.npcPanelProgress = target;
-=======
-            float target = this.npcPanelOpen ? 1.0F : 0.0F;
-            if (Math.abs(this.npcPanelProgress - target) > 0.001F) {
-                this.npcPanelProgress = Mth.approach(this.npcPanelProgress, target, 0.2F);
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
                 updateLayout();
             }
         }
@@ -115,17 +91,13 @@ public final class CompanionEquipmentScreen extends EffectRenderingInventoryScre
                     this.leftPos + 104, this.height / 2 - 22, 20, 18, 0, 0, 19, RECIPE_BUTTON_LOCATION,
                     (button) -> {
                         this.recipeBookComponent.toggleVisibility();
-<<<<<<< HEAD
                         if (this.recipeBookComponent.isVisible()) {
                             this.npcPanelOpen = false;
                         }
-=======
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
                         this.buttonClicked = true;
                         updateLayout();
                     }));
             this.npcButton = this.addRenderableWidget(new ImageButton(
-<<<<<<< HEAD
                     this.leftPos + 126, this.height / 2 - 22, 20, 18, 0, 0, 19, NPC_BUTTON_LOCATION, 20, 37,
                     (button) -> {
                         if (this.recipeBookComponent.isVisible()) {
@@ -134,12 +106,6 @@ public final class CompanionEquipmentScreen extends EffectRenderingInventoryScre
                         this.npcPanelOpen = !this.npcPanelOpen;
                         this.buttonClicked = true;
                         updateLayout();
-=======
-                    this.leftPos + 126, this.height / 2 - 22, 20, 18, 0, 0, 19, NPC_BUTTON_LOCATION,
-                    (button) -> {
-                        this.npcPanelOpen = !this.npcPanelOpen;
-                        this.buttonClicked = true;
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
                     }));
 
             this.addWidget(this.recipeBookComponent);
@@ -174,22 +140,12 @@ public final class CompanionEquipmentScreen extends EffectRenderingInventoryScre
     protected void renderBg(GuiGraphics guiGraphics, float partialTick, int mouseX, int mouseY) {
         int panelX = this.leftPos + this.npcPanelOffsetX;
         int panelY = this.topPos;
-<<<<<<< HEAD
         guiGraphics.blit(INVENTORY_LOCATION, this.leftPos, this.topPos, 0, 0, this.imageWidth, this.imageHeight);
         renderPlayerModel(guiGraphics);
         if (this.npcPanelProgress > 0.01F) {
             guiGraphics.blit(NPC_PANEL_LOCATION, panelX, panelY, 0, 0,
                     CompanionEquipmentMenu.NPC_PANEL_WIDTH, CompanionEquipmentMenu.NPC_PANEL_HEIGHT,
                     CompanionEquipmentMenu.NPC_PANEL_WIDTH, CompanionEquipmentMenu.NPC_PANEL_HEIGHT);
-=======
-        if (this.npcPanelProgress > 0.01F) {
-            guiGraphics.blit(INVENTORY_LOCATION, panelX, panelY, 0, 0,
-                    CompanionEquipmentMenu.NPC_PANEL_WIDTH, CompanionEquipmentMenu.NPC_PANEL_HEIGHT);
-        }
-        guiGraphics.blit(INVENTORY_LOCATION, this.leftPos, this.topPos, 0, 0, this.imageWidth, this.imageHeight);
-        renderPlayerModel(guiGraphics);
-        if (this.npcPanelProgress > 0.01F) {
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
             renderNpcModel(guiGraphics, panelX, panelY);
             renderNpcToolIcons(guiGraphics);
         }
@@ -207,7 +163,6 @@ public final class CompanionEquipmentScreen extends EffectRenderingInventoryScre
         if (companion == null) {
             return;
         }
-<<<<<<< HEAD
         int modelX = panelX + 50;
         int modelY = panelY + 74;
         InventoryScreen.renderEntityInInventoryFollowsMouse(guiGraphics, modelX, modelY, 30,
@@ -219,17 +174,6 @@ public final class CompanionEquipmentScreen extends EffectRenderingInventoryScre
         renderToolIcon(guiGraphics, 1, SHOVEL_ICON_LOCATION);
         renderToolIcon(guiGraphics, 2, AXE_ICON_LOCATION);
         renderToolIcon(guiGraphics, 3, SWORD_ICON_LOCATION);
-=======
-        InventoryScreen.renderEntityInInventoryFollowsMouse(guiGraphics, panelX + 52, panelY + 75, 30,
-                (float) (panelX + 52) - this.xMouse, (float) (panelY + 75 - 50) - this.yMouse, companion);
-    }
-
-    private void renderNpcToolIcons(GuiGraphics guiGraphics) {
-        renderToolIcon(guiGraphics, 0, PICKAXE_ICON);
-        renderToolIcon(guiGraphics, 1, AXE_ICON);
-        renderToolIcon(guiGraphics, 2, SHOVEL_ICON);
-        renderToolIcon(guiGraphics, 3, SWORD_ICON);
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
     }
 
     private void renderToolIcon(GuiGraphics guiGraphics, int index, ResourceLocation icon) {
@@ -237,13 +181,8 @@ public final class CompanionEquipmentScreen extends EffectRenderingInventoryScre
         if (slot == null || slot.hasItem()) {
             return;
         }
-<<<<<<< HEAD
         int x = this.leftPos + slot.x;
         int y = this.topPos + slot.y;
-=======
-        int x = this.leftPos + slot.x + 1;
-        int y = this.topPos + slot.y + 1;
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
         guiGraphics.blit(icon, x, y, 0, 0, 16, 16, 16, 16);
     }
 
@@ -307,14 +246,10 @@ public final class CompanionEquipmentScreen extends EffectRenderingInventoryScre
 
     private void updateLayout() {
         int baseLeft = this.recipeBookComponent.updateScreenPosition(this.width, this.imageWidth);
-<<<<<<< HEAD
         this.leftPos = baseLeft;
         int hiddenOffset = -CompanionEquipmentMenu.NPC_PANEL_WIDTH;
         int slideOffset = -Math.round(CompanionEquipmentMenu.NPC_PANEL_WIDTH * (1.0F - this.npcPanelProgress));
         this.npcPanelOffsetX = hiddenOffset + slideOffset;
-=======
-        this.leftPos = baseLeft + Math.round(CompanionEquipmentMenu.NPC_PANEL_WIDTH * this.npcPanelProgress);
->>>>>>> c2d33cbe0c980ab5a9c3c4b21831b9294ece5fe9
         this.menu.setNpcPanelVisible(this.npcPanelProgress > 0.01F);
         updateButtonPositions();
     }
