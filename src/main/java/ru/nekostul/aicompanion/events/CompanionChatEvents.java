@@ -106,10 +106,7 @@ public final class CompanionChatEvents {
 
     private static CompanionEntity.CompanionMode parseMode(String message) {
         String normalized = message.toUpperCase(Locale.ROOT);
-        if (normalized.contains("УМНОЕ СЛЕДОВАНИЕ") || normalized.contains("SMART FOLLOW")) {
-            return CompanionEntity.CompanionMode.AUTONOMOUS;
-        }
-        if (normalized.contains("СЛЕДОВАНИЕ") || normalized.contains("FOLLOWING")) {
+        if (normalized.contains("СЛЕДУЙ") || normalized.contains("FOLLOWING")) {
             return CompanionEntity.CompanionMode.AUTONOMOUS;
         }
         if (normalized.contains("СТОП") || normalized.contains("STOP")) {

@@ -24,6 +24,7 @@ public final class CompanionToolHandler {
     private final CompanionInventory inventory;
     private final CompanionEquipment equipment;
     private final CompanionToolNotifier notifier;
+    private boolean toolRequestedThisTick;
 
     public CompanionToolHandler(CompanionEntity owner, CompanionInventory inventory, CompanionEquipment equipment) {
         this.owner = owner;
@@ -37,6 +38,7 @@ public final class CompanionToolHandler {
         if (required == null) {
             return true;
         }
+        toolRequestedThisTick = true;
         TagKey<Item> tag = toolTag(required);
         if (tag == null) {
             return true;
@@ -115,11 +117,23 @@ public final class CompanionToolHandler {
         return false;
     }
 
+    public void resetToolRequest() {
+        toolRequestedThisTick = false;
+    }
+
+    public boolean wasToolRequested() {
+        return toolRequestedThisTick;
+    }
+
     private boolean hasTool(TagKey<Item> tag) {
         if (owner.getMainHandItem().is(tag)) {
             return true;
         }
         if (owner.getOffhandItem().is(tag)) {
+            return true;
+        }
+        CompanionToolSlot slot = CompanionToolSlot.fromTag(tag);
+        if (slot != null && !owner.getToolSlot(slot).isEmpty()) {
             return true;
         }
         return inventory.hasItemTag(tag);

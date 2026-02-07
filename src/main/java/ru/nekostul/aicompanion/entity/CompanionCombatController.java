@@ -3,6 +3,7 @@ package ru.nekostul.aicompanion.entity;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -14,6 +15,7 @@ final class CompanionCombatController {
     private static final double ATTACK_RANGE_SQR = 4.0D;
     private static final int ATTACK_COOLDOWN_TICKS = 20;
     private static final float LOW_HEALTH_THRESHOLD = 4.0F;
+    private static final double IMMEDIATE_THREAT_DISTANCE_SQR = 4.0D;
 
     private final CompanionEntity owner;
     private final CompanionEquipment equipment;
@@ -81,11 +83,39 @@ final class CompanionCombatController {
             if (distance > DEFENSE_RADIUS_SQR) {
                 continue;
             }
+            if (!isThreatRelevant(player, monster, distance)) {
+                continue;
+            }
             if (distance < nearestDistance) {
                 nearestDistance = distance;
                 nearest = monster;
             }
         }
         return nearest;
+    }
+
+    private boolean isThreatRelevant(Player player, Monster monster, double distanceSqr) {
+        if (isImmediateThreat(player, monster, distanceSqr)) {
+            return true;
+        }
+        if (monster.hasLineOfSight(player)) {
+            return true;
+        }
+        return canReachPlayer(monster, player);
+    }
+
+    private boolean isImmediateThreat(Player player, Monster monster, double distanceSqr) {
+        if (distanceSqr > IMMEDIATE_THREAT_DISTANCE_SQR) {
+            return false;
+        }
+        return player.getLastHurtByMob() == monster;
+    }
+
+    private boolean canReachPlayer(Monster monster, Player player) {
+        if (monster.getNavigation() == null) {
+            return false;
+        }
+        Path path = monster.getNavigation().createPath(player, 0);
+        return path != null && path.canReach();
     }
 }

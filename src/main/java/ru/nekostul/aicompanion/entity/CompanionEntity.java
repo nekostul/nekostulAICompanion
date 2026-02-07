@@ -5,6 +5,9 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.syncher.EntityDataAccessor;
+import net.minecraft.network.syncher.EntityDataSerializers;
+import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.BlockTags;
@@ -43,6 +46,7 @@ import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
 import ru.nekostul.aicompanion.entity.inventory.CompanionInventoryExchange;
 import ru.nekostul.aicompanion.entity.mining.CompanionGatheringController;
 import ru.nekostul.aicompanion.entity.tool.CompanionToolHandler;
+import ru.nekostul.aicompanion.entity.tool.CompanionToolSlot;
 import ru.nekostul.aicompanion.entity.tree.CompanionTreeHarvestController;
 
 import java.util.EnumMap;
@@ -88,6 +92,11 @@ public class CompanionEntity extends PathfinderMob {
     private static final String TELEPORT_PENDING_UNTIL_NBT = "CompanionTeleportPendingUntil";
     private static final String TELEPORT_REMINDER_PLAYER_NBT = "CompanionTeleportReminderPlayer";
     private static final String TELEPORT_REMINDER_TICK_NBT = "CompanionTeleportReminderTick";
+    private static final String TOOL_SLOTS_NBT = "CompanionToolSlots";
+    private static final String TOOL_SLOT_PICKAXE_NBT = "Pickaxe";
+    private static final String TOOL_SLOT_AXE_NBT = "Axe";
+    private static final String TOOL_SLOT_SHOVEL_NBT = "Shovel";
+    private static final String TOOL_SLOT_SWORD_NBT = "Sword";
     private static final String GREET_KEY = "entity.aicompanion.companion.spawn.greeting";
     private static final String GREET_ABOUT_KEY = "entity.aicompanion.companion.spawn.about";
     private static final String GREET_COMMANDS_KEY = "entity.aicompanion.companion.spawn.commands";
@@ -127,6 +136,15 @@ public class CompanionEntity extends PathfinderMob {
     private static final int CHAT_GROUP_COOLDOWN_TICKS = 6000;
     private static final int LOG_FROM_LEAVES_RADIUS = 2;
     private static final int LOG_FROM_LEAVES_MAX_DEPTH = 6;
+
+    private static final EntityDataAccessor<ItemStack> TOOL_PICKAXE =
+            SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
+    private static final EntityDataAccessor<ItemStack> TOOL_AXE =
+            SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
+    private static final EntityDataAccessor<ItemStack> TOOL_SHOVEL =
+            SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
+    private static final EntityDataAccessor<ItemStack> TOOL_SWORD =
+            SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
 
     private static final Map<UUID, CompanionEntity> PENDING_TELEPORTS = new ConcurrentHashMap<>();
 
@@ -238,6 +256,15 @@ public class CompanionEntity extends PathfinderMob {
     }
 
     @Override
+    protected void defineSynchedData() {
+        super.defineSynchedData();
+        this.entityData.define(TOOL_PICKAXE, ItemStack.EMPTY);
+        this.entityData.define(TOOL_AXE, ItemStack.EMPTY);
+        this.entityData.define(TOOL_SHOVEL, ItemStack.EMPTY);
+        this.entityData.define(TOOL_SWORD, ItemStack.EMPTY);
+    }
+
+    @Override
     public void onAddedToWorld() {
         super.onAddedToWorld();
         CompanionSingleNpcManager.register(this);
@@ -294,6 +321,38 @@ public class CompanionEntity extends PathfinderMob {
         this.taskCoordinator.onInventoryUpdated();
     }
 
+    public ItemStack getToolSlot(CompanionToolSlot slot) {
+        if (slot == null) {
+            return ItemStack.EMPTY;
+        }
+        return this.entityData.get(toolAccessor(slot));
+    }
+
+    public void setToolSlot(CompanionToolSlot slot, ItemStack stack) {
+        if (slot == null) {
+            return;
+        }
+        ItemStack toStore = stack == null ? ItemStack.EMPTY : stack.copy();
+        this.entityData.set(toolAccessor(slot), toStore);
+    }
+
+    public ItemStack takeToolSlot(CompanionToolSlot slot) {
+        ItemStack stored = getToolSlot(slot);
+        if (!stored.isEmpty()) {
+            setToolSlot(slot, ItemStack.EMPTY);
+        }
+        return stored;
+    }
+
+    private EntityDataAccessor<ItemStack> toolAccessor(CompanionToolSlot slot) {
+        return switch (slot) {
+            case PICKAXE -> TOOL_PICKAXE;
+            case AXE -> TOOL_AXE;
+            case SHOVEL -> TOOL_SHOVEL;
+            case SWORD -> TOOL_SWORD;
+        };
+    }
+
     @Override
     public void addAdditionalSaveData(CompoundTag tag) {
         super.addAdditionalSaveData(tag);
@@ -309,6 +368,14 @@ public class CompanionEntity extends PathfinderMob {
         this.chestManager.saveToTag(chestTag);
         if (!chestTag.isEmpty()) {
             tag.put(CHEST_NBT, chestTag);
+        }
+        CompoundTag toolSlotsTag = new CompoundTag();
+        saveToolSlot(toolSlotsTag, TOOL_SLOT_PICKAXE_NBT, getToolSlot(CompanionToolSlot.PICKAXE));
+        saveToolSlot(toolSlotsTag, TOOL_SLOT_AXE_NBT, getToolSlot(CompanionToolSlot.AXE));
+        saveToolSlot(toolSlotsTag, TOOL_SLOT_SHOVEL_NBT, getToolSlot(CompanionToolSlot.SHOVEL));
+        saveToolSlot(toolSlotsTag, TOOL_SLOT_SWORD_NBT, getToolSlot(CompanionToolSlot.SWORD));
+        if (!toolSlotsTag.isEmpty()) {
+            tag.put(TOOL_SLOTS_NBT, toolSlotsTag);
         }
         CompoundTag chatCooldownsTag = new CompoundTag();
         for (ChatGroup group : ChatGroup.values()) {
@@ -353,6 +420,13 @@ public class CompanionEntity extends PathfinderMob {
             CompoundTag chestTag = tag.getCompound(CHEST_NBT);
             this.chestManager.loadFromTag(chestTag);
         }
+        if (tag.contains(TOOL_SLOTS_NBT)) {
+            CompoundTag toolSlotsTag = tag.getCompound(TOOL_SLOTS_NBT);
+            setToolSlot(CompanionToolSlot.PICKAXE, loadToolSlot(toolSlotsTag, TOOL_SLOT_PICKAXE_NBT));
+            setToolSlot(CompanionToolSlot.AXE, loadToolSlot(toolSlotsTag, TOOL_SLOT_AXE_NBT));
+            setToolSlot(CompanionToolSlot.SHOVEL, loadToolSlot(toolSlotsTag, TOOL_SLOT_SHOVEL_NBT));
+            setToolSlot(CompanionToolSlot.SWORD, loadToolSlot(toolSlotsTag, TOOL_SLOT_SWORD_NBT));
+        }
         if (tag.contains(CHAT_COOLDOWNS_NBT)) {
             CompoundTag chatCooldownsTag = tag.getCompound(CHAT_COOLDOWNS_NBT);
             for (ChatGroup group : ChatGroup.values()) {
@@ -378,6 +452,9 @@ public class CompanionEntity extends PathfinderMob {
         if (tag.hasUUID(TELEPORT_REMINDER_PLAYER_NBT)) {
             this.pendingTeleportReminderPlayerId = tag.getUUID(TELEPORT_REMINDER_PLAYER_NBT);
             this.pendingTeleportReminderTick = tag.getLong(TELEPORT_REMINDER_TICK_NBT);
+        }
+        if (!this.level().isClientSide) {
+            restoreToolSlotsFromHand();
         }
     }
 
@@ -553,6 +630,7 @@ public class CompanionEntity extends PathfinderMob {
     private void tickAutonomousBehavior() {
         long gameTime = this.level().getGameTime();
         Player nearest = this.level().getNearestPlayer(this, FOLLOW_SEARCH_DISTANCE);
+        this.toolHandler.resetToolRequest();
         if (combatController.tick(nearest, gameTime)) {
             return;
         }
@@ -560,6 +638,9 @@ public class CompanionEntity extends PathfinderMob {
             return;
         }
         this.taskCoordinator.tick(this.mode, gameTime);
+        if (!this.toolHandler.wasToolRequested()) {
+            this.equipment.equipIdleHand();
+        }
     }
 
     private void tickAmbientChat() {
@@ -959,6 +1040,30 @@ public class CompanionEntity extends PathfinderMob {
             key = keys[this.random.nextInt(keys.length)];
         } while (key.equals(lastKey));
         return key;
+    }
+
+    private static void saveToolSlot(CompoundTag tag, String key, ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return;
+        }
+        tag.put(key, stack.save(new CompoundTag()));
+    }
+
+    private static ItemStack loadToolSlot(CompoundTag tag, String key) {
+        if (tag == null || !tag.contains(key)) {
+            return ItemStack.EMPTY;
+        }
+        return ItemStack.of(tag.getCompound(key));
+    }
+
+    private void restoreToolSlotsFromHand() {
+        ItemStack mainHand = getMainHandItem();
+        CompanionToolSlot slot = CompanionToolSlot.fromStack(mainHand);
+        if (slot == null || !getToolSlot(slot).isEmpty()) {
+            return;
+        }
+        setToolSlot(slot, mainHand);
+        setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, ItemStack.EMPTY);
     }
 }
 

@@ -34,70 +34,77 @@ public final class CompanionBlockRegistry {
                     true,
                     state -> state.getFluidState().isSource() && state.getFluidState().is(Fluids.WATER),
                     stack -> stack.is(Items.WATER_BUCKET),
-                    new String[]{"РІРѕРґ", "water"}
+                    new String[]{"вод", "water"}
             ),
             new ResourceEntry(
                     CompanionResourceType.LAVA,
                     true,
                     state -> state.getFluidState().isSource() && state.getFluidState().is(Fluids.LAVA),
                     stack -> stack.is(Items.LAVA_BUCKET),
-                    new String[]{"Р»Р°РІ", "lava"}
+                    new String[]{"лав", "lava"}
+            ),
+            new ResourceEntry(
+                    CompanionResourceType.LOG,
+                    false,
+                    state -> state.is(BlockTags.LOGS),
+                    stack -> stack.is(ItemTags.LOGS),
+                    new String[]{"дерев", "брев", "log", "wood"}
             ),
             new ResourceEntry(
                     CompanionResourceType.COAL_ORE,
                     false,
                     state -> state.is(Blocks.COAL_ORE) || state.is(Blocks.DEEPSLATE_COAL_ORE),
                     stack -> stack.is(Items.COAL),
-                    new String[]{"СѓРіРѕР»СЊ", "coal"}
+                    new String[]{"уголь", "угл", "coal"}
             ),
             new ResourceEntry(
                     CompanionResourceType.IRON_ORE,
                     false,
                     state -> state.is(Blocks.IRON_ORE) || state.is(Blocks.DEEPSLATE_IRON_ORE),
                     stack -> stack.is(Items.RAW_IRON),
-                    new String[]{"Р¶РµР»РµР·", "iron"}
+                    new String[]{"желез", "iron"}
             ),
             new ResourceEntry(
                     CompanionResourceType.COPPER_ORE,
                     false,
                     state -> state.is(Blocks.COPPER_ORE) || state.is(Blocks.DEEPSLATE_COPPER_ORE),
                     stack -> stack.is(Items.RAW_COPPER),
-                    new String[]{"РјРµРґСЊ", "РјРµРґРЅ", "copper"}
+                    new String[]{"медь", "медн", "copper"}
             ),
             new ResourceEntry(
                     CompanionResourceType.GOLD_ORE,
                     false,
                     state -> state.is(Blocks.GOLD_ORE) || state.is(Blocks.DEEPSLATE_GOLD_ORE),
                     stack -> stack.is(Items.RAW_GOLD),
-                    new String[]{"Р·РѕР»РѕС‚", "gold"}
+                    new String[]{"золот", "gold"}
             ),
             new ResourceEntry(
                     CompanionResourceType.REDSTONE_ORE,
                     false,
                     state -> state.is(Blocks.REDSTONE_ORE) || state.is(Blocks.DEEPSLATE_REDSTONE_ORE),
                     stack -> stack.is(Items.REDSTONE),
-                    new String[]{"СЂРµРґСЃС‚РѕСѓРЅ", "redstone"}
+                    new String[]{"редстоун", "redstone"}
             ),
             new ResourceEntry(
                     CompanionResourceType.LAPIS_ORE,
                     false,
                     state -> state.is(Blocks.LAPIS_ORE) || state.is(Blocks.DEEPSLATE_LAPIS_ORE),
                     stack -> stack.is(Items.LAPIS_LAZULI),
-                    new String[]{"Р»Р°Р·СѓСЂРёС‚", "lapis"}
+                    new String[]{"лазурит", "lapis"}
             ),
             new ResourceEntry(
                     CompanionResourceType.DIAMOND_ORE,
                     false,
                     state -> state.is(Blocks.DIAMOND_ORE) || state.is(Blocks.DEEPSLATE_DIAMOND_ORE),
                     stack -> stack.is(Items.DIAMOND),
-                    new String[]{"Р°Р»РјР°Р·", "diamond"}
+                    new String[]{"алмаз", "diamond"}
             ),
             new ResourceEntry(
                     CompanionResourceType.EMERALD_ORE,
                     false,
                     state -> state.is(Blocks.EMERALD_ORE) || state.is(Blocks.DEEPSLATE_EMERALD_ORE),
                     stack -> stack.is(Items.EMERALD),
-                    new String[]{"РёР·СѓРјСЂСѓРґ", "emerald"}
+                    new String[]{"изумруд", "emerald"}
             ),
             new ResourceEntry(
                     CompanionResourceType.ORE,
@@ -109,7 +116,7 @@ public final class CompanionBlockRegistry {
                             || stack.is(Items.RAW_COPPER) || stack.is(Items.RAW_GOLD)
                             || stack.is(Items.REDSTONE) || stack.is(Items.LAPIS_LAZULI)
                             || stack.is(Items.DIAMOND) || stack.is(Items.EMERALD),
-                    new String[]{"СЂСѓРґР°", "ore"}
+                    new String[]{"руда", "ore"}
             ),
             new ResourceEntry(
                     CompanionResourceType.TORCH,
@@ -129,63 +136,63 @@ public final class CompanionBlockRegistry {
                             || stack.is(Items.COARSE_DIRT) || stack.is(Items.ROOTED_DIRT)
                             || stack.is(Items.PODZOL) || stack.is(Items.MYCELIUM)
                             || stack.is(Items.MUD),
-                    new String[]{"Р·РµРјР»", "РіСЂСЏР·", "РїРѕС‡РІ", "РіСЂСѓРЅС‚", "dirt"}
+                    new String[]{"земл", "гряз", "почв", "грунт", "dirt"}
             ),
             new ResourceEntry(
                     CompanionResourceType.CLAY,
                     false,
                     state -> state.is(Blocks.CLAY),
                     stack -> stack.is(Items.CLAY_BALL) || stack.is(Items.CLAY),
-                    new String[]{"РіР»РёРЅ", "clay"}
+                    new String[]{"глин", "clay"}
             ),
             new ResourceEntry(
                     CompanionResourceType.SAND,
                     false,
                     state -> state.is(Blocks.SAND) || state.is(Blocks.RED_SAND),
                     stack -> stack.is(Items.SAND) || stack.is(Items.RED_SAND),
-                    new String[]{"РїРµСЃРѕРє", "РїРµСЃРѕС‡", "sand"}
+                    new String[]{"песок", "песоч", "sand"}
             ),
             new ResourceEntry(
                     CompanionResourceType.GRAVEL,
                     false,
                     state -> state.is(Blocks.GRAVEL),
                     stack -> stack.is(Items.GRAVEL),
-                    new String[]{"РіСЂР°РІ", "С‰РµР±", "gravel"}
+                    new String[]{"грав", "щеб", "gravel"}
             ),
             new ResourceEntry(
                     CompanionResourceType.STONE,
                     false,
                     state -> state.is(Blocks.STONE),
                     stack -> stack.is(Items.COBBLESTONE) || stack.is(Items.STONE),
-                    new String[]{"РєР°РјРЅ", "РєР°РјРµРЅ", "Р±СѓР»С‹Р¶", "stone", "cobble"}
+                    new String[]{"камн", "камен", "булыж", "stone", "cobble"}
             ),
             new ResourceEntry(
                     CompanionResourceType.ANDESITE,
                     false,
                     state -> state.is(Blocks.ANDESITE) || state.is(Blocks.POLISHED_ANDESITE),
                     stack -> stack.is(Items.ANDESITE) || stack.is(Items.POLISHED_ANDESITE),
-                    new String[]{"Р°РЅРґРµР·", "andesite"}
+                    new String[]{"андез", "andesite"}
             ),
             new ResourceEntry(
                     CompanionResourceType.DIORITE,
                     false,
                     state -> state.is(Blocks.DIORITE) || state.is(Blocks.POLISHED_DIORITE),
                     stack -> stack.is(Items.DIORITE) || stack.is(Items.POLISHED_DIORITE),
-                    new String[]{"РґРёРѕСЂ", "diorite"}
+                    new String[]{"диор", "diorite"}
             ),
             new ResourceEntry(
                     CompanionResourceType.GRANITE,
                     false,
                     state -> state.is(Blocks.GRANITE) || state.is(Blocks.POLISHED_GRANITE),
                     stack -> stack.is(Items.GRANITE) || stack.is(Items.POLISHED_GRANITE),
-                    new String[]{"РіСЂР°РЅРёС‚", "granite"}
+                    new String[]{"гранит", "granite"}
             ),
             new ResourceEntry(
                     CompanionResourceType.BASALT,
                     false,
                     state -> state.is(Blocks.BASALT) || state.is(Blocks.POLISHED_BASALT) || state.is(Blocks.SMOOTH_BASALT),
                     stack -> stack.is(Items.BASALT) || stack.is(Items.POLISHED_BASALT) || stack.is(Items.SMOOTH_BASALT),
-                    new String[]{"Р±Р°Р·Р°Р»СЊС‚", "basalt"}
+                    new String[]{"базальт", "basalt"}
             )
     );
 

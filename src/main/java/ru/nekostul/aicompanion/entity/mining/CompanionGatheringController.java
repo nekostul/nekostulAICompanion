@@ -39,10 +39,19 @@ public final class CompanionGatheringController {
         TOOL_REQUIRED
     }
 
+    private enum ScanPhase {
+        VISIBLE,
+        OCCLUDED,
+        STONE_DIG
+    }
+
     private static final int CHUNK_RADIUS = 6;
     private static final int RESOURCE_SCAN_RADIUS = CHUNK_RADIUS * 16;
     private static final int RESOURCE_SCAN_COOLDOWN_TICKS = 80;
     private static final float RESOURCE_FOV_DOT = -1.0F;
+    private static final float VISIBLE_FOV_DOT = RESOURCE_FOV_DOT;
+    private static final int MAX_SCAN_BLOCKS_PER_TICK = 256;
+    private static final int MAX_STONE_SCAN_COLUMNS_PER_TICK = 64;
     private static final int LOCAL_RADIUS = 3;
     private static final int LOCAL_HEIGHT = 4;
     private static final int LOCAL_LOG_HEIGHT = 8;
@@ -74,6 +83,9 @@ public final class CompanionGatheringController {
     private int miningProgressStage = -1;
     private BlockPos resourceAnchor;
     private BlockPos lastMinedBlock;
+    private ScanPhase scanPhase;
+    private ScanState scanState;
+    private StoneDigScanState stoneDigScanState;
 
     public CompanionGatheringController(CompanionEntity owner,
                                CompanionInventory inventory,
@@ -233,26 +245,47 @@ public final class CompanionGatheringController {
         if (gameTime < nextScanTick && cachedTarget != null && isCachedTargetValid(type, cachedTarget)) {
             return new TargetSelection(cachedTarget, cachedTarget, cachedTarget, null);
         }
-        if (gameTime < nextScanTick) {
+        if (gameTime < nextScanTick && scanPhase == null) {
             return null;
         }
-        lastScanTick = gameTime;
-        lastScanFound = false;
         BlockPos origin = owner.blockPosition();
-        TargetSelection best = scanArea(type, origin, RESOURCE_SCAN_RADIUS, RESOURCE_SCAN_RADIUS, origin,
-                RESOURCE_SCAN_RADIUS, false);
-        if (best == null && type == CompanionResourceType.STONE) {
-            TargetSelection digTarget = findStoneDigTarget(gameTime);
-            if (digTarget != null) {
-                best = digTarget;
+        if (!isScanCompatible(type, origin)) {
+            startVisibleScan(type, origin);
+        }
+        if (scanPhase == ScanPhase.STONE_DIG) {
+            TargetSelection selection = stoneDigScanState != null
+                    ? stoneDigScanState.step(this, MAX_STONE_SCAN_COLUMNS_PER_TICK)
+                    : null;
+            if (selection != null) {
+                finishScan(selection, gameTime, true);
+                return selection;
             }
+            if (stoneDigScanState != null && !stoneDigScanState.isFinished()) {
+                return null;
+            }
+            finishScan(null, gameTime, false);
+            return null;
         }
-        if (best != null) {
-            lastScanFound = true;
+        TargetSelection selection = scanState != null
+                ? scanState.step(this, MAX_SCAN_BLOCKS_PER_TICK)
+                : null;
+        if (selection != null) {
+            finishScan(selection, gameTime, true);
+            return selection;
         }
-        nextScanTick = gameTime + RESOURCE_SCAN_COOLDOWN_TICKS;
-        cachedTarget = best != null ? best.target : null;
-        return best;
+        if (scanState != null && !scanState.isFinished()) {
+            return null;
+        }
+        if (scanPhase == ScanPhase.VISIBLE) {
+            startOccludedScan(type, origin);
+            return null;
+        }
+        if (scanPhase == ScanPhase.OCCLUDED && type == CompanionResourceType.STONE) {
+            startStoneDigScan(origin);
+            return null;
+        }
+        finishScan(null, gameTime, false);
+        return null;
     }
 
     private TargetSelection findLocalTarget(CompanionResourceType type) {
@@ -265,7 +298,32 @@ public final class CompanionGatheringController {
         if (type == CompanionResourceType.LOG) {
             height = LOCAL_LOG_HEIGHT;
         }
+        if (type == CompanionResourceType.STONE) {
+            return scanAreaVisible(type, anchor, radius, height, anchor, Math.max(radius, height) + 1, true);
+        }
+        if (isOreType(type)) {
+            TargetSelection visible = scanAreaVisible(type, anchor, radius, height, anchor, Math.max(radius, height) + 1, true);
+            if (visible != null) {
+                return visible;
+            }
+            return scanArea(type, anchor, radius, height, anchor, Math.max(radius, height) + 1, true);
+        }
         return scanArea(type, anchor, radius, height, anchor, Math.max(radius, height) + 1, true);
+    }
+
+    private boolean isOreType(CompanionResourceType type) {
+        return switch (type) {
+            case ORE,
+                 COAL_ORE,
+                 IRON_ORE,
+                 COPPER_ORE,
+                 GOLD_ORE,
+                 REDSTONE_ORE,
+                 LAPIS_ORE,
+                 DIAMOND_ORE,
+                 EMERALD_ORE -> true;
+            default -> false;
+        };
     }
 
     private TargetSelection scanArea(CompanionResourceType type,
@@ -302,6 +360,54 @@ public final class CompanionGatheringController {
                     }
                     TargetSelection raySelection = resolveObstruction(selection.resourcePos, selection.sightPos);
                     if (raySelection == null) {
+                        continue;
+                    }
+                    BlockPos scorePos = scoreByTarget ? raySelection.target : raySelection.resourcePos;
+                    double score = distanceOrigin.distSqr(scorePos);
+                    if (score < bestDistance) {
+                        bestDistance = score;
+                        best = raySelection;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    private TargetSelection scanAreaVisible(CompanionResourceType type,
+                                            BlockPos origin,
+                                            int radius,
+                                            int height,
+                                            BlockPos distanceOrigin,
+                                            double maxDistance,
+                                            boolean scoreByTarget) {
+        Vec3 eye = owner.getEyePosition();
+        Vec3 look = owner.getLookAngle().normalize();
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        TargetSelection best = null;
+        double bestDistance = Double.MAX_VALUE;
+        double maxDistanceSqr = maxDistance * maxDistance;
+
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -height; dy <= height; dy++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    pos.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
+                    BlockState state = owner.level().getBlockState(pos);
+                    TargetSelection selection = resolveTargetSelection(type, pos.immutable(), state);
+                    if (selection == null) {
+                        continue;
+                    }
+                    Vec3 sightCenter = Vec3.atCenterOf(selection.sightPos);
+                    Vec3 toTarget = sightCenter.subtract(eye);
+                    double distanceSqr = toTarget.lengthSqr();
+                    if (distanceSqr > maxDistanceSqr) {
+                        continue;
+                    }
+                    if (look.dot(toTarget.normalize()) < VISIBLE_FOV_DOT) {
+                        continue;
+                    }
+                    TargetSelection raySelection = resolveObstruction(selection.resourcePos, selection.sightPos);
+                    if (raySelection == null || raySelection.pendingResource != null) {
                         continue;
                     }
                     BlockPos scorePos = scoreByTarget ? raySelection.target : raySelection.resourcePos;
@@ -360,36 +466,44 @@ public final class CompanionGatheringController {
         return new TargetSelection(hitPos, resourcePos, sightPos, null, resourcePos);
     }
 
-    private TargetSelection findStoneDigTarget(long gameTime) {
-        BlockPos origin = owner.blockPosition();
-        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        TargetSelection best = null;
-        double bestDistance = Double.MAX_VALUE;
-        for (int dx = -RESOURCE_SCAN_RADIUS; dx <= RESOURCE_SCAN_RADIUS; dx++) {
-            for (int dz = -RESOURCE_SCAN_RADIUS; dz <= RESOURCE_SCAN_RADIUS; dz++) {
-                int x = origin.getX() + dx;
-                int z = origin.getZ() + dz;
-                BlockPos surface = owner.level().getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
-                        new BlockPos(x, 0, z));
-                if (!isPassable(surface.above())) {
-                    continue;
-                }
-                BlockState surfaceState = owner.level().getBlockState(surface);
-                if (!CompanionBlockRegistry.isShovelMineable(surfaceState)) {
-                    continue;
-                }
-                BlockPos stonePos = findStoneBelow(surface, pos);
-                if (stonePos == null) {
-                    continue;
-                }
-                double distance = origin.distSqr(surface);
-                if (distance < bestDistance) {
-                    bestDistance = distance;
-                    best = new TargetSelection(surface.immutable(), surface.immutable(), surface.immutable(), stonePos);
-                }
-            }
+    private void startVisibleScan(CompanionResourceType type, BlockPos origin) {
+        scanPhase = ScanPhase.VISIBLE;
+        scanState = new ScanState(type, origin, RESOURCE_SCAN_RADIUS, RESOURCE_SCAN_RADIUS, origin,
+                RESOURCE_SCAN_RADIUS, false, true, VISIBLE_FOV_DOT, true);
+        stoneDigScanState = null;
+    }
+
+    private void startOccludedScan(CompanionResourceType type, BlockPos origin) {
+        scanPhase = ScanPhase.OCCLUDED;
+        scanState = new ScanState(type, origin, RESOURCE_SCAN_RADIUS, RESOURCE_SCAN_RADIUS, origin,
+                RESOURCE_SCAN_RADIUS, false, false, RESOURCE_FOV_DOT, true);
+        stoneDigScanState = null;
+    }
+
+    private void startStoneDigScan(BlockPos origin) {
+        scanPhase = ScanPhase.STONE_DIG;
+        scanState = null;
+        stoneDigScanState = new StoneDigScanState(origin, RESOURCE_SCAN_RADIUS);
+    }
+
+    private boolean isScanCompatible(CompanionResourceType type, BlockPos origin) {
+        if (scanPhase == null) {
+            return false;
         }
-        return best;
+        if (scanPhase == ScanPhase.STONE_DIG) {
+            return type == CompanionResourceType.STONE
+                    && stoneDigScanState != null
+                    && stoneDigScanState.matches(origin);
+        }
+        return scanState != null && scanState.matches(type, origin);
+    }
+
+    private void finishScan(TargetSelection selection, long gameTime, boolean found) {
+        lastScanTick = gameTime;
+        lastScanFound = found;
+        nextScanTick = gameTime + RESOURCE_SCAN_COOLDOWN_TICKS;
+        cachedTarget = found && selection != null ? selection.target : null;
+        resetScanState();
     }
 
     private BlockPos findStoneBelow(BlockPos start, BlockPos.MutableBlockPos pos) {
@@ -595,6 +709,7 @@ public final class CompanionGatheringController {
         pendingSightPos = null;
         digStonePos = null;
         resetMiningProgress();
+        resetScanState();
     }
 
     private void resetRequestState() {
@@ -602,6 +717,204 @@ public final class CompanionGatheringController {
         resourceAnchor = null;
         lastMinedBlock = null;
         requestPlayerId = null;
+    }
+
+    private void resetScanState() {
+        scanPhase = null;
+        scanState = null;
+        stoneDigScanState = null;
+    }
+
+    private static int[] buildOffsets(int radius) {
+        int size = radius * 2 + 1;
+        int[] offsets = new int[size];
+        offsets[0] = 0;
+        int idx = 1;
+        for (int i = 1; i <= radius; i++) {
+            offsets[idx++] = i;
+            offsets[idx++] = -i;
+        }
+        return offsets;
+    }
+
+    private static final class ScanState {
+        private final CompanionResourceType type;
+        private final BlockPos origin;
+        private final BlockPos distanceOrigin;
+        private final double maxDistanceSqr;
+        private final boolean scoreByTarget;
+        private final boolean requireLineOfSight;
+        private final float minDot;
+        private final boolean returnOnFirstMatch;
+        private final int[] xOffsets;
+        private final int[] yOffsets;
+        private final int[] zOffsets;
+        private int ix;
+        private int iy;
+        private int iz;
+        private double bestScore = Double.MAX_VALUE;
+        private TargetSelection best;
+        private boolean finished;
+
+        private ScanState(CompanionResourceType type,
+                          BlockPos origin,
+                          int radius,
+                          int height,
+                          BlockPos distanceOrigin,
+                          double maxDistance,
+                          boolean scoreByTarget,
+                          boolean requireLineOfSight,
+                          float minDot,
+                          boolean returnOnFirstMatch) {
+            this.type = type;
+            this.origin = origin;
+            this.distanceOrigin = distanceOrigin;
+            this.maxDistanceSqr = maxDistance * maxDistance;
+            this.scoreByTarget = scoreByTarget;
+            this.requireLineOfSight = requireLineOfSight;
+            this.minDot = minDot;
+            this.returnOnFirstMatch = returnOnFirstMatch;
+            this.xOffsets = buildOffsets(radius);
+            this.yOffsets = buildOffsets(height);
+            this.zOffsets = buildOffsets(radius);
+        }
+
+        private boolean matches(CompanionResourceType type, BlockPos origin) {
+            return this.type == type && this.origin.equals(origin);
+        }
+
+        private boolean isFinished() {
+            return finished;
+        }
+
+        private TargetSelection step(CompanionGatheringController controller, int budget) {
+            if (finished) {
+                return best;
+            }
+            Vec3 eye = controller.owner.getEyePosition();
+            Vec3 look = controller.owner.getLookAngle().normalize();
+            BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+            int processed = 0;
+            while (processed < budget && !finished) {
+                int dx = xOffsets[ix];
+                int dy = yOffsets[iy];
+                int dz = zOffsets[iz];
+                pos.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
+                processed++;
+                BlockState state = controller.owner.level().getBlockState(pos);
+                TargetSelection selection = controller.resolveTargetSelection(type, pos.immutable(), state);
+                if (selection != null) {
+                    Vec3 sightCenter = Vec3.atCenterOf(selection.sightPos);
+                    Vec3 toTarget = sightCenter.subtract(eye);
+                    double distanceSqr = toTarget.lengthSqr();
+                    if (distanceSqr <= maxDistanceSqr) {
+                        double dot = look.dot(toTarget.normalize());
+                        if (dot >= minDot) {
+                            TargetSelection raySelection = controller.resolveObstruction(selection.resourcePos, selection.sightPos);
+                            if (raySelection != null && (!requireLineOfSight || raySelection.pendingResource == null)) {
+                                if (returnOnFirstMatch) {
+                                    best = raySelection;
+                                    finished = true;
+                                    return best;
+                                }
+                                BlockPos scorePos = scoreByTarget ? raySelection.target : raySelection.resourcePos;
+                                double score = distanceOrigin.distSqr(scorePos);
+                                if (score < bestScore) {
+                                    bestScore = score;
+                                    best = raySelection;
+                                }
+                            }
+                        }
+                    }
+                }
+                advanceIndices();
+            }
+            if (finished) {
+                return best;
+            }
+            return null;
+        }
+
+        private void advanceIndices() {
+            iz++;
+            if (iz < zOffsets.length) {
+                return;
+            }
+            iz = 0;
+            iy++;
+            if (iy < yOffsets.length) {
+                return;
+            }
+            iy = 0;
+            ix++;
+            if (ix >= xOffsets.length) {
+                finished = true;
+            }
+        }
+    }
+
+    private static final class StoneDigScanState {
+        private final BlockPos origin;
+        private final int[] xOffsets;
+        private final int[] zOffsets;
+        private int ix;
+        private int iz;
+        private boolean finished;
+
+        private StoneDigScanState(BlockPos origin, int radius) {
+            this.origin = origin;
+            this.xOffsets = buildOffsets(radius);
+            this.zOffsets = buildOffsets(radius);
+        }
+
+        private boolean matches(BlockPos origin) {
+            return this.origin.equals(origin);
+        }
+
+        private boolean isFinished() {
+            return finished;
+        }
+
+        private TargetSelection step(CompanionGatheringController controller, int budget) {
+            if (finished) {
+                return null;
+            }
+            BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+            int processed = 0;
+            while (processed < budget && !finished) {
+                int dx = xOffsets[ix];
+                int dz = zOffsets[iz];
+                int x = origin.getX() + dx;
+                int z = origin.getZ() + dz;
+                BlockPos surface = controller.owner.level().getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                        new BlockPos(x, 0, z));
+                if (controller.isPassable(surface.above())) {
+                    BlockState surfaceState = controller.owner.level().getBlockState(surface);
+                    if (CompanionBlockRegistry.isShovelMineable(surfaceState)) {
+                        BlockPos stonePos = controller.findStoneBelow(surface, pos);
+                        if (stonePos != null) {
+                            finished = true;
+                            return new TargetSelection(surface.immutable(), surface.immutable(), surface.immutable(), stonePos);
+                        }
+                    }
+                }
+                processed++;
+                advanceIndices();
+            }
+            return null;
+        }
+
+        private void advanceIndices() {
+            iz++;
+            if (iz < zOffsets.length) {
+                return;
+            }
+            iz = 0;
+            ix++;
+            if (ix >= xOffsets.length) {
+                finished = true;
+            }
+        }
     }
 
     private static final class TargetSelection {
