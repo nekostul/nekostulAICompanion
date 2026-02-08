@@ -33,7 +33,10 @@ import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.ChunkStatus;
@@ -172,6 +175,8 @@ public class CompanionEntity extends PathfinderMob {
             SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
     private static final EntityDataAccessor<ItemStack> TOOL_SWORD =
             SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
+    private static final EntityDataAccessor<Boolean> HUNGER_FULL =
+            SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.BOOLEAN);
 
     private static final Map<UUID, CompanionEntity> PENDING_TELEPORTS = new ConcurrentHashMap<>();
     private static final Map<UUID, PendingTeleportRequest> PENDING_TELEPORT_REQUESTS = new ConcurrentHashMap<>();
@@ -312,6 +317,7 @@ public class CompanionEntity extends PathfinderMob {
         this.entityData.define(TOOL_AXE, ItemStack.EMPTY);
         this.entityData.define(TOOL_SHOVEL, ItemStack.EMPTY);
         this.entityData.define(TOOL_SWORD, ItemStack.EMPTY);
+        this.entityData.define(HUNGER_FULL, true);
     }
 
     @Override
@@ -466,6 +472,9 @@ public class CompanionEntity extends PathfinderMob {
             CompoundTag hungerTag = tag.getCompound(HUNGER_NBT);
             this.hungerSystem.loadFromTag(hungerTag);
         }
+        if (!this.level().isClientSide) {
+            syncHungerFullFlag();
+        }
         if (tag.contains(CHEST_NBT)) {
             CompoundTag chestTag = tag.getCompound(CHEST_NBT);
             this.chestManager.loadFromTag(chestTag);
@@ -513,9 +522,31 @@ public class CompanionEntity extends PathfinderMob {
             tickItemPickup();
             tickAutonomousBehavior();
             this.hungerSystem.tick(nearest, gameTime);
+            syncHungerFullFlag();
             tickAmbientChat();
             tickTeleportRequest();
         }
+    }
+
+    @Override
+    public InteractionResult mobInteract(Player player, InteractionHand hand) {
+        ItemStack stack = player.getItemInHand(hand);
+        if (!stack.isEmpty() && stack.isEdible() && !isNegativeFood(stack)) {
+            if (this.level().isClientSide) {
+                return isHungerFullSynced() ? InteractionResult.PASS : InteractionResult.SUCCESS;
+            }
+            long gameTime = this.level().getGameTime();
+            if (!hungerSystem.feedFromPlayer(stack, gameTime)) {
+                syncHungerFullFlag();
+                return InteractionResult.PASS;
+            }
+            if (!player.getAbilities().instabuild) {
+                stack.shrink(1);
+            }
+            syncHungerFullFlag();
+            return InteractionResult.CONSUME;
+        }
+        return super.mobInteract(player, hand);
     }
 
     @Override
@@ -723,37 +754,31 @@ public class CompanionEntity extends PathfinderMob {
         return toStore;
     }
 
+    private boolean isNegativeFood(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return false;
+        }
+        return stack.is(Items.ROTTEN_FLESH)
+                || stack.is(Items.SPIDER_EYE)
+                || stack.is(Items.POISONOUS_POTATO)
+                || stack.is(Items.PUFFERFISH);
+    }
+
     private void tickAmbientChat() {
-        long gameTime = this.level().getGameTime();
-        if (this.nextAmbientChatTick < 0L) {
-            this.nextAmbientChatTick = gameTime + randomBetween(AMBIENT_CHAT_MIN_TICKS, AMBIENT_CHAT_MAX_TICKS);
+        return;
+    }
+
+    private boolean isHungerFullSynced() {
+        return this.level().isClientSide
+                ? this.entityData.get(HUNGER_FULL)
+                : hungerSystem.isHungerFull();
+    }
+
+    private void syncHungerFullFlag() {
+        if (this.level().isClientSide) {
             return;
         }
-        if (gameTime < this.nextAmbientChatTick) {
-            return;
-        }
-        Player nearest = this.level().getNearestPlayer(this, FOLLOW_SEARCH_DISTANCE);
-        if (nearest == null || nearest.isSpectator()) {
-            this.nextAmbientChatTick = gameTime + randomBetween(AMBIENT_CHAT_MIN_TICKS, AMBIENT_CHAT_MAX_TICKS);
-            return;
-        }
-        ChatContext context = resolveChatContext(gameTime);
-        ChatGroup group = resolveChatGroup(context);
-        long nextAllowedTick = getChatGroupNextAllowedTick(group);
-        if (nextAllowedTick > gameTime) {
-            this.nextAmbientChatTick = Math.max(this.nextAmbientChatTick, nextAllowedTick);
-            return;
-        }
-        String key = pickAmbientChatKey(context);
-        this.lastAmbientKey = key;
-        sendDirectMessage(nearest, Component.translatable(key));
-        this.lastAmbientChatTick = gameTime;
-        markChatGroupUsed(group, gameTime);
-        if (context == this.pendingChatContext) {
-            this.pendingChatContext = ChatContext.NONE;
-            this.pendingChatContextUntilTick = -1L;
-        }
-        this.nextAmbientChatTick = gameTime + randomBetween(AMBIENT_CHAT_MIN_TICKS, AMBIENT_CHAT_MAX_TICKS);
+        this.entityData.set(HUNGER_FULL, hungerSystem.isHungerFull());
     }
 
     private ChatGroup resolveChatGroup(ChatContext context) {

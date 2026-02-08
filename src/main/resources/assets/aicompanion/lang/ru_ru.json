@@ -1,7 +1,7 @@
 ﻿{
   "entity.aicompanion.companion": "AI-компаньон",
   "item.aicompanion.companion_spawn_egg": "Яйцо призыва AI-компаньона",
-  "entity.aicompanion.companion.teleport.request": "Ты слишком далеко. Телепортироваться к тебе? Ответь в течение %s сек.",
+  "entity.aicompanion.companion.teleport.request": "Ты слишком далеко. Телепортироваться к тебе? Ответь в течении %s сек.",
   "entity.aicompanion.companion.teleport.request.alt": "Слишком большое расстояние. Телепортироваться к тебе? Осталось %s сек.",
   "entity.aicompanion.companion.teleport.request.repeat": "Напомню: могу телепортироваться к тебе. Нужно? Осталось %s сек.",
   "entity.aicompanion.companion.teleport.accept": "Хорошо, телепортируюсь к тебе.",
@@ -390,6 +390,7 @@
   "entity.aicompanion.companion.treechop.disabled": "Полная рубка деревьев выключена.",
 
   "entity.aicompanion.companion.food.need": "Мне нужна еда. Подкинь что-нибудь поесть.",
+  "entity.aicompanion.companion.food.low_health": "Мне очень плохо, срочно нужна помощь.",
   "entity.aicompanion.companion.tool.suggest.axe": "Я могу копать и без топора, но с ним быстрее.",
   "entity.aicompanion.companion.tool.suggest.shovel": "Я могу копать и без лопаты, но с ней быстрее.",
   "entity.aicompanion.companion.tool.suggest.pickaxe": "Я могу копать и без кирки, но с ней быстрее.",

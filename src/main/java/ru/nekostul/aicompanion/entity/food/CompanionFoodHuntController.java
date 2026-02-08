@@ -68,7 +68,10 @@ public final class CompanionFoodHuntController {
         if (inventory.isFull()) {
             return false;
         }
-        return hungerSystem.needsFood();
+        if (!hungerSystem.isHungry()) {
+            return false;
+        }
+        return countEdible() < FOOD_RESERVE_MIN;
     }
 
     private int countEdible() {

@@ -36,6 +36,9 @@ public final class CompanionPickupGratitude {
         if (pickedStack == null || pickedStack.isEmpty()) {
             return;
         }
+        if (CompanionDropTracker.isMobDrop(itemEntity)) {
+            return;
+        }
         if (!isThankable(pickedStack)) {
             return;
         }
