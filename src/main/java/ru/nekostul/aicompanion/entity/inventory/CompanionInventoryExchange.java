@@ -70,7 +70,7 @@ public final class CompanionInventoryExchange {
             return handleToolDrop(player, gameTime);
         }
         if (isDropAllCommand(normalized)) {
-            handleDropAll(player, normalized.contains("\u043e\u0442\u0434\u0430\u0439"), gameTime);
+            handleDropAll(player, shouldKeepToolsAndFood(normalized), gameTime);
             return true;
         }
         if (isReturnCommand(normalized)) {
@@ -221,27 +221,19 @@ public final class CompanionInventoryExchange {
         List<ItemStack> drops = new ArrayList<>();
         for (int i = 0; i < inventory.getItems().size(); i++) {
             ItemStack stack = inventory.getItems().get(i);
-            if (stack.isEmpty() || (!isTool(stack) && !isFood(stack))) {
+            if (stack.isEmpty() || !isFood(stack)) {
                 continue;
             }
             drops.add(stack.copy());
             inventory.getItems().set(i, ItemStack.EMPTY);
         }
-        for (CompanionToolSlot slot : CompanionToolSlot.values()) {
-            ItemStack stack = owner.getToolSlot(slot);
-            if (stack.isEmpty()) {
-                continue;
-            }
-            drops.add(stack.copy());
-            owner.setToolSlot(slot, ItemStack.EMPTY);
-        }
         ItemStack mainHand = owner.getMainHandItem();
-        if (isTool(mainHand) || isFood(mainHand)) {
+        if (isFood(mainHand)) {
             drops.add(mainHand.copy());
             owner.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
         }
         ItemStack offhand = owner.getOffhandItem();
-        if (isTool(offhand) || isFood(offhand)) {
+        if (isFood(offhand)) {
             drops.add(offhand.copy());
             owner.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
         }
@@ -312,6 +304,12 @@ public final class CompanionInventoryExchange {
         return normalized.contains("\u0441\u043a\u0438\u043d\u044c")
                 || normalized.contains("\u0432\u044b\u0431\u0440\u043e\u0441\u044c")
                 || normalized.contains("\u043e\u0442\u0434\u0430\u0439");
+    }
+
+    private boolean shouldKeepToolsAndFood(String normalized) {
+        return normalized.contains("\u043e\u0442\u0434\u0430\u0439")
+                || normalized.contains("\u0441\u043a\u0438\u043d\u044c")
+                || normalized.contains("\u0432\u044b\u0431\u0440\u043e\u0441");
     }
 
     private boolean isToolDropCommand(String normalized) {

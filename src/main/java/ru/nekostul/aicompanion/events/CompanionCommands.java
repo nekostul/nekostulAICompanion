@@ -61,17 +61,9 @@ public final class CompanionCommands {
     private static int handleTeleport(CommandContext<CommandSourceStack> context, boolean accepted)
             throws CommandSyntaxException {
         ServerPlayer player = context.getSource().getPlayerOrException();
-        CompanionEntity companion = CompanionEntity.getPendingTeleportFor(player);
-        if (companion == null) {
-            long now = player.level().getGameTime();
-            long lastMessageTick = NO_REQUEST_MESSAGE_TICKS.getOrDefault(player.getUUID(), Long.MIN_VALUE);
-            if (now - lastMessageTick >= NO_REQUEST_COOLDOWN_TICKS) {
-                NO_REQUEST_MESSAGE_TICKS.put(player.getUUID(), now);
-                context.getSource().sendFailure(Component.translatable(TELEPORT_NONE_KEY));
-            }
+        if (!CompanionEntity.handleTeleportResponse(player, accepted)) {
             return 0;
         }
-        companion.handleTeleportResponse(player, accepted);
         return 1;
     }
 

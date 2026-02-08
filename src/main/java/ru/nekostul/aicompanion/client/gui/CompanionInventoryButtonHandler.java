@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 import ru.nekostul.aicompanion.AiCompanionMod;
+import ru.nekostul.aicompanion.CompanionConfig;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
 
 @Mod.EventBusSubscriber(modid = AiCompanionMod.MOD_ID, value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.FORGE)
@@ -89,7 +90,8 @@ public final class CompanionInventoryButtonHandler {
     }
 
     private static void updateButtonVisibility(ImageButton button) {
-        boolean hasNpc = hasCompanion();
+        boolean enabled = CompanionConfig.isNpcPanelButtonEnabled();
+        boolean hasNpc = enabled && hasCompanion();
         button.visible = hasNpc;
         button.active = hasNpc;
     }

@@ -2,12 +2,14 @@ package ru.nekostul.aicompanion.entity.mining;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.ItemTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.TieredItem;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -28,6 +30,7 @@ import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
 import ru.nekostul.aicompanion.entity.tool.CompanionOreToolGate;
 import ru.nekostul.aicompanion.entity.tool.CompanionToolHandler;
+import ru.nekostul.aicompanion.entity.tool.CompanionToolWear;
 
 public final class CompanionGatheringController {
     public enum Result {
@@ -604,9 +607,7 @@ public final class CompanionGatheringController {
         }
         owner.level().destroyBlock(pos, false);
         inventory.addAll(drops);
-        if (!tool.isEmpty() && tool.isDamageableItem()) {
-            tool.hurtAndBreak(1, owner, entity -> entity.broadcastBreakEvent(InteractionHand.MAIN_HAND));
-        }
+        CompanionToolWear.applyToolWear(owner, tool, InteractionHand.MAIN_HAND);
         return true;
     }
 
@@ -635,14 +636,28 @@ public final class CompanionGatheringController {
         ItemStack tool = owner.getMainHandItem();
         float toolSpeed = 1.0F;
         if (!tool.isEmpty()) {
-            toolSpeed = tool.getDestroySpeed(state);
-            if (toolSpeed < 1.0F) {
-                toolSpeed = 1.0F;
-            }
+            toolSpeed = resolveToolSpeed(state, tool);
         }
         boolean canHarvest = !state.requiresCorrectToolForDrops() || tool.isCorrectToolForDrops(state);
         float divisor = canHarvest ? 30.0F : 100.0F;
         return toolSpeed / hardness / divisor;
+    }
+
+    private float resolveToolSpeed(BlockState state, ItemStack tool) {
+        float speed = tool.getDestroySpeed(state);
+        if (speed < 1.0F && tool.getItem() instanceof TieredItem tiered) {
+            if (isToolEffectiveForBlock(state, tool)) {
+                speed = tiered.getTier().getSpeed();
+            }
+        }
+        return Math.max(1.0F, speed);
+    }
+
+    private boolean isToolEffectiveForBlock(BlockState state, ItemStack tool) {
+        return (state.is(BlockTags.MINEABLE_WITH_AXE) && tool.is(ItemTags.AXES))
+                || (state.is(BlockTags.MINEABLE_WITH_PICKAXE) && tool.is(ItemTags.PICKAXES))
+                || (state.is(BlockTags.MINEABLE_WITH_SHOVEL) && tool.is(ItemTags.SHOVELS))
+                || (state.is(BlockTags.MINEABLE_WITH_HOE) && tool.is(ItemTags.HOES));
     }
 
     private void resetMiningProgress() {

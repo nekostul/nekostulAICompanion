@@ -7,6 +7,7 @@ import net.minecraftforge.event.ServerChatEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.server.ServerLifecycleHooks;
 
 import ru.nekostul.aicompanion.AiCompanionMod;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
@@ -44,6 +45,8 @@ public final class CompanionChatEvents {
         while ((task = PENDING_CHAT_REPLIES.poll()) != null) {
             task.run();
         }
+        CompanionEntity.tickPendingTeleports(ServerLifecycleHooks.getCurrentServer());
+        CompanionEntity.tickTeleportRequestFallback(ServerLifecycleHooks.getCurrentServer());
     }
 
     public static boolean handlePlayerMessage(ServerPlayer player, String rawMessage) {
@@ -52,10 +55,8 @@ public final class CompanionChatEvents {
             return false;
         }
 
-        CompanionEntity pendingTeleport = CompanionEntity.getPendingTeleportFor(player);
         Boolean response = parseYesNo(message);
-        if (pendingTeleport != null && response != null) {
-            pendingTeleport.handleTeleportResponse(player, response);
+        if (response != null && CompanionEntity.handleTeleportResponse(player, response)) {
             return true;
         }
 
@@ -133,10 +134,12 @@ public final class CompanionChatEvents {
         if (normalized.isEmpty()) {
             return null;
         }
-        if (normalized.equals("YES") || normalized.equals("Y") || normalized.equals("ДА") || normalized.equals("Д")) {
+        if (normalized.equals("YES") || normalized.equals("Y")
+                || normalized.equals("\u0414\u0410") || normalized.equals("\u0414")) {
             return Boolean.TRUE;
         }
-        if (normalized.equals("NO") || normalized.equals("N") || normalized.equals("НЕТ") || normalized.equals("Н")) {
+        if (normalized.equals("NO") || normalized.equals("N")
+                || normalized.equals("\u041D\u0415\u0422") || normalized.equals("\u041D")) {
             return Boolean.FALSE;
         }
         return null;

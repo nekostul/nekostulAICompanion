@@ -17,6 +17,9 @@ public final class CompanionConfig {
             .comment("Полная рубка деревьев: ломать весь ствол и листву после нижнего блока.")
             .define("tree.fullChop", true);
 
+    public static final ForgeConfigSpec.BooleanValue NPC_PANEL_BUTTON = BUILDER
+            .comment("Показывать кнопку панели NPC в инвентаре. Если кнопка отключена — открыть панель можно командой /ainpc gui.")
+            .define("gui.npcPanelButton", true);
     public static final ForgeConfigSpec SPEC = BUILDER.build();
 
     private CompanionConfig() {
@@ -24,6 +27,10 @@ public final class CompanionConfig {
 
     public static boolean isFullTreeChopEnabled() {
         return FULL_TREE_CHOP.get();
+    }
+
+    public static boolean isNpcPanelButtonEnabled() {
+        return NPC_PANEL_BUTTON.get();
     }
 
     public static void setFullTreeChopEnabled(boolean enabled) {
@@ -61,3 +68,4 @@ public final class CompanionConfig {
         }
     }
 }
+

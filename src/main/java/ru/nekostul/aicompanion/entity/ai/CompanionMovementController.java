@@ -13,19 +13,22 @@ final class CompanionMovementController {
     }
 
     private static final double WALK_SPEED = 0.95D;
-    private static final double RUN_SPEED = 1.1D;
-    private static final double WALK_DISTANCE_SQR = 64.0D;
-    private static final double RUN_DISTANCE_SQR = 196.0D;
+    private static final double RUN_SPEED = 1.25D;
+    private static final double WALK_DISTANCE_SQR = 36.0D;
+    private static final double RUN_DISTANCE_SQR = 121.0D;
     private static final double JUMP_DISTANCE_SQR = 144.0D;
     private static final double CATCHUP_DISTANCE_SQR = 400.0D;
     private static final double HOLD_DISTANCE_SQR = 36.0D;
     private static final double PLAYER_IDLE_SPEED = 0.02D;
     private static final double PLAYER_WALK_RATIO_MIN = 0.6D;
     private static final double PLAYER_WALK_RATIO_MAX = 1.2D;
+    private static final double PLAYER_RUN_RATIO_MIN = 0.9D;
+    private static final double PLAYER_RUN_RATIO_MAX = 1.45D;
     private static final int STATE_LOCK_TICKS = 20;
     private static final int JUMP_COOLDOWN_TICKS = 8;
     private static final double SPEED_STEP_UP = 0.05D;
     private static final double SPEED_STEP_DOWN = 0.02D;
+    private static final double JUMP_SPEED_BONUS = 0.0D;
 
     private final PathfinderMob mob;
     private final double maxSpeedModifier;
@@ -61,6 +64,9 @@ final class CompanionMovementController {
             stateLockUntilTick = gameTime + STATE_LOCK_TICKS;
         }
         double wantedSpeed = desiredSpeed(distanceSqr, playerRatio);
+        if (state == MoveState.RUN_JUMP && !mob.onGround()) {
+            wantedSpeed = Math.min(maxSpeedModifier, wantedSpeed + JUMP_SPEED_BONUS);
+        }
         currentSpeed = approach(currentSpeed, wantedSpeed, SPEED_STEP_UP, SPEED_STEP_DOWN);
         tryJump(gameTime, distanceSqr);
         return currentSpeed;
@@ -114,11 +120,12 @@ final class CompanionMovementController {
         if (distanceSqr <= WALK_DISTANCE_SQR) {
             speed = WALK_SPEED * clamp(playerRatio, PLAYER_WALK_RATIO_MIN, PLAYER_WALK_RATIO_MAX);
         } else if (distanceSqr >= RUN_DISTANCE_SQR) {
-            speed = RUN_SPEED;
+            speed = RUN_SPEED * clamp(playerRatio, PLAYER_RUN_RATIO_MIN, PLAYER_RUN_RATIO_MAX);
         } else {
             double t = (distanceSqr - WALK_DISTANCE_SQR) / (RUN_DISTANCE_SQR - WALK_DISTANCE_SQR);
             double walkSpeed = WALK_SPEED * clamp(playerRatio, PLAYER_WALK_RATIO_MIN, PLAYER_WALK_RATIO_MAX);
-            speed = lerp(walkSpeed, RUN_SPEED, t);
+            double runSpeed = RUN_SPEED * clamp(playerRatio, PLAYER_RUN_RATIO_MIN, PLAYER_RUN_RATIO_MAX);
+            speed = lerp(walkSpeed, runSpeed, t);
         }
         if (safetyLevel == CompanionSafeMovement.SafetyLevel.CAUTION) {
             speed = Math.min(speed, WALK_SPEED * 0.85D);

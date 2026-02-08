@@ -3,6 +3,7 @@ package ru.nekostul.aicompanion.entity.tree;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.ItemTags;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -20,6 +21,7 @@ import java.util.Set;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
 import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
 import ru.nekostul.aicompanion.entity.resource.CompanionBlockRegistry;
+import ru.nekostul.aicompanion.entity.tool.CompanionToolWear;
 
 final class CompanionTreeChopper {
     interface DropHandler {
@@ -111,6 +113,7 @@ final class CompanionTreeChopper {
         if (dropHandler != null) {
             dropHandler.recordDrops(drops);
         }
+        CompanionToolWear.applyToolWear(owner, tool, InteractionHand.MAIN_HAND);
         return true;
     }
 

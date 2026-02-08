@@ -8,6 +8,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 
 import ru.nekostul.aicompanion.entity.CompanionEntity;
+import ru.nekostul.aicompanion.entity.inventory.CompanionDropTracker;
 
 import java.lang.reflect.Method;
 import java.util.Random;
@@ -68,18 +69,15 @@ public final class CompanionPickupGratitude {
         if (itemEntity == null) {
             return null;
         }
-        UUID ownerId = resolveOwner(itemEntity);
-        if (ownerId != null) {
-            Player player = owner.level().getPlayerByUUID(ownerId);
-            if (player != null && !player.isSpectator()) {
-                return player;
-            }
+        UUID ownerId = CompanionDropTracker.getPlayerDropper(itemEntity);
+        if (ownerId == null) {
+            return null;
         }
-        Player nearest = owner.level().getNearestPlayer(itemEntity, 6.0D);
-        if (nearest != null && !nearest.isSpectator()) {
-            return nearest;
+        Player player = owner.level().getPlayerByUUID(ownerId);
+        if (player == null || player.isSpectator()) {
+            return null;
         }
-        return null;
+        return player;
     }
 
     private UUID resolveOwner(ItemEntity itemEntity) {
