@@ -204,15 +204,18 @@ final class CompanionTaskCoordinator {
             if (treeResult == CompanionTreeHarvestController.Result.DONE) {
                 if (activeRequest.isTreeCountRequest()) {
                     delivery.startDelivery(treeHarvest.takeCollectedDrops());
+                    treeHarvest.resetAfterRequest();
                     taskState = TaskState.DELIVERING_ALL;
                     return;
                 }
+                treeHarvest.resetAfterRequest();
                 taskState = TaskState.DELIVERING;
                 delivery.startDelivery();
                 return;
             }
             if (treeResult == CompanionTreeHarvestController.Result.NOT_FOUND) {
                 owner.sendReply(player, Component.translatable(missingKey(activeRequest.getResourceType())));
+                treeHarvest.resetAfterRequest();
                 activeRequest = null;
                 taskState = TaskState.IDLE;
                 return;

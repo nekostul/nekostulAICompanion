@@ -277,11 +277,11 @@ public final class CompanionGatheringController {
             return null;
         }
         if (scanPhase == ScanPhase.VISIBLE) {
-            startOccludedScan(type, origin);
+            finishScan(null, gameTime, false);
             return null;
         }
-        if (scanPhase == ScanPhase.OCCLUDED && type == CompanionResourceType.STONE) {
-            startStoneDigScan(origin);
+        if (scanPhase == ScanPhase.OCCLUDED || scanPhase == ScanPhase.STONE_DIG) {
+            finishScan(null, gameTime, false);
             return null;
         }
         finishScan(null, gameTime, false);
@@ -360,6 +360,9 @@ public final class CompanionGatheringController {
                     }
                     TargetSelection raySelection = resolveObstruction(selection.resourcePos, selection.sightPos);
                     if (raySelection == null) {
+                        continue;
+                    }
+                    if (raySelection.pendingResource != null) {
                         continue;
                     }
                     BlockPos scorePos = scoreByTarget ? raySelection.target : raySelection.resourcePos;

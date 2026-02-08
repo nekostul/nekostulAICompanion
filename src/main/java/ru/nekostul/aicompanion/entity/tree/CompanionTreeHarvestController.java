@@ -2,8 +2,8 @@ package ru.nekostul.aicompanion.entity.tree;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.tags.ItemTags;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -49,6 +49,12 @@ public final class CompanionTreeHarvestController {
     private static final int RESOURCE_SCAN_RADIUS = CHUNK_RADIUS * 16;
     private static final int RESOURCE_SCAN_COOLDOWN_TICKS = 80;
     private static final float RESOURCE_FOV_DOT = -1.0F;
+    private static final int MAX_SCAN_BLOCKS_PER_TICK = 256;
+    private static final int MAX_PATH_CANDIDATES = 24;
+    private static final int MAX_PATH_CHECKS_PER_TICK = 2;
+    private static final double PATH_DETOUR_MULTIPLIER = 2.0D;
+    private static final int TREE_SEARCH_TIMEOUT_TICKS = 100;
+    private static final int NEAR_SCAN_RADIUS = 8;
     private static final int LOG_FROM_LEAVES_RADIUS = 2;
     private static final int LOG_FROM_LEAVES_MAX_DEPTH = 6;
     private static final int TREE_MAX_RADIUS = 9;
@@ -60,6 +66,7 @@ public final class CompanionTreeHarvestController {
     private final CompanionToolHandler toolHandler;
     private final CompanionMiningAnimator miningAnimator;
     private final CompanionMiningReach miningReach;
+    private final CompanionTreeChopper treeChopper;
 
     private CompanionTreeRequestMode treeMode = CompanionTreeRequestMode.NONE;
     private int requestAmount;
@@ -71,14 +78,20 @@ public final class CompanionTreeHarvestController {
     private BlockPos pendingResourceBlock;
     private BlockPos pendingSightPos;
     private BlockPos treeBasePos;
+    private BlockPos trunkLogPos;
     private long nextScanTick = -1L;
     private BlockPos cachedTarget;
     private long lastScanTick = -1L;
     private boolean lastScanFound = true;
+    private long searchStartTick = -1L;
     private BlockPos miningProgressPos;
     private float miningProgress;
     private int miningProgressStage = -1;
     private final Map<Item, Integer> collectedDrops = new HashMap<>();
+    private ScanState scanState;
+    private PathCheckState pathCheckState;
+    private ScanState nearScanState;
+    private PathCheckState nearPathCheckState;
 
     public CompanionTreeHarvestController(CompanionEntity owner,
                                           CompanionInventory inventory,
@@ -90,6 +103,8 @@ public final class CompanionTreeHarvestController {
         this.toolHandler = toolHandler;
         this.miningAnimator = new CompanionMiningAnimator(owner);
         this.miningReach = new CompanionMiningReach(owner);
+        this.treeChopper = new CompanionTreeChopper(owner, inventory, this::recordDrops,
+                TREE_MAX_RADIUS, TREE_MAX_BLOCKS, LOG_FROM_LEAVES_RADIUS);
     }
 
     public Result tick(CompanionResourceRequest request, long gameTime) {
@@ -149,6 +164,10 @@ public final class CompanionTreeHarvestController {
         return result;
     }
 
+    public void resetAfterRequest() {
+        resetRequestState();
+    }
+
     private Result tickMining(long gameTime) {
         if (targetBlock == null) {
             return Result.IN_PROGRESS;
@@ -167,6 +186,10 @@ public final class CompanionTreeHarvestController {
         }
         Vec3 center = Vec3.atCenterOf(targetBlock);
         if (!miningReach.canMine(targetBlock)) {
+            if (shouldPlaceStepBlock() && tryPlaceStepBlock()) {
+                resetMiningProgress();
+                return Result.IN_PROGRESS;
+            }
             owner.getNavigation().moveTo(center.x, center.y, center.z, 1.0D);
             resetMiningProgress();
             return Result.IN_PROGRESS;
@@ -194,33 +217,52 @@ public final class CompanionTreeHarvestController {
             serverLevel.destroyBlockProgress(owner.getId(), miningProgressPos, stage);
         }
         if (miningProgress >= 1.0F) {
-            boolean mined = mineBlock(targetBlock);
             resetMiningProgress();
+            if (treeBasePos != null && targetBlock.equals(treeBasePos)
+                    && CompanionConfig.isFullTreeChopEnabled()) {
+                boolean harvested = treeChopper.harvestTree(treeBasePos);
+                treeBasePos = null;
+                trunkLogPos = null;
+                resetScanCache();
+                if (!harvested) {
+                    clearTargetState();
+                    return Result.NEED_CHEST;
+                }
+                if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
+                    treesRemaining = Math.max(0, treesRemaining - 1);
+                }
+                clearTargetState();
+                return Result.IN_PROGRESS;
+            }
+            boolean mined = mineBlock(targetBlock);
             if (!mined) {
                 clearTargetState();
                 return Result.NEED_CHEST;
             }
-            if (treeBasePos != null && targetBlock.equals(treeBasePos)) {
-                if (CompanionConfig.isFullTreeChopEnabled()) {
-                    boolean harvested = harvestTree(treeBasePos);
-                    treeBasePos = null;
-                    resetScanCache();
-                    if (!harvested) {
-                        clearTargetState();
-                        return Result.NEED_CHEST;
+            if (treeBasePos != null && !CompanionConfig.isFullTreeChopEnabled()) {
+                if (treeMode == CompanionTreeRequestMode.LOG_BLOCKS && logsCollected >= logsRequired) {
+                    clearTargetState();
+                    return Result.IN_PROGRESS;
+                }
+                BlockPos trunkPos = trunkLogPos != null ? trunkLogPos : treeBasePos;
+                if (targetBlock.equals(trunkPos)) {
+                    BlockPos nextTrunk = findNextTrunkLog(treeBasePos, trunkPos);
+                    if (nextTrunk != null) {
+                        trunkLogPos = nextTrunk;
+                        TargetSelection nextSelection = resolveTrunkTarget(treeBasePos, nextTrunk);
+                        if (nextSelection != null) {
+                            applySelection(nextSelection);
+                            resetMiningProgress();
+                            return Result.IN_PROGRESS;
+                        }
                     }
                     if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
                         treesRemaining = Math.max(0, treesRemaining - 1);
+                        resetScanCache();
                     }
                     clearTargetState();
                     return Result.IN_PROGRESS;
                 }
-                if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
-                    treesRemaining = Math.max(0, treesRemaining - 1);
-                    resetScanCache();
-                }
-                clearTargetState();
-                return Result.IN_PROGRESS;
             }
             if (advancePendingTarget()) {
                 return Result.IN_PROGRESS;
@@ -235,60 +277,105 @@ public final class CompanionTreeHarvestController {
             BlockState cached = owner.level().getBlockState(cachedTarget);
             if (CompanionBlockRegistry.isLog(cached)) {
                 BlockPos base = findTreeBase(cachedTarget);
-                if (base != null) {
-                    return resolveTreeObstruction(new TargetSelection(base, base, cachedTarget));
+                TargetSelection candidate = base != null
+                        ? new TargetSelection(base, base, cachedTarget)
+                        : new TargetSelection(cachedTarget, cachedTarget, cachedTarget);
+                TargetSelection resolved = resolveTreeObstruction(candidate);
+                if (resolved != null && (resolved.pendingResource == null || isTreeObstacle(resolved))
+                        && isPathAcceptable(resolved, owner.blockPosition().distSqr(resolved.treeBase))) {
+                    return resolved;
                 }
-                return resolveTreeObstruction(new TargetSelection(cachedTarget, cachedTarget, cachedTarget));
             }
+            resetScanCache();
         }
-        if (gameTime < nextScanTick) {
+        if (gameTime < nextScanTick && scanState == null && pathCheckState == null
+                && nearScanState == null && nearPathCheckState == null) {
             return null;
         }
-        lastScanTick = gameTime;
-        lastScanFound = false;
-        Vec3 eye = owner.getEyePosition();
-        Vec3 look = owner.getLookAngle().normalize();
+        if (searchStartTick < 0L) {
+            searchStartTick = gameTime;
+        }
         BlockPos origin = owner.blockPosition();
-        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        TargetSelection best = null;
-        double bestDistance = Double.MAX_VALUE;
-
-        for (int dx = -RESOURCE_SCAN_RADIUS; dx <= RESOURCE_SCAN_RADIUS; dx++) {
-            for (int dy = -RESOURCE_SCAN_RADIUS; dy <= RESOURCE_SCAN_RADIUS; dy++) {
-                for (int dz = -RESOURCE_SCAN_RADIUS; dz <= RESOURCE_SCAN_RADIUS; dz++) {
-                    pos.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
-                    BlockState state = owner.level().getBlockState(pos);
-                    TargetSelection selection = resolveTreeSelection(pos.immutable(), state);
-                    if (selection == null) {
-                        continue;
-                    }
-                    TargetSelection resolved = resolveTreeObstruction(selection);
-                    if (resolved == null) {
-                        continue;
-                    }
-                    Vec3 sightCenter = Vec3.atCenterOf(selection.sightPos);
-                    Vec3 toTarget = sightCenter.subtract(eye);
-                    double distance = toTarget.length();
-                    if (distance > RESOURCE_SCAN_RADIUS) {
-                        continue;
-                    }
-                    if (look.dot(toTarget.normalize()) < RESOURCE_FOV_DOT) {
-                        continue;
-                    }
-                    double score = origin.distSqr(resolved.treeBase);
-                    if (score < bestDistance) {
-                        bestDistance = score;
-                        best = resolved;
-                    }
+        TargetSelection nearSelection = stepNearScan(origin);
+        if (nearSelection != null) {
+            finishScan(nearSelection, gameTime, true);
+            return nearSelection;
+        }
+        if (nearScanState != null || nearPathCheckState != null) {
+            if (searchStartTick >= 0L && gameTime - searchStartTick >= TREE_SEARCH_TIMEOUT_TICKS) {
+                finishScan(null, gameTime, false);
+            }
+            return null;
+        }
+        if (pathCheckState == null) {
+            if (scanState == null || !scanState.matches(origin)) {
+                scanState = new ScanState(origin, owner.getEyePosition(), owner.getLookAngle().normalize(),
+                        RESOURCE_SCAN_RADIUS, false);
+            }
+            scanState.step(this, MAX_SCAN_BLOCKS_PER_TICK);
+            if (!scanState.getCandidates().isEmpty()) {
+                pathCheckState = new PathCheckState(new ArrayList<>(scanState.getCandidates()));
+            }
+        }
+        if (pathCheckState != null) {
+            TargetSelection selection = pathCheckState.step(this, MAX_PATH_CHECKS_PER_TICK);
+            if (selection != null) {
+                finishScan(selection, gameTime, true);
+                return selection;
+            }
+            if (pathCheckState.isFinished()) {
+                if (scanState != null && !scanState.isFinished()) {
+                    scanState.clearCandidates();
+                    pathCheckState = null;
+                } else {
+                    finishScan(null, gameTime, false);
+                    return null;
                 }
             }
         }
-        if (best != null) {
-            lastScanFound = true;
+        if (searchStartTick >= 0L && gameTime - searchStartTick >= TREE_SEARCH_TIMEOUT_TICKS) {
+            finishScan(null, gameTime, false);
+            return null;
         }
-        nextScanTick = gameTime + RESOURCE_SCAN_COOLDOWN_TICKS;
-        cachedTarget = best != null ? best.treeBase : null;
-        return best;
+        if (scanState != null && scanState.isFinished() && pathCheckState == null) {
+            finishScan(null, gameTime, false);
+            return null;
+        }
+        return null;
+    }
+
+    private TargetSelection stepNearScan(BlockPos origin) {
+        if (origin == null) {
+            return null;
+        }
+        if (nearPathCheckState != null) {
+            TargetSelection selection = nearPathCheckState.step(this, MAX_PATH_CHECKS_PER_TICK);
+            if (selection != null) {
+                return selection;
+            }
+            if (nearPathCheckState.isFinished()) {
+                if (nearScanState != null && !nearScanState.isFinished()) {
+                    nearScanState.clearCandidates();
+                    nearPathCheckState = null;
+                } else {
+                    nearPathCheckState = null;
+                    nearScanState = null;
+                }
+            }
+            return null;
+        }
+        if (nearScanState == null || !nearScanState.matches(origin)) {
+            nearScanState = new ScanState(origin, owner.getEyePosition(), owner.getLookAngle().normalize(),
+                    NEAR_SCAN_RADIUS, true);
+        }
+        nearScanState.step(this, MAX_SCAN_BLOCKS_PER_TICK);
+        if (nearPathCheckState == null && !nearScanState.getCandidates().isEmpty()) {
+            nearPathCheckState = new PathCheckState(new ArrayList<>(nearScanState.getCandidates()));
+        }
+        if (nearScanState.isFinished() && nearPathCheckState == null) {
+            nearScanState = null;
+        }
+        return null;
     }
 
     private TargetSelection resolveTreeSelection(BlockPos pos, BlockState state) {
@@ -344,7 +431,40 @@ public final class CompanionTreeHarvestController {
         if (selection == null || selection.treeBase == null) {
             return selection;
         }
-        return resolveObstruction(selection.treeBase, selection.sightPos);
+        TargetSelection resolved = resolveObstruction(selection.treeBase, selection.sightPos);
+        if (resolved == null) {
+            return null;
+        }
+        if (resolved.pendingResource != null && isUpperTrunkBlock(resolved.target, selection.treeBase)) {
+            return new TargetSelection(selection.treeBase, selection.treeBase, selection.sightPos);
+        }
+        return resolved;
+    }
+
+    private boolean isUpperTrunkBlock(BlockPos target, BlockPos treeBase) {
+        if (target == null || treeBase == null) {
+            return false;
+        }
+        if (target.getX() != treeBase.getX() || target.getZ() != treeBase.getZ()) {
+            return false;
+        }
+        if (target.getY() <= treeBase.getY()) {
+            return false;
+        }
+        return CompanionBlockRegistry.isLog(owner.level().getBlockState(target));
+    }
+
+    private TargetSelection resolveTrunkTarget(BlockPos base, BlockPos logPos) {
+        TargetSelection resolved = resolveObstruction(logPos, logPos);
+        if (resolved == null) {
+            return null;
+        }
+        if (!CompanionConfig.isFullTreeChopEnabled()
+                && resolved.pendingResource != null
+                && CompanionBlockRegistry.isLeaves(owner.level().getBlockState(resolved.target))) {
+            return new TargetSelection(logPos, base, logPos);
+        }
+        return new TargetSelection(resolved.target, base, resolved.sightPos, resolved.pendingResource, resolved.pendingSight);
     }
 
     private boolean advancePendingTarget() {
@@ -377,6 +497,18 @@ public final class CompanionTreeHarvestController {
                     }
                 }
             }
+        }
+        return null;
+    }
+
+    private BlockPos findNextTrunkLog(BlockPos base, BlockPos current) {
+        if (base == null) {
+            return null;
+        }
+        int startY = current != null ? current.getY() + 1 : base.getY() + 1;
+        BlockPos next = new BlockPos(base.getX(), startY, base.getZ());
+        if (CompanionBlockRegistry.isLog(owner.level().getBlockState(next))) {
+            return next;
         }
         return null;
     }
@@ -445,74 +577,6 @@ public final class CompanionTreeHarvestController {
         return bestWithAbove != null ? bestWithAbove : bestAny;
     }
 
-    private boolean harvestTree(BlockPos base) {
-        if (!(owner.level() instanceof ServerLevel serverLevel)) {
-            return false;
-        }
-        Set<BlockPos> visited = new HashSet<>();
-        Deque<BlockPos> queue = new ArrayDeque<>();
-        queue.add(base);
-        int maxDistanceSqr = TREE_MAX_RADIUS * TREE_MAX_RADIUS;
-
-        while (!queue.isEmpty() && visited.size() < TREE_MAX_BLOCKS) {
-            BlockPos pos = queue.poll();
-            if (!visited.add(pos)) {
-                continue;
-            }
-            BlockState state = owner.level().getBlockState(pos);
-            boolean isTreeBlock = CompanionBlockRegistry.isLog(state) || CompanionBlockRegistry.isLeaves(state);
-            if (isTreeBlock) {
-                if (!breakTreeBlock(serverLevel, pos, state)) {
-                    return false;
-                }
-            }
-            if (!isTreeBlock && !pos.equals(base)) {
-                continue;
-            }
-            for (int dx = -1; dx <= 1; dx++) {
-                for (int dy = -1; dy <= 1; dy++) {
-                    for (int dz = -1; dz <= 1; dz++) {
-                        if (dx == 0 && dy == 0 && dz == 0) {
-                            continue;
-                        }
-                        BlockPos next = pos.offset(dx, dy, dz);
-                        if (base.distSqr(next) > maxDistanceSqr) {
-                            continue;
-                        }
-                        if (!visited.contains(next)) {
-                            queue.add(next);
-                        }
-                    }
-                }
-            }
-        }
-        return true;
-    }
-
-    private boolean breakTreeBlock(ServerLevel serverLevel, BlockPos pos, BlockState state) {
-        if (!isBreakable(state, pos)) {
-            return true;
-        }
-        ItemStack tool = owner.getMainHandItem();
-        List<ItemStack> drops = Block.getDrops(state, serverLevel, pos, owner.level().getBlockEntity(pos),
-                owner, tool);
-        if (CompanionBlockRegistry.isLeaves(state)) {
-            drops = filterLeafDrops(drops);
-        } else if (drops.isEmpty()) {
-            Item item = state.getBlock().asItem();
-            if (item != Items.AIR) {
-                drops = List.of(new ItemStack(item));
-            }
-        }
-        if (!inventory.canStoreAll(drops)) {
-            return false;
-        }
-        owner.level().destroyBlock(pos, false);
-        inventory.addAll(drops);
-        recordDrops(drops);
-        return true;
-    }
-
     private void recordDrops(List<ItemStack> drops) {
         for (ItemStack stack : drops) {
             if (stack.isEmpty()) {
@@ -548,7 +612,7 @@ public final class CompanionTreeHarvestController {
         List<ItemStack> drops = Block.getDrops(state, serverLevel, pos, owner.level().getBlockEntity(pos),
                 owner, tool);
         if (CompanionBlockRegistry.isLeaves(state)) {
-            drops = filterLeafDrops(drops);
+            drops = CompanionTreeChopper.filterLeafDrops(drops);
         } else if (drops.isEmpty()) {
             Item item = state.getBlock().asItem();
             if (item != Items.AIR) {
@@ -562,23 +626,6 @@ public final class CompanionTreeHarvestController {
         inventory.addAll(drops);
         recordDrops(drops);
         return true;
-    }
-
-    private List<ItemStack> filterLeafDrops(List<ItemStack> drops) {
-        if (drops.isEmpty()) {
-            return drops;
-        }
-        List<ItemStack> filtered = new ArrayList<>();
-        for (ItemStack stack : drops) {
-            if (stack.isEmpty()) {
-                continue;
-            }
-            if (stack.is(ItemTags.LEAVES)) {
-                continue;
-            }
-            filtered.add(stack);
-        }
-        return filtered;
     }
 
     private float getBreakProgress(BlockState state, BlockPos pos) {
@@ -624,10 +671,16 @@ public final class CompanionTreeHarvestController {
     }
 
     private void applySelection(TargetSelection selection) {
+        BlockPos previousBase = treeBasePos;
         targetBlock = selection.target;
         pendingResourceBlock = selection.pendingResource;
         pendingSightPos = selection.pendingSight;
         treeBasePos = selection.treeBase;
+        if (treeBasePos != null && (previousBase == null || !treeBasePos.equals(previousBase))) {
+            trunkLogPos = treeBasePos;
+        } else if (treeBasePos == null) {
+            trunkLogPos = null;
+        }
     }
 
     private void clearTargetState() {
@@ -635,6 +688,7 @@ public final class CompanionTreeHarvestController {
         pendingResourceBlock = null;
         pendingSightPos = null;
         treeBasePos = null;
+        trunkLogPos = null;
         resetMiningProgress();
     }
 
@@ -655,6 +709,400 @@ public final class CompanionTreeHarvestController {
         cachedTarget = null;
         lastScanTick = -1L;
         lastScanFound = true;
+        searchStartTick = -1L;
+        scanState = null;
+        pathCheckState = null;
+        nearScanState = null;
+        nearPathCheckState = null;
+    }
+
+    private void finishScan(TargetSelection selection, long gameTime, boolean found) {
+        lastScanTick = gameTime;
+        lastScanFound = found;
+        nextScanTick = gameTime + RESOURCE_SCAN_COOLDOWN_TICKS;
+        cachedTarget = found && selection != null ? selection.treeBase : null;
+        searchStartTick = -1L;
+        scanState = null;
+        pathCheckState = null;
+        nearScanState = null;
+        nearPathCheckState = null;
+    }
+
+    private boolean isPathAcceptable(TargetSelection selection, double distanceSqr) {
+        if (selection == null || selection.treeBase == null) {
+            return false;
+        }
+        if (distanceSqr <= 4.0D) {
+            return true;
+        }
+        if (owner.getNavigation() == null) {
+            return false;
+        }
+        int nodes = findBestPathNodes(selection.treeBase);
+        if (nodes < 0) {
+            return false;
+        }
+        if (nodes <= 0) {
+            return true;
+        }
+        double distance = Math.sqrt(distanceSqr);
+        return nodes <= distance * PATH_DETOUR_MULTIPLIER + 2.0D;
+    }
+
+    private int findBestPathNodes(BlockPos base) {
+        int bestNodes = Integer.MAX_VALUE;
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        for (int dy = 0; dy <= 1; dy++) {
+            int y = base.getY() + dy;
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    if (Math.abs(dx) + Math.abs(dz) != 1) {
+                        continue;
+                    }
+                    pos.set(base.getX() + dx, y, base.getZ() + dz);
+                    if (!isPassable(pos)) {
+                        continue;
+                    }
+                    net.minecraft.world.level.pathfinder.Path path = owner.getNavigation().createPath(pos, 1);
+                    if (path == null || !path.canReach()) {
+                        continue;
+                    }
+                    int nodes = path.getNodeCount();
+                    if (nodes < bestNodes) {
+                        bestNodes = nodes;
+                    }
+                }
+            }
+        }
+        return bestNodes == Integer.MAX_VALUE ? -1 : bestNodes;
+    }
+
+    private boolean isPassable(BlockPos pos) {
+        BlockState state = owner.level().getBlockState(pos);
+        if (state.isAir()) {
+            return true;
+        }
+        if (!state.getFluidState().isEmpty()) {
+            return false;
+        }
+        return state.getCollisionShape(owner.level(), pos).isEmpty();
+    }
+
+    private boolean isTreeObstacle(TargetSelection selection) {
+        if (selection == null || selection.pendingResource == null) {
+            return false;
+        }
+        BlockState state = owner.level().getBlockState(selection.target);
+        if (CompanionConfig.isFullTreeChopEnabled()) {
+            return CompanionBlockRegistry.isLeaves(state) || CompanionBlockRegistry.isLog(state);
+        }
+        return CompanionBlockRegistry.isLog(state);
+    }
+
+    private boolean shouldPlaceStepBlock() {
+        if (CompanionConfig.isFullTreeChopEnabled() || treeBasePos == null) {
+            return false;
+        }
+        if (treeMode == CompanionTreeRequestMode.LOG_BLOCKS && logsCollected >= logsRequired) {
+            return false;
+        }
+        if (treeMode == CompanionTreeRequestMode.TREE_COUNT && treesRemaining <= 0) {
+            return false;
+        }
+        BlockPos desired = pendingResourceBlock != null ? pendingResourceBlock : targetBlock;
+        if (desired == null) {
+            return false;
+        }
+        if (!CompanionBlockRegistry.isLog(owner.level().getBlockState(desired))) {
+            return false;
+        }
+        if (desired.getX() != treeBasePos.getX() || desired.getZ() != treeBasePos.getZ()) {
+            return false;
+        }
+        BlockPos foot = owner.blockPosition();
+        if (Math.abs(desired.getX() - foot.getX()) > 1 || Math.abs(desired.getZ() - foot.getZ()) > 1) {
+            return false;
+        }
+        return desired.getY() > foot.getY() + 1;
+    }
+
+    private boolean tryPlaceStepBlock() {
+        if (!(owner.level() instanceof ServerLevel serverLevel)) {
+            return false;
+        }
+        BlockPos placePos = owner.blockPosition();
+        BlockState placeState = selectStepBlockState();
+        if (placeState == null) {
+            return false;
+        }
+        if (!canPlaceStepAt(placePos, placeState)) {
+            return false;
+        }
+        if (!serverLevel.setBlock(placePos, placeState, 3)) {
+            return false;
+        }
+        if (!consumeStepBlock(placeState.getBlock())) {
+            serverLevel.setBlock(placePos, Blocks.AIR.defaultBlockState(), 3);
+            return false;
+        }
+        if (canStandAt(placePos.above()) && canStandAt(placePos.above(2))) {
+            owner.setPos(owner.getX(), owner.getY() + 1.0D, owner.getZ());
+        }
+        return true;
+    }
+
+    private BlockState selectStepBlockState() {
+        int slot = findStepBlockSlot();
+        if (slot < 0) {
+            return null;
+        }
+        ItemStack stack = inventory.getItems().get(slot);
+        if (stack.isEmpty() || !(stack.getItem() instanceof BlockItem blockItem)) {
+            return null;
+        }
+        BlockState state = blockItem.getBlock().defaultBlockState();
+        if (state.isAir() || state.is(Blocks.BEDROCK) || state.is(Blocks.BARRIER)) {
+            return null;
+        }
+        return state;
+    }
+
+    private int findStepBlockSlot() {
+        int fallbackLogSlot = -1;
+        for (int i = 0; i < inventory.getItems().size(); i++) {
+            ItemStack stack = inventory.getItems().get(i);
+            if (stack.isEmpty() || !(stack.getItem() instanceof BlockItem blockItem)) {
+                continue;
+            }
+            BlockState state = blockItem.getBlock().defaultBlockState();
+            if (state.isAir() || state.is(Blocks.BEDROCK) || state.is(Blocks.BARRIER)) {
+                continue;
+            }
+            boolean isLog = CompanionBlockRegistry.isLog(state);
+            boolean isLeaves = CompanionBlockRegistry.isLeaves(state);
+            if (!isLog && !isLeaves) {
+                return i;
+            }
+            if (fallbackLogSlot < 0 && treeMode == CompanionTreeRequestMode.TREE_COUNT) {
+                fallbackLogSlot = i;
+            }
+        }
+        return fallbackLogSlot;
+    }
+
+    private boolean consumeStepBlock(Block block) {
+        for (int i = 0; i < inventory.getItems().size(); i++) {
+            ItemStack stack = inventory.getItems().get(i);
+            if (stack.isEmpty()) {
+                continue;
+            }
+            if (stack.getItem() instanceof BlockItem blockItem
+                    && blockItem.getBlock() == block) {
+                stack.shrink(1);
+                if (stack.isEmpty()) {
+                    inventory.getItems().set(i, ItemStack.EMPTY);
+                }
+                owner.onInventoryUpdated();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean canPlaceStepAt(BlockPos pos, BlockState placeState) {
+        BlockState current = owner.level().getBlockState(pos);
+        if (!current.canBeReplaced()) {
+            return false;
+        }
+        if (!placeState.canSurvive(owner.level(), pos)) {
+            return false;
+        }
+        return canStandAt(pos.above()) && canStandAt(pos.above(2));
+    }
+
+    private boolean canStandAt(BlockPos pos) {
+        BlockState state = owner.level().getBlockState(pos);
+        if (state.isAir()) {
+            return true;
+        }
+        if (!state.getFluidState().isEmpty()) {
+            return false;
+        }
+        return state.getCollisionShape(owner.level(), pos).isEmpty();
+    }
+
+    private static int[] buildOffsets(int radius) {
+        int size = radius * 2 + 1;
+        int[] offsets = new int[size];
+        offsets[0] = 0;
+        int idx = 1;
+        for (int i = 1; i <= radius; i++) {
+            offsets[idx++] = i;
+            offsets[idx++] = -i;
+        }
+        return offsets;
+    }
+
+    private static final class ScanState {
+        private final BlockPos origin;
+        private final Vec3 eye;
+        private final Vec3 look;
+        private final int radius;
+        private final boolean requireVisible;
+        private final int[] xOffsets;
+        private final int[] yOffsets;
+        private final int[] zOffsets;
+        private int ix;
+        private int iy;
+        private int iz;
+        private final List<Candidate> candidates = new ArrayList<>();
+        private boolean foundVisible;
+        private boolean finished;
+
+        private ScanState(BlockPos origin, Vec3 eye, Vec3 look, int radius, boolean requireVisible) {
+            this.origin = origin;
+            this.eye = eye;
+            this.look = look;
+            this.radius = radius;
+            this.requireVisible = requireVisible;
+            this.xOffsets = buildOffsets(radius);
+            this.yOffsets = buildOffsets(radius);
+            this.zOffsets = buildOffsets(radius);
+        }
+
+        private boolean matches(BlockPos origin) {
+            return this.origin.equals(origin);
+        }
+
+        private boolean isFinished() {
+            return finished;
+        }
+
+        private List<Candidate> getCandidates() {
+            return candidates;
+        }
+
+        private void clearCandidates() {
+            candidates.clear();
+        }
+
+        private TargetSelection step(CompanionTreeHarvestController controller, int budget) {
+            if (finished) {
+                return null;
+            }
+            BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+            int processed = 0;
+            while (processed < budget && !finished) {
+                int dx = xOffsets[ix];
+                int dy = yOffsets[iy];
+                int dz = zOffsets[iz];
+                pos.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
+                processed++;
+                BlockState state = controller.owner.level().getBlockState(pos);
+                TargetSelection selection = controller.resolveTreeSelection(pos.immutable(), state);
+                if (selection != null) {
+                    TargetSelection resolved = controller.resolveTreeObstruction(selection);
+                    if (resolved != null && (resolved.pendingResource == null || controller.isTreeObstacle(resolved))) {
+                        if (requireVisible && resolved.pendingResource != null) {
+                            advanceIndices();
+                            continue;
+                        }
+                        Vec3 sightCenter = Vec3.atCenterOf(selection.sightPos);
+                        Vec3 toTarget = sightCenter.subtract(eye);
+                        double distance = toTarget.length();
+                        if (distance <= radius) {
+                            if (look.dot(toTarget.normalize()) >= RESOURCE_FOV_DOT) {
+                                double score = origin.distSqr(resolved.treeBase);
+                                offerCandidate(resolved, score, resolved.pendingResource == null);
+                            }
+                        }
+                    }
+                }
+                advanceIndices();
+            }
+            return null;
+        }
+
+        private void advanceIndices() {
+            iz++;
+            if (iz < zOffsets.length) {
+                return;
+            }
+            iz = 0;
+            iy++;
+            if (iy < yOffsets.length) {
+                return;
+            }
+            iy = 0;
+            ix++;
+            if (ix >= xOffsets.length) {
+                finished = true;
+            }
+        }
+
+        private void offerCandidate(TargetSelection selection, double distanceSqr, boolean visible) {
+            if (requireVisible && !visible) {
+                return;
+            }
+            if (!requireVisible && visible && !foundVisible) {
+                candidates.clear();
+                foundVisible = true;
+            }
+            if (!requireVisible && foundVisible && !visible) {
+                return;
+            }
+            int index = 0;
+            while (index < candidates.size() && distanceSqr >= candidates.get(index).distanceSqr) {
+                index++;
+            }
+            if (index >= MAX_PATH_CANDIDATES) {
+                return;
+            }
+            candidates.add(index, new Candidate(selection, distanceSqr));
+            if (candidates.size() > MAX_PATH_CANDIDATES) {
+                candidates.remove(MAX_PATH_CANDIDATES);
+            }
+        }
+    }
+
+    private static final class Candidate {
+        private final TargetSelection selection;
+        private final double distanceSqr;
+
+        private Candidate(TargetSelection selection, double distanceSqr) {
+            this.selection = selection;
+            this.distanceSqr = distanceSqr;
+        }
+    }
+
+    private static final class PathCheckState {
+        private final List<Candidate> candidates;
+        private int index;
+        private boolean finished;
+
+        private PathCheckState(List<Candidate> candidates) {
+            this.candidates = candidates == null ? List.of() : candidates;
+        }
+
+        private boolean isFinished() {
+            return finished;
+        }
+
+        private TargetSelection step(CompanionTreeHarvestController controller, int budget) {
+            int processed = 0;
+            while (index < candidates.size() && processed < budget) {
+                Candidate candidate = candidates.get(index++);
+                processed++;
+                if (controller.isPathAcceptable(candidate.selection, candidate.distanceSqr)) {
+                    finished = true;
+                    return candidate.selection;
+                }
+            }
+            if (index >= candidates.size()) {
+                finished = true;
+            }
+            return null;
+        }
     }
 
     private static final class TargetSelection {
