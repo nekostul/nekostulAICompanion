@@ -78,6 +78,9 @@ public final class CompanionTreeHarvestController {
     private static final int TREE_SEARCH_RETRY_LIMIT = 10;
     private static final int LEAF_SEARCH_RADIUS = 4;
     private static final int LEAF_SEARCH_EXTRA_HEIGHT = 4;
+    private static final int STUCK_RETRY_INTERVAL_TICKS = 40;
+    private static final int STUCK_RETRY_LIMIT = 10;
+    private static final double STUCK_MOVE_EPSILON_SQR = 0.0004D;
     private static final GameProfile MINING_PROFILE = new GameProfile(
             UUID.fromString("d44fdfd6-11c2-4766-9fd2-9a7f702cc563"), "CompanionLumber");
 
@@ -103,6 +106,7 @@ public final class CompanionTreeHarvestController {
     private BlockPos treeChopWaitPos;
     private BlockPos treeChopLockedBase;
     private final Set<BlockPos> treeChopTrackedLogs = new HashSet<>();
+    private boolean forceTrunkChop;
     private long nextScanTick = -1L;
     private BlockPos cachedTarget;
     private long lastScanTick = -1L;
@@ -112,6 +116,12 @@ public final class CompanionTreeHarvestController {
     private float miningProgress;
     private int miningProgressStage = -1;
     private int failedSearchAttempts;
+    private long lastProgressTick = -1L;
+    private long lastRestartTick = -1L;
+    private int stuckRetryCount;
+    private int lastProgressHash;
+    private float lastProgressMining;
+    private Vec3 lastProgressPos;
     private final Map<Item, Integer> collectedDrops = new HashMap<>();
     private final Map<Item, Integer> treeChopBaseline = new HashMap<>();
     private ScanState scanState;
@@ -134,7 +144,7 @@ public final class CompanionTreeHarvestController {
     public Result tick(CompanionResourceRequest request, long gameTime) {
         if (request == null || !request.isTreeRequest()) {
             resetRequestState();
-            return Result.IDLE;
+            return finalizeResult(Result.IDLE, gameTime);
         }
         if (treeMode != request.getTreeMode() || requestAmount != request.getAmount()) {
             resetRequestState();
@@ -156,16 +166,17 @@ public final class CompanionTreeHarvestController {
         }
         if (inventory.isFull()) {
             clearTargetState();
-            return Result.NEED_CHEST;
+            return finalizeResult(Result.NEED_CHEST, gameTime);
         }
         if (isTreeChopActive() && treeChopWaitPos != null) {
             if (!isTreeChopComplete(treeChopWaitPos)) {
-                return Result.IN_PROGRESS;
+                return finalizeResult(Result.IN_PROGRESS, gameTime);
             }
             collectTreeChopDrops(treeChopWaitPos);
             treeChopWaitPos = null;
             treeChopLockedBase = null;
             treeChopTrackedLogs.clear();
+            forceTrunkChop = false;
             if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
                 treesRemaining = Math.max(0, treesRemaining - 1);
                 failedSearchAttempts = 0;
@@ -179,34 +190,34 @@ public final class CompanionTreeHarvestController {
             if (isTreeChopActive()) {
                 captureTreeChopDrops();
             }
-            return Result.DONE;
+            return finalizeResult(Result.DONE, gameTime);
         }
         if (treeMode == CompanionTreeRequestMode.LOG_BLOCKS && logsCollected >= logsRequired && targetBlock == null) {
             if (isTreeChopInProgress()) {
-                return Result.IN_PROGRESS;
+                return finalizeResult(Result.IN_PROGRESS, gameTime);
             }
-            return Result.DONE;
+            return finalizeResult(Result.DONE, gameTime);
         }
         if (targetBlock == null || !isTargetValid()) {
             TargetSelection selection = findTreeTarget(gameTime);
             if (selection == null) {
                 if (isTreeChopInProgress()) {
-                    return Result.IN_PROGRESS;
+                    return finalizeResult(Result.IN_PROGRESS, gameTime);
                 }
                 if (gameTime == lastScanTick && !lastScanFound) {
                     failedSearchAttempts++;
                     if (failedSearchAttempts >= TREE_SEARCH_RETRY_LIMIT) {
                         clearTargetState();
-                        return Result.FAILED;
+                        return finalizeResult(Result.FAILED, gameTime);
                     }
-                    return Result.IN_PROGRESS;
+                    return finalizeResult(Result.IN_PROGRESS, gameTime);
                 }
-                return Result.IN_PROGRESS;
+                return finalizeResult(Result.IN_PROGRESS, gameTime);
             }
             applySelection(selection);
             resetMiningProgress();
         }
-        return tickMining(gameTime);
+        return finalizeResult(tickMining(gameTime), gameTime);
     }
 
     public boolean isTreeChopInProgress() {
@@ -232,6 +243,215 @@ public final class CompanionTreeHarvestController {
 
     public void resetAfterRequest() {
         resetRequestState();
+    }
+
+    private Result finalizeResult(Result result, long gameTime) {
+        if (result != Result.IN_PROGRESS) {
+            resetStuckTracking();
+            return result;
+        }
+        updateProgress(gameTime);
+        Result stuckResult = handleStuckRestart(gameTime);
+        return stuckResult != null ? stuckResult : result;
+    }
+
+    private void updateProgress(long gameTime) {
+        if (isScanInProgress()) {
+            lastProgressTick = gameTime;
+            lastProgressHash = computeProgressHash();
+            lastProgressMining = miningProgress;
+            lastProgressPos = owner.position();
+            stuckRetryCount = 0;
+            return;
+        }
+        Vec3 currentPos = owner.position();
+        if (lastProgressPos == null) {
+            lastProgressPos = currentPos;
+            lastProgressTick = gameTime;
+            lastProgressHash = computeProgressHash();
+            lastProgressMining = miningProgress;
+            return;
+        }
+        boolean moved = currentPos.distanceToSqr(lastProgressPos) > STUCK_MOVE_EPSILON_SQR;
+        boolean movementProgress = hasMovementGoal() && moved;
+        boolean miningAdvanced = miningProgress > lastProgressMining + 1.0E-4F;
+        int progressHash = computeProgressHash();
+        boolean stateChanged = progressHash != lastProgressHash;
+        if (stateChanged || movementProgress || miningAdvanced) {
+            lastProgressTick = gameTime;
+            lastProgressHash = progressHash;
+            if (stateChanged || movementProgress) {
+                lastProgressPos = currentPos;
+            }
+            if (stateChanged || movementProgress || miningAdvanced) {
+                stuckRetryCount = 0;
+            }
+        }
+        lastProgressMining = miningProgress;
+    }
+
+    private boolean isScanInProgress() {
+        return scanState != null || pathCheckState != null || nearScanState != null || nearPathCheckState != null;
+    }
+
+    private int computeProgressHash() {
+        int hash = 1;
+        hash = 31 * hash + (treeMode != null ? treeMode.ordinal() : 0);
+        hash = 31 * hash + requestAmount;
+        hash = 31 * hash + treesRemaining;
+        hash = 31 * hash + logsRequired;
+        hash = 31 * hash + logsCollected;
+        hash = 31 * hash + (targetBlock != null ? targetBlock.hashCode() : 0);
+        hash = 31 * hash + (pendingResourceBlock != null ? pendingResourceBlock.hashCode() : 0);
+        hash = 31 * hash + (pendingSightPos != null ? pendingSightPos.hashCode() : 0);
+        hash = 31 * hash + (treeBasePos != null ? treeBasePos.hashCode() : 0);
+        hash = 31 * hash + (trunkLogPos != null ? trunkLogPos.hashCode() : 0);
+        hash = 31 * hash + (treeChopWaitPos != null ? treeChopWaitPos.hashCode() : 0);
+        hash = 31 * hash + (treeChopLockedBase != null ? treeChopLockedBase.hashCode() : 0);
+        hash = 31 * hash + (miningProgressPos != null ? miningProgressPos.hashCode() : 0);
+        hash = 31 * hash + (forceTrunkChop ? 1 : 0);
+        if (treeChopWaitPos != null) {
+            hash = 31 * hash + countRemainingTreeChopLogs();
+        }
+        return hash;
+    }
+
+    private int countRemainingTreeChopLogs() {
+        BlockPos base = treeChopWaitPos != null ? treeChopWaitPos : treeChopLockedBase;
+        if (base == null) {
+            return 0;
+        }
+        if (treeChopTrackedLogs.isEmpty()) {
+            captureTreeChopLogPositions(base);
+        }
+        int remaining = 0;
+        for (BlockPos pos : treeChopTrackedLogs) {
+            if (CompanionBlockRegistry.isLog(owner.level().getBlockState(pos))) {
+                remaining++;
+            }
+        }
+        return remaining;
+    }
+
+    private Result handleStuckRestart(long gameTime) {
+        if (!shouldCheckStuck()) {
+            return null;
+        }
+        if (lastProgressTick < 0L) {
+            lastProgressTick = gameTime;
+            lastProgressHash = computeProgressHash();
+            lastProgressMining = miningProgress;
+            lastProgressPos = owner.position();
+            return null;
+        }
+        if (gameTime - lastProgressTick < STUCK_RETRY_INTERVAL_TICKS) {
+            return null;
+        }
+        if (lastRestartTick >= 0L && gameTime - lastRestartTick < STUCK_RETRY_INTERVAL_TICKS) {
+            return null;
+        }
+        if (miningProgress > 0.0F) {
+            return null;
+        }
+        if (stuckRetryCount >= STUCK_RETRY_LIMIT) {
+            clearTargetState();
+            treeChopWaitPos = null;
+            treeChopLockedBase = null;
+            treeChopTrackedLogs.clear();
+            forceTrunkChop = false;
+            resetScanCache();
+            return Result.FAILED;
+        }
+        stuckRetryCount++;
+        if (forceTrunkChop && treeChopLockedBase != null) {
+            restartManualTrunk(gameTime);
+            return Result.IN_PROGRESS;
+        }
+        if (tryStartManualTrunkChop(gameTime)) {
+            return Result.IN_PROGRESS;
+        }
+        restartStuckSearch(gameTime);
+        return Result.IN_PROGRESS;
+    }
+
+    private boolean shouldCheckStuck() {
+        return treeMode != CompanionTreeRequestMode.NONE;
+    }
+
+    private boolean hasMovementGoal() {
+        return targetBlock != null || pendingResourceBlock != null || treeBasePos != null;
+    }
+
+    private boolean tryStartManualTrunkChop(long gameTime) {
+        if (!isTreeChopActive() || forceTrunkChop) {
+            return false;
+        }
+        if (treeChopWaitPos == null || treeChopLockedBase == null) {
+            return false;
+        }
+        if (isTreeChopComplete(treeChopWaitPos)) {
+            return false;
+        }
+        BlockPos base = treeChopLockedBase;
+        BlockPos nextTrunk = findNextTrunkLog(base, base);
+        if (nextTrunk == null) {
+            return false;
+        }
+        forceTrunkChop = true;
+        treeChopWaitPos = null;
+        treeBasePos = base;
+        trunkLogPos = nextTrunk;
+        TargetSelection selection = resolveTrunkTarget(base, nextTrunk);
+        if (selection != null) {
+            applySelection(selection);
+            resetMiningProgress();
+        }
+        lastRestartTick = gameTime;
+        lastProgressTick = gameTime;
+        lastProgressHash = computeProgressHash();
+        lastProgressMining = miningProgress;
+        lastProgressPos = owner.position();
+        return true;
+    }
+
+    private void restartManualTrunk(long gameTime) {
+        owner.getNavigation().stop();
+        clearTargetState();
+        BlockPos base = treeChopLockedBase;
+        if (base == null) {
+            restartStuckSearch(gameTime);
+            return;
+        }
+        treeBasePos = base;
+        trunkLogPos = resolveTreeChopLogStart(base);
+        if (trunkLogPos != null) {
+            TargetSelection selection = resolveTrunkTarget(base, trunkLogPos);
+            if (selection != null) {
+                applySelection(selection);
+                resetMiningProgress();
+            }
+        }
+        lastRestartTick = gameTime;
+        lastProgressTick = gameTime;
+        lastProgressHash = computeProgressHash();
+        lastProgressMining = miningProgress;
+        lastProgressPos = owner.position();
+    }
+
+    private void restartStuckSearch(long gameTime) {
+        owner.getNavigation().stop();
+        clearTargetState();
+        treeChopWaitPos = null;
+        treeChopLockedBase = null;
+        treeChopTrackedLogs.clear();
+        forceTrunkChop = false;
+        failedSearchAttempts = 0;
+        resetScanCache();
+        lastRestartTick = gameTime;
+        lastProgressTick = gameTime;
+        lastProgressHash = computeProgressHash();
+        lastProgressMining = miningProgress;
+        lastProgressPos = owner.position();
     }
 
     private Result tickMining(long gameTime) {
@@ -295,7 +515,7 @@ public final class CompanionTreeHarvestController {
                 }
                 return Result.NEED_CHEST;
             }
-            if (treeBasePos != null && isTreeChopActive() && targetBlock.equals(treeBasePos)) {
+            if (treeBasePos != null && isTreeChopActive() && !forceTrunkChop && targetBlock.equals(treeBasePos)) {
                 treeChopWaitPos = treeBasePos;
                 if (treeChopLockedBase == null) {
                     treeChopLockedBase = treeBasePos;
@@ -304,7 +524,7 @@ public final class CompanionTreeHarvestController {
                 clearTargetState();
                 return Result.IN_PROGRESS;
             }
-            if (treeBasePos != null && !isTreeChopActive()) {
+            if (treeBasePos != null && (!isTreeChopActive() || forceTrunkChop)) {
                 if (treeMode == CompanionTreeRequestMode.LOG_BLOCKS && logsCollected >= logsRequired) {
                     clearTargetState();
                     return Result.IN_PROGRESS;
@@ -320,6 +540,13 @@ public final class CompanionTreeHarvestController {
                             resetMiningProgress();
                             return Result.IN_PROGRESS;
                         }
+                    }
+                    if (forceTrunkChop) {
+                        collectTreeChopDrops(treeChopLockedBase);
+                        treeChopLockedBase = null;
+                        treeChopTrackedLogs.clear();
+                        treeChopWaitPos = null;
+                        forceTrunkChop = false;
                     }
                     if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
                         treesRemaining = Math.max(0, treesRemaining - 1);
@@ -339,6 +566,12 @@ public final class CompanionTreeHarvestController {
     }
 
     private TargetSelection findTreeTarget(long gameTime) {
+        if (forceTrunkChop && treeChopLockedBase != null) {
+            TargetSelection lockedTrunk = resolveLockedTrunkTarget();
+            if (lockedTrunk != null) {
+                return lockedTrunk;
+            }
+        }
         if (isTreeChopInProgress()) {
             TargetSelection locked = resolveLockedTreeTarget();
             if (locked != null) {
@@ -863,6 +1096,24 @@ public final class CompanionTreeHarvestController {
         return resolved;
     }
 
+    private TargetSelection resolveLockedTrunkTarget() {
+        BlockPos base = treeChopLockedBase;
+        if (base == null) {
+            return null;
+        }
+        BlockPos logPos = resolveTreeChopLogStart(base);
+        if (logPos == null) {
+            treeChopWaitPos = null;
+            treeChopLockedBase = null;
+            treeChopTrackedLogs.clear();
+            forceTrunkChop = false;
+            return null;
+        }
+        treeBasePos = base;
+        trunkLogPos = logPos;
+        return resolveTrunkTarget(base, logPos);
+    }
+
     private void collectTreeChopDrops(BlockPos base) {
         if (base == null || inventory.isFull()) {
             return;
@@ -1080,10 +1331,12 @@ public final class CompanionTreeHarvestController {
         treeChopWaitPos = null;
         treeChopLockedBase = null;
         treeChopTrackedLogs.clear();
+        forceTrunkChop = false;
         failedSearchAttempts = 0;
         collectedDrops.clear();
         treeChopBaseline.clear();
         resetScanCache();
+        resetStuckTracking();
     }
 
     private void resetScanCache() {
@@ -1096,6 +1349,15 @@ public final class CompanionTreeHarvestController {
         pathCheckState = null;
         nearScanState = null;
         nearPathCheckState = null;
+    }
+
+    private void resetStuckTracking() {
+        lastProgressTick = -1L;
+        lastRestartTick = -1L;
+        stuckRetryCount = 0;
+        lastProgressHash = 0;
+        lastProgressMining = 0.0F;
+        lastProgressPos = null;
     }
 
     private void finishScan(TargetSelection selection, long gameTime, boolean found) {
@@ -1179,7 +1441,7 @@ public final class CompanionTreeHarvestController {
     }
 
     private boolean shouldPlaceStepBlock() {
-        if (isTreeChopActive() || treeBasePos == null) {
+        if ((isTreeChopActive() && !forceTrunkChop) || treeBasePos == null) {
             return false;
         }
         if (treeMode == CompanionTreeRequestMode.LOG_BLOCKS && logsCollected >= logsRequired) {
