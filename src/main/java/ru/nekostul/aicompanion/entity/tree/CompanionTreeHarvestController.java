@@ -109,6 +109,7 @@ public final class CompanionTreeHarvestController {
     private BlockPos treeChopLockedBase;
     private final Set<BlockPos> treeChopTrackedLogs = new HashSet<>();
     private boolean forceTrunkChop;
+    private final Deque<PlacedStep> placedSteps = new ArrayDeque<>();
     private boolean scanSawCandidate;
     private boolean lastScanHadCandidates;
     private long nextScanTick = -1L;
@@ -177,6 +178,7 @@ public final class CompanionTreeHarvestController {
                 return finalizeResult(Result.IN_PROGRESS, gameTime);
             }
             collectTreeChopDrops(treeChopWaitPos);
+            removePlacedStepBlock();
             treeChopWaitPos = null;
             treeChopLockedBase = null;
             treeChopTrackedLogs.clear();
@@ -538,6 +540,7 @@ public final class CompanionTreeHarvestController {
             }
             if (treeBasePos != null && (!isTreeChopActive() || forceTrunkChop)) {
                 if (treeMode == CompanionTreeRequestMode.LOG_BLOCKS && logsCollected >= logsRequired) {
+                    removePlacedStepBlock();
                     clearTargetState();
                     return Result.IN_PROGRESS;
                 }
@@ -565,6 +568,7 @@ public final class CompanionTreeHarvestController {
                         failedSearchAttempts = 0;
                         resetScanCache();
                     }
+                    removePlacedStepBlock();
                     clearTargetState();
                     return Result.IN_PROGRESS;
                 }
@@ -1358,6 +1362,7 @@ public final class CompanionTreeHarvestController {
         treeChopBaseline.clear();
         resetScanCache();
         resetStuckTracking();
+        clearPlacedStepBlock();
     }
 
     private void resetScanCache() {
@@ -1486,7 +1491,7 @@ public final class CompanionTreeHarvestController {
             return false;
         }
         BlockPos foot = owner.blockPosition();
-        if (Math.abs(desired.getX() - foot.getX()) > 1 || Math.abs(desired.getZ() - foot.getZ()) > 1) {
+        if (foot.getX() != treeBasePos.getX() || foot.getZ() != treeBasePos.getZ()) {
             return false;
         }
         return desired.getY() > foot.getY() + 1;
@@ -1496,7 +1501,7 @@ public final class CompanionTreeHarvestController {
         if (!(owner.level() instanceof ServerLevel serverLevel)) {
             return false;
         }
-        BlockPos placePos = owner.blockPosition();
+        BlockPos placePos = new BlockPos(treeBasePos.getX(), owner.blockPosition().getY(), treeBasePos.getZ());
         BlockState placeState = selectStepBlockState();
         if (placeState == null) {
             return false;
@@ -1511,6 +1516,7 @@ public final class CompanionTreeHarvestController {
             serverLevel.setBlock(placePos, Blocks.AIR.defaultBlockState(), 3);
             return false;
         }
+        markPlacedStepBlock(placePos, placeState);
         if (canStandAt(placePos.above()) && canStandAt(placePos.above(2))) {
             owner.setPos(owner.getX(), owner.getY() + 1.0D, owner.getZ());
         }
@@ -1549,11 +1555,70 @@ public final class CompanionTreeHarvestController {
             if (!isLog && !isLeaves) {
                 return i;
             }
-            if (fallbackLogSlot < 0 && treeMode == CompanionTreeRequestMode.TREE_COUNT) {
+            if (fallbackLogSlot < 0 && isLog) {
                 fallbackLogSlot = i;
             }
         }
         return fallbackLogSlot;
+    }
+
+    private void markPlacedStepBlock(BlockPos pos, BlockState state) {
+        placedSteps.addLast(new PlacedStep(pos, state.getBlock(), CompanionBlockRegistry.isLog(state)));
+    }
+
+    private void clearPlacedStepBlock() {
+        placedSteps.clear();
+    }
+
+    private void removePlacedStepBlock() {
+        if (placedSteps.isEmpty()) {
+            return;
+        }
+        if (!(owner.level() instanceof ServerLevel serverLevel)) {
+            clearPlacedStepBlock();
+            return;
+        }
+        while (!placedSteps.isEmpty()) {
+            PlacedStep step = placedSteps.removeLast();
+            BlockState state = owner.level().getBlockState(step.pos);
+            if (state.isAir()) {
+                continue;
+            }
+            if (step.block != null && state.getBlock() != step.block) {
+                continue;
+            }
+            ItemStack tool = owner.getMainHandItem();
+            List<ItemStack> drops = Block.getDrops(state, serverLevel, step.pos,
+                    owner.level().getBlockEntity(step.pos), owner, tool);
+            if (drops.isEmpty()) {
+                Item item = state.getBlock().asItem();
+                if (item != Items.AIR) {
+                    drops = List.of(new ItemStack(item));
+                }
+            }
+            if (!inventory.canStoreAll(drops)) {
+                clearPlacedStepBlock();
+                return;
+            }
+            owner.level().destroyBlock(step.pos, false);
+            inventory.addAll(drops);
+            if (step.isLog) {
+                recordDrops(drops);
+            }
+            CompanionToolWear.applyToolWear(owner, tool, InteractionHand.MAIN_HAND);
+        }
+    }
+
+    private static final class PlacedStep {
+        private final BlockPos pos;
+        private final Block block;
+        private final boolean isLog;
+
+        private PlacedStep(BlockPos pos, Block block, boolean isLog) {
+            this.pos = pos;
+            this.block = block;
+            this.isLog = isLog;
+        }
     }
 
     private boolean consumeStepBlock(Block block) {

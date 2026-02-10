@@ -253,6 +253,11 @@
   "entity.aicompanion.companion.tree.harvest.not_found": "I can't find any trees nearby. Try another spot.",
   "entity.aicompanion.companion.tree.harvest.village_block": "Can`t chop trees in a village. Let�s go outside and continue.",
 
+  "entity.aicompanion.bugreport.cooldown": "Please wait %sm %ss before the next bug report.",
+  "entity.aicompanion.bugreport.sending": "Sending bug report...",
+  "entity.aicompanion.bugreport.sent": "Bug report sent successfully.",
+  "entity.aicompanion.bugreport.failed": "Failed to send bug report.",
+
   "entity.aicompanion.companion.food.need": "I need food. Bring me something to eat.",
   "entity.aicompanion.companion.food.low_health": "I'm badly hurt and need help.",
   "entity.aicompanion.companion.tool.suggest.axe": "I can mine without an axe, but it will be faster with one.",

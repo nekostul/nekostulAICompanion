@@ -16,6 +16,7 @@ import net.minecraftforge.network.NetworkHooks;
 
 import ru.nekostul.aicompanion.AiCompanionMod;
 import ru.nekostul.aicompanion.CompanionConfig;
+import ru.nekostul.aicompanion.bugreport.BugReportService;
 import ru.nekostul.aicompanion.client.gui.CompanionEquipmentMenu;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
 import ru.nekostul.aicompanion.entity.CompanionSingleNpcManager;
@@ -43,6 +44,9 @@ public final class CompanionCommands {
                                         .executes(CompanionCommands::handleMessage)))
                         .then(Commands.literal("gui")
                                 .executes(CompanionCommands::handleGui))
+                        .then(Commands.literal("bug")
+                                .then(Commands.argument("text", StringArgumentType.greedyString())
+                                        .executes(CompanionCommands::handleBugReport)))
                         .then(Commands.literal("treechop")
                                 .then(Commands.literal("on")
                                         .executes(context -> handleTreeChop(context, true)))
@@ -79,6 +83,13 @@ public final class CompanionCommands {
             buffer.writeInt(companion.getId());
             buffer.writeBoolean(true);
         });
+        return 1;
+    }
+
+    private static int handleBugReport(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        String message = StringArgumentType.getString(context, "text");
+        BugReportService.sendAsync(player, message);
         return 1;
     }
 

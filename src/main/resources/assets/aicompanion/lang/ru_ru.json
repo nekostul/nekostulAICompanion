@@ -19,7 +19,7 @@
   "entity.aicompanion.companion.chat.default": "Слушаю. Чем помочь?",
 
   "entity.aicompanion.companion.hit.1": "Блять, больно.",
-  "entity.aicompanion.companion.hit.2": "Слышь, уебище, поосторожнее.",
+  "entity.aicompanion.companion.hit.2": "Слышь, поосторожнее.",
   "entity.aicompanion.companion.hit.3": "Еще раз так — и я тебя нахуй брошу.",
   "entity.aicompanion.companion.hit.4": "Я тебе помогаю, а не для битья, сука.",
   "entity.aicompanion.companion.hit.5": "Ай, больно, ты чё творишь?!",
@@ -31,7 +31,7 @@
   "entity.aicompanion.companion.hit.11": "Ещё раз — и я отвечу.",
   "entity.aicompanion.companion.hit.12": "Ты совсем ебанулся?",
   "entity.aicompanion.companion.hit.13": "Руки прочь, долбоёб.",
-  "entity.aicompanion.companion.hit.14": "Мне больно, алло!",
+  "entity.aicompanion.companion.hit.14": "Мне больно, ало!",
   "entity.aicompanion.companion.hit.15": "Я это запомню.",
   "entity.aicompanion.companion.hit.16": "Ты охуел?",
   "entity.aicompanion.companion.hit.17": "Не трогай меня.",
@@ -252,6 +252,11 @@
   "entity.aicompanion.companion.tree.harvest.failed": "Извини, не вышло с деревом. Если хочешь - скажи ещё раз, попробую снова или поищу в другом месте.",
   "entity.aicompanion.companion.tree.harvest.not_found": "Поблизости нет деревьев. Попробуй в другом месте.",
   "entity.aicompanion.companion.tree.harvest.village_block": "В деревне рубить не вариант. Давай выйдем за неё и продолжим.",
+
+  "entity.aicompanion.bugreport.cooldown": "§cПодожди %sм %sс §cперед следующим баг-репортом.",
+  "entity.aicompanion.bugreport.sending": "Отправляю баг-репорт...",
+  "entity.aicompanion.bugreport.sent": "Баг-репорт успешно отправлен.",
+  "entity.aicompanion.bugreport.failed": "§cОшибка отправки баг-репорта.",
 
   "entity.aicompanion.companion.food.need": "Мне нужна еда. Подкинь что-нибудь поесть.",
   "entity.aicompanion.companion.food.low_health": "Мне очень плохо, срочно нужна помощь.",
