@@ -192,6 +192,7 @@
   "entity.aicompanion.companion.bucket.missing.water": "I can't find water nearby.",
   "entity.aicompanion.companion.bucket.missing.lava": "I can't find lava nearby.",
   "entity.aicompanion.companion.gather.missing": "I can't find that resource nearby.",
+  "entity.aicompanion.companion.gather.failed": "Sorry, I couldn't mine it. Try again or in another spot.",
   "entity.aicompanion.companion.help.general": "Ask me to gather resources, like \"bring wood\" or \"bring 4 buckets of water\". I'll bring them and drop them near you. I can use a personal chest � type \"help chest\". Inventory help: \"help inventory\".",
   "entity.aicompanion.companion.help.chest": "To assign a chest: 1) place a chest, 2) aim at it, 3) type \"here is your chest\". Without aiming I won't accept it. Only one chest is allowed; you can't reassign it.",
   "entity.aicompanion.companion.help.inventory": "Inventory: \"drop everything / throw everything / give everything\". If 9+ slots are used, I will ask for confirmation. \"give back / return\" gives the last items back in reverse order.",
@@ -249,6 +250,7 @@
   "entity.aicompanion.companion.treechop.enabled": "Full tree chopping is enabled.",
   "entity.aicompanion.companion.treechop.disabled": "Full tree chopping is disabled.",
   "entity.aicompanion.companion.tree.harvest.failed": "Sorry, I couldn`t get that tree. If you want, tell me to try again or we can look in another spot.",
+  "entity.aicompanion.companion.tree.harvest.not_found": "I can't find any trees nearby. Try another spot.",
   "entity.aicompanion.companion.tree.harvest.village_block": "Can`t chop trees in a village. Let�s go outside and continue.",
 
   "entity.aicompanion.companion.food.need": "I need food. Bring me something to eat.",

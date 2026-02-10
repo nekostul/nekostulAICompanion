@@ -43,6 +43,7 @@ public final class CompanionGatheringController {
         DONE,
         NEED_CHEST,
         NOT_FOUND,
+        FAILED,
         TOOL_REQUIRED
     }
 
@@ -67,6 +68,9 @@ public final class CompanionGatheringController {
     private static final int LOG_FROM_LEAVES_RADIUS = 2;
     private static final int LOG_FROM_LEAVES_MAX_DEPTH = 6;
     private static final int STONE_DIG_MAX_DEPTH = 8;
+    private static final int STUCK_RETRY_INTERVAL_TICKS = 40;
+    private static final int STUCK_RETRY_LIMIT = 10;
+    private static final double STUCK_MOVE_EPSILON_SQR = 0.0004D;
     private static final GameProfile MINING_PROFILE = new GameProfile(
             UUID.fromString("a0f7c96f-0a96-4b07-b7c6-8f2c19b2b9e4"), "CompanionMiner");
 
@@ -94,6 +98,12 @@ public final class CompanionGatheringController {
     private int miningProgressStage = -1;
     private BlockPos resourceAnchor;
     private BlockPos lastMinedBlock;
+    private long lastProgressTick = -1L;
+    private long lastRestartTick = -1L;
+    private int stuckRetryCount;
+    private int lastProgressHash;
+    private float lastProgressMining;
+    private Vec3 lastProgressPos;
     private ScanPhase scanPhase;
     private ScanState scanState;
     private StoneDigScanState stoneDigScanState;
@@ -114,7 +124,7 @@ public final class CompanionGatheringController {
     public Result tick(CompanionResourceRequest request, long gameTime) {
         if (request == null) {
             resetRequestState();
-            return Result.IDLE;
+            return finalizeResult(Result.IDLE, gameTime);
         }
         if (activeType != request.getResourceType() || activeAmount != request.getAmount()) {
             activeType = request.getResourceType();
@@ -124,33 +134,145 @@ public final class CompanionGatheringController {
         }
         if (inventory.isFull()) {
             clearTargetState();
-            return Result.NEED_CHEST;
+            return finalizeResult(Result.NEED_CHEST, gameTime);
         }
         if (inventory.countMatching(activeType::matchesItem) >= activeAmount) {
             resetRequestState();
-            return Result.DONE;
+            return finalizeResult(Result.DONE, gameTime);
         }
         Player requestPlayer = owner.getPlayerById(requestPlayerId);
         if (!toolHandler.ensurePickaxeForRequest(activeType, requestPlayer, gameTime)) {
             clearTargetState();
-            return Result.IN_PROGRESS;
+            return finalizeResult(Result.IN_PROGRESS, gameTime);
         }
         if (oreToolGate.isRequestBlocked(activeType, requestPlayer)) {
             resetRequestState();
-            return Result.TOOL_REQUIRED;
+            return finalizeResult(Result.TOOL_REQUIRED, gameTime);
         }
         if (targetBlock == null || !isTargetValid()) {
             TargetSelection selection = findTarget(activeType, gameTime);
             if (selection == null) {
                 if (gameTime == lastScanTick && !lastScanFound) {
-                    return Result.NOT_FOUND;
+                    return finalizeResult(Result.NOT_FOUND, gameTime);
                 }
-                return Result.IN_PROGRESS;
+                return finalizeResult(Result.IN_PROGRESS, gameTime);
             }
             applySelection(selection);
             resetMiningProgress();
         }
-        return tickMining(gameTime);
+        return finalizeResult(tickMining(gameTime), gameTime);
+    }
+
+    private Result finalizeResult(Result result, long gameTime) {
+        if (result != Result.IN_PROGRESS) {
+            resetStuckTracking();
+            return result;
+        }
+        updateProgress(gameTime);
+        Result stuckResult = handleStuckRestart(gameTime);
+        return stuckResult != null ? stuckResult : result;
+    }
+
+    private void updateProgress(long gameTime) {
+        if (isScanInProgress()) {
+            lastProgressTick = gameTime;
+            lastProgressHash = computeProgressHash();
+            lastProgressMining = miningProgress;
+            lastProgressPos = owner.position();
+            stuckRetryCount = 0;
+            return;
+        }
+        Vec3 currentPos = owner.position();
+        if (lastProgressPos == null) {
+            lastProgressPos = currentPos;
+            lastProgressTick = gameTime;
+            lastProgressHash = computeProgressHash();
+            lastProgressMining = miningProgress;
+            return;
+        }
+        boolean moved = currentPos.distanceToSqr(lastProgressPos) > STUCK_MOVE_EPSILON_SQR;
+        boolean movementProgress = hasMovementGoal() && moved;
+        boolean miningAdvanced = miningProgress > lastProgressMining + 1.0E-4F;
+        int progressHash = computeProgressHash();
+        boolean stateChanged = progressHash != lastProgressHash;
+        if (stateChanged || movementProgress || miningAdvanced) {
+            lastProgressTick = gameTime;
+            lastProgressHash = progressHash;
+            if (stateChanged || movementProgress) {
+                lastProgressPos = currentPos;
+            }
+            if (stateChanged || movementProgress || miningAdvanced) {
+                stuckRetryCount = 0;
+            }
+        }
+        lastProgressMining = miningProgress;
+    }
+
+    private boolean isScanInProgress() {
+        return scanPhase != null || scanState != null || stoneDigScanState != null;
+    }
+
+    private boolean hasMovementGoal() {
+        return targetBlock != null || pendingResourceBlock != null || digStonePos != null;
+    }
+
+    private int computeProgressHash() {
+        int hash = 1;
+        hash = 31 * hash + (activeType != null ? activeType.ordinal() : 0);
+        hash = 31 * hash + activeAmount;
+        hash = 31 * hash + (targetBlock != null ? targetBlock.hashCode() : 0);
+        hash = 31 * hash + (pendingResourceBlock != null ? pendingResourceBlock.hashCode() : 0);
+        hash = 31 * hash + (pendingSightPos != null ? pendingSightPos.hashCode() : 0);
+        hash = 31 * hash + (digStonePos != null ? digStonePos.hashCode() : 0);
+        hash = 31 * hash + (resourceAnchor != null ? resourceAnchor.hashCode() : 0);
+        hash = 31 * hash + (lastMinedBlock != null ? lastMinedBlock.hashCode() : 0);
+        return hash;
+    }
+
+    private Result handleStuckRestart(long gameTime) {
+        if (!shouldCheckStuck()) {
+            return null;
+        }
+        if (lastProgressTick < 0L) {
+            lastProgressTick = gameTime;
+            lastProgressHash = computeProgressHash();
+            lastProgressMining = miningProgress;
+            lastProgressPos = owner.position();
+            return null;
+        }
+        if (gameTime - lastProgressTick < STUCK_RETRY_INTERVAL_TICKS) {
+            return null;
+        }
+        if (lastRestartTick >= 0L && gameTime - lastRestartTick < STUCK_RETRY_INTERVAL_TICKS) {
+            return null;
+        }
+        if (miningProgress > 0.0F) {
+            return null;
+        }
+        if (stuckRetryCount >= STUCK_RETRY_LIMIT) {
+            restartStuckSearch(gameTime);
+            return Result.FAILED;
+        }
+        stuckRetryCount++;
+        restartStuckSearch(gameTime);
+        return Result.IN_PROGRESS;
+    }
+
+    private boolean shouldCheckStuck() {
+        return hasMovementGoal();
+    }
+
+    private void restartStuckSearch(long gameTime) {
+        owner.getNavigation().stop();
+        clearTargetState();
+        resourceAnchor = null;
+        lastMinedBlock = null;
+        resetScanCache();
+        lastRestartTick = gameTime;
+        lastProgressTick = gameTime;
+        lastProgressHash = computeProgressHash();
+        lastProgressMining = miningProgress;
+        lastProgressPos = owner.position();
     }
 
     private Result tickMining(long gameTime) {
@@ -734,12 +856,30 @@ public final class CompanionGatheringController {
         resourceAnchor = null;
         lastMinedBlock = null;
         requestPlayerId = null;
+        resetStuckTracking();
     }
 
     private void resetScanState() {
         scanPhase = null;
         scanState = null;
         stoneDigScanState = null;
+    }
+
+    private void resetScanCache() {
+        nextScanTick = -1L;
+        cachedTarget = null;
+        lastScanTick = -1L;
+        lastScanFound = true;
+        resetScanState();
+    }
+
+    private void resetStuckTracking() {
+        lastProgressTick = -1L;
+        lastRestartTick = -1L;
+        stuckRetryCount = 0;
+        lastProgressHash = 0;
+        lastProgressMining = 0.0F;
+        lastProgressPos = null;
     }
 
     private static int[] buildOffsets(int radius) {

@@ -36,7 +36,9 @@ final class CompanionTaskCoordinator {
             Registries.POINT_OF_INTEREST_TYPE,
             ResourceLocation.fromNamespaceAndPath("minecraft", "village"));
     private static final String TREE_FAIL_KEY = "entity.aicompanion.companion.tree.harvest.failed";
+    private static final String TREE_NOT_FOUND_KEY = "entity.aicompanion.companion.tree.harvest.not_found";
     private static final String TREE_VILLAGE_BLOCK_KEY = "entity.aicompanion.companion.tree.harvest.village_block";
+    private static final String GATHER_FAIL_KEY = "entity.aicompanion.companion.gather.failed";
 
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
@@ -242,7 +244,7 @@ final class CompanionTaskCoordinator {
                 return;
             }
             if (treeResult == CompanionTreeHarvestController.Result.NOT_FOUND) {
-                owner.sendReply(player, Component.translatable(missingKey(activeRequest.getResourceType())));
+                owner.sendReply(player, Component.translatable(TREE_NOT_FOUND_KEY));
                 treeHarvest.resetAfterRequest();
                 activeRequest = null;
                 taskState = TaskState.IDLE;
@@ -264,6 +266,12 @@ final class CompanionTaskCoordinator {
             return;
         }
         if (result == CompanionGatheringController.Result.TOOL_REQUIRED) {
+            activeRequest = null;
+            taskState = TaskState.IDLE;
+            return;
+        }
+        if (result == CompanionGatheringController.Result.FAILED) {
+            owner.sendReply(player, Component.translatable(GATHER_FAIL_KEY));
             activeRequest = null;
             taskState = TaskState.IDLE;
             return;

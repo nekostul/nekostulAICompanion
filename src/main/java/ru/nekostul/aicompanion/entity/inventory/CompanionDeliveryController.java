@@ -4,6 +4,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
 
@@ -13,6 +14,7 @@ import java.util.List;
 public final class CompanionDeliveryController {
     private static final double DELIVERY_RANGE_SQR = 9.0D;
     private static final int DELIVERY_COOLDOWN_TICKS = 10;
+    private static final double DELIVERY_SPEED_BLOCKS_PER_TICK = 0.35D;
 
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
@@ -59,7 +61,7 @@ public final class CompanionDeliveryController {
         }
         Vec3 target = player.position();
         if (owner.distanceToSqr(target) > DELIVERY_RANGE_SQR) {
-            owner.getNavigation().moveTo(target.x, target.y, target.z, 1.1D);
+            owner.getNavigation().moveTo(target.x, target.y, target.z, speedModifierFor(DELIVERY_SPEED_BLOCKS_PER_TICK));
             return false;
         }
         owner.getNavigation().stop();
@@ -83,7 +85,7 @@ public final class CompanionDeliveryController {
         }
         Vec3 target = player.position();
         if (owner.distanceToSqr(target) > DELIVERY_RANGE_SQR) {
-            owner.getNavigation().moveTo(target.x, target.y, target.z, 1.1D);
+            owner.getNavigation().moveTo(target.x, target.y, target.z, speedModifierFor(DELIVERY_SPEED_BLOCKS_PER_TICK));
             return false;
         }
         owner.getNavigation().stop();
@@ -118,6 +120,14 @@ public final class CompanionDeliveryController {
             player.level().addFreshEntity(entity);
         }
         return dropped;
+    }
+
+    private double speedModifierFor(double desiredSpeed) {
+        double base = owner.getAttributeValue(Attributes.MOVEMENT_SPEED);
+        if (base <= 0.0D) {
+            return 0.0D;
+        }
+        return desiredSpeed / base;
     }
 }
 

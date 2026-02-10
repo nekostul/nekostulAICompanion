@@ -272,10 +272,20 @@ public class CompanionEntity extends PathfinderMob {
     protected void registerGoals() {
         this.goalSelector.addGoal(0, new FloatGoal(this));
         this.goalSelector.addGoal(1, new HoldPositionGoal(this, this::isStopMode));
-        this.goalSelector.addGoal(2, new FollowNearestPlayerGoal(this, 1.5D, (float) FOLLOW_SEARCH_DISTANCE, 3.0F,
+        this.goalSelector.addGoal(2, new FollowNearestPlayerGoal(this, 2.4D, (float) FOLLOW_SEARCH_DISTANCE, 3.0F,
                 this::isFollowModeActive));
         this.goalSelector.addGoal(3, new OpenDoorGoal(this, true));
-        this.goalSelector.addGoal(4, new WaterAvoidingRandomStrollGoal(this, 0.8D));
+        this.goalSelector.addGoal(4, new WaterAvoidingRandomStrollGoal(this, 0.8D) {
+            @Override
+            public boolean canUse() {
+                return !CompanionEntity.this.isFollowModeActive() && super.canUse();
+            }
+
+            @Override
+            public boolean canContinueToUse() {
+                return !CompanionEntity.this.isFollowModeActive() && super.canContinueToUse();
+            }
+        });
         this.goalSelector.addGoal(5, new LookAtPlayerGoal(this, Player.class, 8.0F));
         this.goalSelector.addGoal(6, new RandomLookAroundGoal(this));
     }
@@ -284,7 +294,7 @@ public class CompanionEntity extends PathfinderMob {
         return Mob.createMobAttributes()
                 .add(Attributes.MAX_HEALTH, 20.0D)
                 .add(Attributes.ATTACK_DAMAGE, 3.0D)
-                .add(Attributes.MOVEMENT_SPEED, 0.3D)
+                .add(Attributes.MOVEMENT_SPEED, 2.3D)
                 .add(Attributes.FOLLOW_RANGE, 32.0D);
     }
 
@@ -1439,4 +1449,3 @@ public class CompanionEntity extends PathfinderMob {
         setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, ItemStack.EMPTY);
     }
 }
-

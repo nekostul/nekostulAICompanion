@@ -1,5 +1,6 @@
 package ru.nekostul.aicompanion.entity.ai;
 
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Player;
@@ -8,27 +9,23 @@ import net.minecraft.world.phys.Vec3;
 final class CompanionMovementController {
     private enum MoveState {
         WALK,
-        RUN,
-        RUN_JUMP
+        RUN
     }
 
-    private static final double WALK_SPEED = 0.95D;
-    private static final double RUN_SPEED = 1.25D;
-    private static final double WALK_DISTANCE_SQR = 36.0D;
-    private static final double RUN_DISTANCE_SQR = 121.0D;
-    private static final double JUMP_DISTANCE_SQR = 144.0D;
-    private static final double CATCHUP_DISTANCE_SQR = 400.0D;
-    private static final double HOLD_DISTANCE_SQR = 36.0D;
+    private static final double PLAYER_WALK_SPEED = 0.3D;
+    private static final double PLAYER_SPRINT_MULTIPLIER = 1.5D;
+    private static final double WALK_DISTANCE_SQR = 16.0D;
+    private static final double RUN_DISTANCE_SQR = 16.0D;
+    private static final double HOLD_DISTANCE_SQR = 4.0D;
     private static final double PLAYER_IDLE_SPEED = 0.02D;
-    private static final double PLAYER_WALK_RATIO_MIN = 0.6D;
-    private static final double PLAYER_WALK_RATIO_MAX = 1.2D;
-    private static final double PLAYER_RUN_RATIO_MIN = 0.9D;
-    private static final double PLAYER_RUN_RATIO_MAX = 1.45D;
+    private static final double PLAYER_WALK_RATIO_MIN = 1.0D;
+    private static final double PLAYER_WALK_RATIO_MAX = 1.0D;
+    private static final double PLAYER_RUN_RATIO_MIN = 1.0D;
+    private static final double PLAYER_RUN_RATIO_MAX = 1.0D;
     private static final int STATE_LOCK_TICKS = 20;
     private static final int JUMP_COOLDOWN_TICKS = 8;
     private static final double SPEED_STEP_UP = 0.05D;
     private static final double SPEED_STEP_DOWN = 0.02D;
-    private static final double JUMP_SPEED_BONUS = 0.0D;
 
     private final PathfinderMob mob;
     private final double maxSpeedModifier;
@@ -44,7 +41,7 @@ final class CompanionMovementController {
         this.mob = mob;
         this.maxSpeedModifier = maxSpeedModifier;
         this.safeMovement = new CompanionSafeMovement(mob);
-        this.currentSpeed = Math.min(WALK_SPEED, maxSpeedModifier);
+        this.currentSpeed = Math.min(walkSpeedModifier(), maxSpeedModifier);
     }
 
     double update(Player target, Vec3 followPos, long gameTime, double distanceSqr) {
@@ -64,11 +61,7 @@ final class CompanionMovementController {
             stateLockUntilTick = gameTime + STATE_LOCK_TICKS;
         }
         double wantedSpeed = desiredSpeed(distanceSqr, playerRatio);
-        if (state == MoveState.RUN_JUMP && !mob.onGround()) {
-            wantedSpeed = Math.min(maxSpeedModifier, wantedSpeed + JUMP_SPEED_BONUS);
-        }
         currentSpeed = approach(currentSpeed, wantedSpeed, SPEED_STEP_UP, SPEED_STEP_DOWN);
-        tryJump(gameTime, distanceSqr);
         return currentSpeed;
     }
 
@@ -76,7 +69,7 @@ final class CompanionMovementController {
         state = MoveState.WALK;
         stateLockUntilTick = 0L;
         nextJumpTick = 0L;
-        currentSpeed = Math.min(WALK_SPEED, maxSpeedModifier);
+        currentSpeed = Math.min(walkSpeedModifier(), maxSpeedModifier);
         holdPosition = false;
         safetyLevel = CompanionSafeMovement.SafetyLevel.SAFE;
     }
@@ -86,60 +79,58 @@ final class CompanionMovementController {
     }
 
     private MoveState chooseState(Player target, double distanceSqr, double playerRatio) {
-        boolean far = distanceSqr > RUN_DISTANCE_SQR;
-        boolean veryFar = distanceSqr > CATCHUP_DISTANCE_SQR;
-        boolean sprinting = target.isSprinting() || playerRatio > 1.2D;
-
         if (safetyLevel != CompanionSafeMovement.SafetyLevel.SAFE) {
             return MoveState.WALK;
         }
-        if (state == MoveState.RUN_JUMP) {
-            if (!sprinting && distanceSqr < JUMP_DISTANCE_SQR) {
-                return MoveState.RUN;
-            }
-            return MoveState.RUN_JUMP;
-        }
-        if (state == MoveState.RUN) {
-            if (!far) {
-                return MoveState.WALK;
-            }
-            if (sprinting || veryFar) {
-                return MoveState.RUN_JUMP;
-            }
+        if (distanceSqr > WALK_DISTANCE_SQR) {
             return MoveState.RUN;
-        }
-
-        if (far) {
-            return (sprinting || veryFar) ? MoveState.RUN_JUMP : MoveState.RUN;
         }
         return MoveState.WALK;
     }
 
     private double desiredSpeed(double distanceSqr, double playerRatio) {
         double speed;
-        if (distanceSqr <= WALK_DISTANCE_SQR) {
-            speed = WALK_SPEED * clamp(playerRatio, PLAYER_WALK_RATIO_MIN, PLAYER_WALK_RATIO_MAX);
+        double walkSpeed = walkSpeedModifier();
+        double runSpeed = runSpeedModifier();
+        if (RUN_DISTANCE_SQR <= WALK_DISTANCE_SQR) {
+            if (distanceSqr <= WALK_DISTANCE_SQR) {
+                speed = walkSpeed * clamp(playerRatio, PLAYER_WALK_RATIO_MIN, PLAYER_WALK_RATIO_MAX);
+            } else {
+                speed = runSpeed * clamp(playerRatio, PLAYER_RUN_RATIO_MIN, PLAYER_RUN_RATIO_MAX);
+            }
+        } else if (distanceSqr <= WALK_DISTANCE_SQR) {
+            speed = walkSpeed * clamp(playerRatio, PLAYER_WALK_RATIO_MIN, PLAYER_WALK_RATIO_MAX);
         } else if (distanceSqr >= RUN_DISTANCE_SQR) {
-            speed = RUN_SPEED * clamp(playerRatio, PLAYER_RUN_RATIO_MIN, PLAYER_RUN_RATIO_MAX);
+            speed = runSpeed * clamp(playerRatio, PLAYER_RUN_RATIO_MIN, PLAYER_RUN_RATIO_MAX);
         } else {
             double t = (distanceSqr - WALK_DISTANCE_SQR) / (RUN_DISTANCE_SQR - WALK_DISTANCE_SQR);
-            double walkSpeed = WALK_SPEED * clamp(playerRatio, PLAYER_WALK_RATIO_MIN, PLAYER_WALK_RATIO_MAX);
-            double runSpeed = RUN_SPEED * clamp(playerRatio, PLAYER_RUN_RATIO_MIN, PLAYER_RUN_RATIO_MAX);
-            speed = lerp(walkSpeed, runSpeed, t);
+            double walkBlend = walkSpeedModifier() * clamp(playerRatio, PLAYER_WALK_RATIO_MIN, PLAYER_WALK_RATIO_MAX);
+            double runBlend = runSpeedModifier() * clamp(playerRatio, PLAYER_RUN_RATIO_MIN, PLAYER_RUN_RATIO_MAX);
+            speed = lerp(walkBlend, runBlend, t);
         }
         if (safetyLevel == CompanionSafeMovement.SafetyLevel.CAUTION) {
-            speed = Math.min(speed, WALK_SPEED * 0.85D);
+            speed = Math.min(speed, walkSpeedModifier() * 0.85D);
         }
         return Math.min(speed, maxSpeedModifier);
     }
 
-    private void tryJump(long gameTime, double distanceSqr) {
-        if (state != MoveState.RUN_JUMP) {
-            return;
+    private double walkSpeedModifier() {
+        return speedModifierFor(PLAYER_WALK_SPEED);
+    }
+
+    private double runSpeedModifier() {
+        return speedModifierFor(PLAYER_WALK_SPEED * PLAYER_SPRINT_MULTIPLIER);
+    }
+
+    private double speedModifierFor(double desiredSpeed) {
+        double base = mob.getAttributeValue(Attributes.MOVEMENT_SPEED);
+        if (base <= 0.0D) {
+            return 0.0D;
         }
-        if (distanceSqr < JUMP_DISTANCE_SQR) {
-            return;
-        }
+        return desiredSpeed / base;
+    }
+
+    private void tryJump(long gameTime) {
         if (safetyLevel != CompanionSafeMovement.SafetyLevel.SAFE) {
             return;
         }
@@ -149,8 +140,23 @@ final class CompanionMovementController {
         if (gameTime < nextJumpTick) {
             return;
         }
+        if (!shouldJumpForPath()) {
+            return;
+        }
         mob.getJumpControl().jump();
         nextJumpTick = gameTime + JUMP_COOLDOWN_TICKS;
+    }
+
+    private boolean shouldJumpForPath() {
+        if (mob.getNavigation() == null) {
+            return false;
+        }
+        net.minecraft.world.level.pathfinder.Path path = mob.getNavigation().getPath();
+        if (path == null || path.isDone()) {
+            return false;
+        }
+        BlockPos next = path.getNextNodePos();
+        return next.getY() > mob.getBlockY();
     }
 
     private boolean shouldHold(Player target, double distanceSqr) {

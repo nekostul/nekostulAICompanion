@@ -9,6 +9,7 @@ import net.minecraft.tags.ItemTags;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BlockItem;
@@ -64,7 +65,7 @@ public final class CompanionTreeHarvestController {
     private static final int RESOURCE_SCAN_RADIUS = CHUNK_RADIUS * 16;
     private static final int RESOURCE_SCAN_COOLDOWN_TICKS = 80;
     private static final float RESOURCE_FOV_DOT = -1.0F;
-    private static final int MAX_SCAN_BLOCKS_PER_TICK = 8192;
+    private static final int MAX_SCAN_BLOCKS_PER_TICK = 200000;
     private static final int MAX_PATH_CANDIDATES = 24;
     private static final int MAX_PATH_CHECKS_PER_TICK = 2;
     private static final double PATH_DETOUR_MULTIPLIER = 2.0D;
@@ -81,6 +82,7 @@ public final class CompanionTreeHarvestController {
     private static final int STUCK_RETRY_INTERVAL_TICKS = 40;
     private static final int STUCK_RETRY_LIMIT = 10;
     private static final double STUCK_MOVE_EPSILON_SQR = 0.0004D;
+    private static final double TREE_MOVE_SPEED_BLOCKS_PER_TICK = 0.35D;
     private static final GameProfile MINING_PROFILE = new GameProfile(
             UUID.fromString("d44fdfd6-11c2-4766-9fd2-9a7f702cc563"), "CompanionLumber");
 
@@ -107,6 +109,8 @@ public final class CompanionTreeHarvestController {
     private BlockPos treeChopLockedBase;
     private final Set<BlockPos> treeChopTrackedLogs = new HashSet<>();
     private boolean forceTrunkChop;
+    private boolean scanSawCandidate;
+    private boolean lastScanHadCandidates;
     private long nextScanTick = -1L;
     private BlockPos cachedTarget;
     private long lastScanTick = -1L;
@@ -205,6 +209,10 @@ public final class CompanionTreeHarvestController {
                     return finalizeResult(Result.IN_PROGRESS, gameTime);
                 }
                 if (gameTime == lastScanTick && !lastScanFound) {
+                    if (!lastScanHadCandidates) {
+                        clearTargetState();
+                        return finalizeResult(Result.NOT_FOUND, gameTime);
+                    }
                     failedSearchAttempts++;
                     if (failedSearchAttempts >= TREE_SEARCH_RETRY_LIMIT) {
                         clearTargetState();
@@ -253,6 +261,10 @@ public final class CompanionTreeHarvestController {
         updateProgress(gameTime);
         Result stuckResult = handleStuckRestart(gameTime);
         return stuckResult != null ? stuckResult : result;
+    }
+
+    private void noteScanCandidate() {
+        scanSawCandidate = true;
     }
 
     private void updateProgress(long gameTime) {
@@ -476,7 +488,7 @@ public final class CompanionTreeHarvestController {
                 resetMiningProgress();
                 return Result.IN_PROGRESS;
             }
-            owner.getNavigation().moveTo(center.x, center.y, center.z, 1.0D);
+            owner.getNavigation().moveTo(center.x, center.y, center.z, speedModifierFor(TREE_MOVE_SPEED_BLOCKS_PER_TICK));
             resetMiningProgress();
             return Result.IN_PROGRESS;
         }
@@ -584,6 +596,7 @@ public final class CompanionTreeHarvestController {
         }
         if (searchStartTick < 0L) {
             searchStartTick = gameTime;
+            scanSawCandidate = false;
         }
         BlockPos origin = owner.blockPosition();
         TargetSelection nearSelection = stepNearScan(origin);
@@ -1269,6 +1282,14 @@ public final class CompanionTreeHarvestController {
         return state.getDestroyProgress(fakePlayer, serverLevel, pos);
     }
 
+    private double speedModifierFor(double desiredSpeed) {
+        double base = owner.getAttributeValue(Attributes.MOVEMENT_SPEED);
+        if (base <= 0.0D) {
+            return 0.0D;
+        }
+        return desiredSpeed / base;
+    }
+
     private void resetMiningProgress() {
         if (miningProgressPos != null && owner.level() instanceof ServerLevel serverLevel) {
             serverLevel.destroyBlockProgress(owner.getId(), miningProgressPos, -1);
@@ -1344,6 +1365,8 @@ public final class CompanionTreeHarvestController {
         cachedTarget = null;
         lastScanTick = -1L;
         lastScanFound = true;
+        scanSawCandidate = false;
+        lastScanHadCandidates = false;
         searchStartTick = -1L;
         scanState = null;
         pathCheckState = null;
@@ -1363,8 +1386,10 @@ public final class CompanionTreeHarvestController {
     private void finishScan(TargetSelection selection, long gameTime, boolean found) {
         lastScanTick = gameTime;
         lastScanFound = found;
+        lastScanHadCandidates = scanSawCandidate || found;
         nextScanTick = gameTime + RESOURCE_SCAN_COOLDOWN_TICKS;
         cachedTarget = found && selection != null ? selection.treeBase : null;
+        scanSawCandidate = false;
         searchStartTick = -1L;
         scanState = null;
         pathCheckState = null;
@@ -1641,6 +1666,7 @@ public final class CompanionTreeHarvestController {
                 BlockState state = controller.owner.level().getBlockState(pos);
                 TargetSelection selection = controller.resolveTreeSelection(pos.immutable(), state);
                 if (selection != null) {
+                    controller.noteScanCandidate();
                     TargetSelection resolved = controller.resolveTreeObstruction(selection);
                     if (resolved != null && (resolved.pendingResource == null || controller.isTreeObstacle(resolved))) {
                         if (requireVisible && resolved.pendingResource != null) {
