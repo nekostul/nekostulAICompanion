@@ -1,7 +1,13 @@
 package ru.nekostul.aicompanion.entity;
 
 import net.minecraft.network.chat.Component;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.TagKey;
+import net.minecraft.world.entity.ai.village.poi.PoiManager;
+import net.minecraft.world.entity.ai.village.poi.PoiType;
 import net.minecraft.world.entity.player.Player;
 
 import ru.nekostul.aicompanion.entity.command.CompanionCommandParser;
@@ -24,6 +30,13 @@ final class CompanionTaskCoordinator {
         DELIVERING,
         DELIVERING_ALL
     }
+
+    private static final int VILLAGE_POI_RADIUS = 32;
+    private static final TagKey<PoiType> VILLAGE_POI_TAG = TagKey.create(
+            Registries.POINT_OF_INTEREST_TYPE,
+            ResourceLocation.fromNamespaceAndPath("minecraft", "village"));
+    private static final String TREE_FAIL_KEY = "entity.aicompanion.companion.tree.harvest.failed";
+    private static final String TREE_VILLAGE_BLOCK_KEY = "entity.aicompanion.companion.tree.harvest.village_block";
 
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
@@ -151,6 +164,14 @@ final class CompanionTaskCoordinator {
     }
 
     private void startRequest(Player player, CompanionCommandParser.CommandRequest parsed) {
+        if (parsed.getTreeMode() != null
+                && parsed.getTreeMode() != ru.nekostul.aicompanion.entity.tree.CompanionTreeRequestMode.NONE
+                && isPlayerInVillage(player)) {
+            owner.sendReply(player, Component.translatable(TREE_VILLAGE_BLOCK_KEY));
+            activeRequest = null;
+            taskState = TaskState.IDLE;
+            return;
+        }
         activeRequest = new CompanionResourceRequest(player.getUUID(), parsed.getResourceType(), parsed.getAmount(),
                 parsed.getTreeMode());
         if (parsed.getResourceType().isBucketResource()) {
@@ -211,6 +232,13 @@ final class CompanionTaskCoordinator {
                 treeHarvest.resetAfterRequest();
                 taskState = TaskState.DELIVERING;
                 delivery.startDelivery();
+                return;
+            }
+            if (treeResult == CompanionTreeHarvestController.Result.FAILED) {
+                owner.sendReply(player, Component.translatable(TREE_FAIL_KEY));
+                treeHarvest.resetAfterRequest();
+                activeRequest = null;
+                taskState = TaskState.IDLE;
                 return;
             }
             if (treeResult == CompanionTreeHarvestController.Result.NOT_FOUND) {
@@ -285,5 +313,18 @@ final class CompanionTaskCoordinator {
             return "entity.aicompanion.companion.bucket.missing.lava";
         }
         return "entity.aicompanion.companion.gather.missing";
+    }
+
+    private boolean isPlayerInVillage(Player player) {
+        if (!(player.level() instanceof ServerLevel serverLevel)) {
+            return false;
+        }
+        PoiManager poiManager = serverLevel.getPoiManager();
+        return poiManager.getInRange(holder -> holder.is(VILLAGE_POI_TAG),
+                player.blockPosition(),
+                VILLAGE_POI_RADIUS,
+                PoiManager.Occupancy.ANY)
+                .findAny()
+                .isPresent();
     }
 }

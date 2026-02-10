@@ -10,18 +10,12 @@ import net.minecraft.world.item.Items;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
 import ru.nekostul.aicompanion.entity.inventory.CompanionDropTracker;
 
-import java.lang.reflect.Method;
 import java.util.Random;
 import java.util.UUID;
 
 public final class CompanionPickupGratitude {
-    private static final String[] THANK_KEYS = range("entity.aicompanion.companion.thanks.pickup.", 1, 6);
+    private static final String[] THANK_KEYS = range("entity.aicompanion.companion.thanks.pickup.", 1, 20);
     private static final int THANK_COOLDOWN_TICKS = 200;
-
-    private static Method ownerMethod;
-    private static Method throwerMethod;
-    private static boolean ownerResolved;
-    private static boolean throwerResolved;
 
     private final CompanionEntity owner;
     private final Random random = new Random();
@@ -81,55 +75,6 @@ public final class CompanionPickupGratitude {
             return null;
         }
         return player;
-    }
-
-    private UUID resolveOwner(ItemEntity itemEntity) {
-        UUID ownerId = invokeUuid(itemEntity, ownerMethod, "getOwner");
-        if (ownerId != null) {
-            return ownerId;
-        }
-        return invokeUuid(itemEntity, throwerMethod, "getThrower");
-    }
-
-    private UUID invokeUuid(ItemEntity entity, Method cached, String methodName) {
-        Method method = cached;
-        if (method == null) {
-            if ("getOwner".equals(methodName)) {
-                if (ownerResolved) {
-                    return null;
-                }
-                method = findMethod(entity, methodName);
-                ownerMethod = method;
-                ownerResolved = true;
-            } else {
-                if (throwerResolved) {
-                    return null;
-                }
-                method = findMethod(entity, methodName);
-                throwerMethod = method;
-                throwerResolved = true;
-            }
-        }
-        if (method == null) {
-            return null;
-        }
-        try {
-            Object result = method.invoke(entity);
-            if (result instanceof UUID uuid) {
-                return uuid;
-            }
-        } catch (Exception ignored) {
-            return null;
-        }
-        return null;
-    }
-
-    private Method findMethod(ItemEntity entity, String name) {
-        try {
-            return entity.getClass().getMethod(name);
-        } catch (NoSuchMethodException ignored) {
-            return null;
-        }
     }
 
     private int pickIndex() {

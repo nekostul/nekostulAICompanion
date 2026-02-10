@@ -1,15 +1,17 @@
 package ru.nekostul.aicompanion.entity.mining;
 
+import com.mojang.authlib.GameProfile;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.ItemTags;
+import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import net.minecraft.world.item.TieredItem;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -18,6 +20,8 @@ import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.common.util.FakePlayer;
+import net.minecraftforge.common.util.FakePlayerFactory;
 
 import java.util.List;
 import java.util.UUID;
@@ -55,12 +59,16 @@ public final class CompanionGatheringController {
     private static final float VISIBLE_FOV_DOT = RESOURCE_FOV_DOT;
     private static final int MAX_SCAN_BLOCKS_PER_TICK = 256;
     private static final int MAX_STONE_SCAN_COLUMNS_PER_TICK = 64;
+    private static final int NEAR_SCAN_RADIUS = 12;
+    private static final int NEAR_SCAN_HEIGHT = 8;
     private static final int LOCAL_RADIUS = 3;
     private static final int LOCAL_HEIGHT = 4;
     private static final int LOCAL_LOG_HEIGHT = 8;
     private static final int LOG_FROM_LEAVES_RADIUS = 2;
     private static final int LOG_FROM_LEAVES_MAX_DEPTH = 6;
     private static final int STONE_DIG_MAX_DEPTH = 8;
+    private static final GameProfile MINING_PROFILE = new GameProfile(
+            UUID.fromString("a0f7c96f-0a96-4b07-b7c6-8f2c19b2b9e4"), "CompanionMiner");
 
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
@@ -245,6 +253,14 @@ public final class CompanionGatheringController {
             resourceAnchor = null;
             lastMinedBlock = null;
         }
+        if (type != CompanionResourceType.LOG) {
+            TargetSelection near = scanArea(type, owner.blockPosition(), NEAR_SCAN_RADIUS, NEAR_SCAN_HEIGHT,
+                    owner.blockPosition(), Math.max(NEAR_SCAN_RADIUS, NEAR_SCAN_HEIGHT) + 1, false);
+            if (near != null) {
+                finishScan(near, gameTime, true);
+                return near;
+            }
+        }
         if (gameTime < nextScanTick && cachedTarget != null && isCachedTargetValid(type, cachedTarget)) {
             return new TargetSelection(cachedTarget, cachedTarget, cachedTarget, null);
         }
@@ -336,6 +352,7 @@ public final class CompanionGatheringController {
                                      BlockPos distanceOrigin,
                                      double maxDistance,
                                      boolean scoreByTarget) {
+        boolean allowOccluded = type != CompanionResourceType.LOG;
         Vec3 eye = owner.getEyePosition();
         Vec3 look = owner.getLookAngle().normalize();
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
@@ -365,7 +382,7 @@ public final class CompanionGatheringController {
                     if (raySelection == null) {
                         continue;
                     }
-                    if (raySelection.pendingResource != null) {
+                    if (raySelection.pendingResource != null && !allowOccluded) {
                         continue;
                     }
                     BlockPos scorePos = scoreByTarget ? raySelection.target : raySelection.resourcePos;
@@ -387,6 +404,7 @@ public final class CompanionGatheringController {
                                             BlockPos distanceOrigin,
                                             double maxDistance,
                                             boolean scoreByTarget) {
+        boolean allowOccluded = type != CompanionResourceType.LOG;
         Vec3 eye = owner.getEyePosition();
         Vec3 look = owner.getLookAngle().normalize();
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
@@ -413,7 +431,7 @@ public final class CompanionGatheringController {
                         continue;
                     }
                     TargetSelection raySelection = resolveObstruction(selection.resourcePos, selection.sightPos);
-                    if (raySelection == null || raySelection.pendingResource != null) {
+                    if (raySelection == null || (raySelection.pendingResource != null && !allowOccluded)) {
                         continue;
                     }
                     BlockPos scorePos = scoreByTarget ? raySelection.target : raySelection.resourcePos;
@@ -474,22 +492,10 @@ public final class CompanionGatheringController {
 
     private void startVisibleScan(CompanionResourceType type, BlockPos origin) {
         scanPhase = ScanPhase.VISIBLE;
+        boolean requireLineOfSight = type == CompanionResourceType.LOG;
         scanState = new ScanState(type, origin, RESOURCE_SCAN_RADIUS, RESOURCE_SCAN_RADIUS, origin,
-                RESOURCE_SCAN_RADIUS, false, true, VISIBLE_FOV_DOT, true);
+                RESOURCE_SCAN_RADIUS, false, requireLineOfSight, VISIBLE_FOV_DOT, true);
         stoneDigScanState = null;
-    }
-
-    private void startOccludedScan(CompanionResourceType type, BlockPos origin) {
-        scanPhase = ScanPhase.OCCLUDED;
-        scanState = new ScanState(type, origin, RESOURCE_SCAN_RADIUS, RESOURCE_SCAN_RADIUS, origin,
-                RESOURCE_SCAN_RADIUS, false, false, RESOURCE_FOV_DOT, true);
-        stoneDigScanState = null;
-    }
-
-    private void startStoneDigScan(BlockPos origin) {
-        scanPhase = ScanPhase.STONE_DIG;
-        scanState = null;
-        stoneDigScanState = new StoneDigScanState(origin, RESOURCE_SCAN_RADIUS);
     }
 
     private boolean isScanCompatible(CompanionResourceType type, BlockPos origin) {
@@ -629,35 +635,28 @@ public final class CompanionGatheringController {
     }
 
     private float getBreakProgress(BlockState state, BlockPos pos) {
-        float hardness = state.getDestroySpeed(owner.level(), pos);
-        if (hardness <= 0.0F) {
+        if (!(owner.level() instanceof ServerLevel serverLevel)) {
             return 0.0F;
         }
-        ItemStack tool = owner.getMainHandItem();
-        float toolSpeed = 1.0F;
-        if (!tool.isEmpty()) {
-            toolSpeed = resolveToolSpeed(state, tool);
+        FakePlayer fakePlayer = FakePlayerFactory.get(serverLevel, MINING_PROFILE);
+        fakePlayer.setPos(owner.getX(), owner.getY(), owner.getZ());
+        fakePlayer.setPose(owner.getPose());
+        fakePlayer.setOnGround(owner.onGround());
+        fakePlayer.setXRot(owner.getXRot());
+        fakePlayer.setYRot(owner.getYRot());
+        fakePlayer.getInventory().selected = 0;
+        fakePlayer.setItemSlot(EquipmentSlot.MAINHAND, owner.getMainHandItem().copy());
+        fakePlayer.setItemSlot(EquipmentSlot.OFFHAND, owner.getOffhandItem().copy());
+        fakePlayer.setItemSlot(EquipmentSlot.HEAD, owner.getItemBySlot(EquipmentSlot.HEAD).copy());
+        fakePlayer.setItemSlot(EquipmentSlot.CHEST, owner.getItemBySlot(EquipmentSlot.CHEST).copy());
+        fakePlayer.setItemSlot(EquipmentSlot.LEGS, owner.getItemBySlot(EquipmentSlot.LEGS).copy());
+        fakePlayer.setItemSlot(EquipmentSlot.FEET, owner.getItemBySlot(EquipmentSlot.FEET).copy());
+        fakePlayer.removeAllEffects();
+        for (MobEffectInstance effect : owner.getActiveEffects()) {
+            fakePlayer.addEffect(new MobEffectInstance(effect));
         }
-        boolean canHarvest = !state.requiresCorrectToolForDrops() || tool.isCorrectToolForDrops(state);
-        float divisor = canHarvest ? 30.0F : 100.0F;
-        return toolSpeed / hardness / divisor;
-    }
-
-    private float resolveToolSpeed(BlockState state, ItemStack tool) {
-        float speed = tool.getDestroySpeed(state);
-        if (speed < 1.0F && tool.getItem() instanceof TieredItem tiered) {
-            if (isToolEffectiveForBlock(state, tool)) {
-                speed = tiered.getTier().getSpeed();
-            }
-        }
-        return Math.max(1.0F, speed);
-    }
-
-    private boolean isToolEffectiveForBlock(BlockState state, ItemStack tool) {
-        return (state.is(BlockTags.MINEABLE_WITH_AXE) && tool.is(ItemTags.AXES))
-                || (state.is(BlockTags.MINEABLE_WITH_PICKAXE) && tool.is(ItemTags.PICKAXES))
-                || (state.is(BlockTags.MINEABLE_WITH_SHOVEL) && tool.is(ItemTags.SHOVELS))
-                || (state.is(BlockTags.MINEABLE_WITH_HOE) && tool.is(ItemTags.HOES));
+        fakePlayer.updateFluidHeightAndDoFluidPushing(fluidState -> true);
+        return state.getDestroyProgress(fakePlayer, serverLevel, pos);
     }
 
     private void resetMiningProgress() {

@@ -69,7 +69,14 @@ public final class CompanionChatEvents {
             return true;
         }
 
+        if (handlePartyCommand(player, companion, message)) {
+            return true;
+        }
+
         if (containsCommandsKeyword(message)) {
+            if (!companion.canPlayerControl(player)) {
+                return true;
+            }
             if (companion.getMode() == CompanionEntity.CompanionMode.STOPPED) {
                 companion.sendCommandList(player);
                 return true;
@@ -79,6 +86,9 @@ public final class CompanionChatEvents {
 
         CompanionEntity.CompanionMode mode = parseMode(message);
         if (mode != null) {
+            if (!companion.canPlayerControl(player)) {
+                return true;
+            }
             boolean changed = companion.setMode(mode);
             if (changed) {
                 companion.sendReply(player, Component.translatable(modeKey(mode)));
@@ -145,15 +155,82 @@ public final class CompanionChatEvents {
         return null;
     }
 
-    private static void scheduleReply(ServerPlayer player, CompanionEntity companion, Component message) {
-        PENDING_CHAT_REPLIES.add(() -> {
-            if (player.isRemoved() || !player.isAlive()) {
-                return;
+    private static boolean handlePartyCommand(ServerPlayer player, CompanionEntity companion, String message) {
+        String normalized = normalize(message);
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        if (!normalized.startsWith("party") && !normalized.startsWith("\u043f\u0430\u0442\u0438")) {
+            return false;
+        }
+        String[] rawParts = message.trim().split("\\s+");
+        String[] parts = normalized.split("\\s+");
+        if (parts.length < 2) {
+            return true;
+        }
+        PartyAction action = parsePartyAction(parts[1]);
+        if (action == null) {
+            return true;
+        }
+        if (parts.length < 3 || rawParts.length < 3) {
+            return true;
+        }
+        String targetName = rawParts[2];
+        if (targetName.isEmpty()) {
+            return true;
+        }
+        if (!companion.canManageParty(player)) {
+            return true;
+        }
+        ServerPlayer target = resolvePlayerByName(player, targetName);
+        if (target == null) {
+            return true;
+        }
+        if (action == PartyAction.ADD) {
+            companion.addPartyMember(player, target);
+        } else if (action == PartyAction.REMOVE) {
+            companion.removePartyMember(player, target);
+        }
+        return true;
+    }
+
+    private static PartyAction parsePartyAction(String token) {
+        if (token == null || token.isEmpty()) {
+            return null;
+        }
+        if (token.equals("+") || token.startsWith("add") || token.startsWith("\u0434\u043e\u0431\u0430\u0432")) {
+            return PartyAction.ADD;
+        }
+        if (token.equals("-") || token.startsWith("remove") || token.startsWith("del")
+                || token.startsWith("\u0443\u0434\u0430\u043b") || token.startsWith("\u0443\u0431\u0435\u0440")) {
+            return PartyAction.REMOVE;
+        }
+        return null;
+    }
+
+    private static ServerPlayer resolvePlayerByName(ServerPlayer player, String name) {
+        if (player == null || name == null || name.isEmpty()) {
+            return null;
+        }
+        if (player.getServer() == null) {
+            return null;
+        }
+        for (ServerPlayer candidate : player.getServer().getPlayerList().getPlayers()) {
+            if (candidate.getGameProfile().getName().equalsIgnoreCase(name)) {
+                return candidate;
             }
-            if (companion.isRemoved() || !companion.isAlive()) {
-                return;
-            }
-            companion.sendReply(player, message);
-        });
+        }
+        return null;
+    }
+
+    private static String normalize(String message) {
+        return message.trim()
+                .toLowerCase(Locale.ROOT)
+                .replace('\u0451', '\u0435');
+    }
+
+    private enum PartyAction {
+        ADD,
+        REMOVE
     }
 }

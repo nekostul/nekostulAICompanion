@@ -54,6 +54,26 @@ public final class CompanionToolHandler {
         return true;
     }
 
+    public boolean prepareToolSilent(BlockState state, BlockPos targetPos) {
+        ToolType required = requiredTool(state);
+        if (required == null) {
+            return true;
+        }
+        toolRequestedThisTick = true;
+        TagKey<Item> tag = toolTag(required);
+        if (tag == null) {
+            return true;
+        }
+        if (owner.getMainHandItem().is(tag)) {
+            return true;
+        }
+        if (hasTool(tag)) {
+            equipment.equipBestTool(tag);
+            return owner.getMainHandItem().is(tag);
+        }
+        return true;
+    }
+
     public boolean ensurePickaxeForRequest(CompanionResourceType type, Player player, long gameTime) {
         if (!requiresPickaxe(type)) {
             return true;

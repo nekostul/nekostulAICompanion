@@ -1,23 +1,32 @@
 package ru.nekostul.aicompanion.entity.tree;
 
+import com.mojang.authlib.GameProfile;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.ItemTags;
+import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import net.minecraft.world.item.TieredItem;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.common.util.FakePlayer;
+import net.minecraftforge.common.util.FakePlayerFactory;
+import net.minecraftforge.fml.ModList;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -47,23 +56,30 @@ public final class CompanionTreeHarvestController {
         IN_PROGRESS,
         DONE,
         NEED_CHEST,
-        NOT_FOUND
+        NOT_FOUND,
+        FAILED
     }
 
     private static final int CHUNK_RADIUS = 6;
     private static final int RESOURCE_SCAN_RADIUS = CHUNK_RADIUS * 16;
     private static final int RESOURCE_SCAN_COOLDOWN_TICKS = 80;
     private static final float RESOURCE_FOV_DOT = -1.0F;
-    private static final int MAX_SCAN_BLOCKS_PER_TICK = 256;
+    private static final int MAX_SCAN_BLOCKS_PER_TICK = 8192;
     private static final int MAX_PATH_CANDIDATES = 24;
     private static final int MAX_PATH_CHECKS_PER_TICK = 2;
     private static final double PATH_DETOUR_MULTIPLIER = 2.0D;
-    private static final int TREE_SEARCH_TIMEOUT_TICKS = 100;
-    private static final int NEAR_SCAN_RADIUS = 8;
+    private static final int TREE_SEARCH_TIMEOUT_TICKS = 500;
+    private static final int NEAR_SCAN_RADIUS = 24;
     private static final int LOG_FROM_LEAVES_RADIUS = 2;
     private static final int LOG_FROM_LEAVES_MAX_DEPTH = 6;
     private static final int TREE_MAX_RADIUS = 9;
     private static final int TREE_MAX_BLOCKS = 1024;
+    private static final int MIN_TRUNK_HEIGHT = 3;
+    private static final int TREE_SEARCH_RETRY_LIMIT = 10;
+    private static final int LEAF_SEARCH_RADIUS = 4;
+    private static final int LEAF_SEARCH_EXTRA_HEIGHT = 4;
+    private static final GameProfile MINING_PROFILE = new GameProfile(
+            UUID.fromString("d44fdfd6-11c2-4766-9fd2-9a7f702cc563"), "CompanionLumber");
 
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
@@ -71,19 +87,22 @@ public final class CompanionTreeHarvestController {
     private final CompanionToolHandler toolHandler;
     private final CompanionMiningAnimator miningAnimator;
     private final CompanionMiningReach miningReach;
-    private final CompanionTreeChopper treeChopper;
 
     private CompanionTreeRequestMode treeMode = CompanionTreeRequestMode.NONE;
     private int requestAmount;
     private int treesRemaining;
     private int logsRequired;
     private int logsCollected;
+    private int logsBaseline;
     private UUID requestPlayerId;
     private BlockPos targetBlock;
     private BlockPos pendingResourceBlock;
     private BlockPos pendingSightPos;
     private BlockPos treeBasePos;
     private BlockPos trunkLogPos;
+    private BlockPos treeChopWaitPos;
+    private BlockPos treeChopLockedBase;
+    private final Set<BlockPos> treeChopTrackedLogs = new HashSet<>();
     private long nextScanTick = -1L;
     private BlockPos cachedTarget;
     private long lastScanTick = -1L;
@@ -92,7 +111,9 @@ public final class CompanionTreeHarvestController {
     private BlockPos miningProgressPos;
     private float miningProgress;
     private int miningProgressStage = -1;
+    private int failedSearchAttempts;
     private final Map<Item, Integer> collectedDrops = new HashMap<>();
+    private final Map<Item, Integer> treeChopBaseline = new HashMap<>();
     private ScanState scanState;
     private PathCheckState pathCheckState;
     private ScanState nearScanState;
@@ -108,8 +129,6 @@ public final class CompanionTreeHarvestController {
         this.toolHandler = toolHandler;
         this.miningAnimator = new CompanionMiningAnimator(owner);
         this.miningReach = new CompanionMiningReach(owner);
-        this.treeChopper = new CompanionTreeChopper(owner, inventory, this::recordDrops,
-                TREE_MAX_RADIUS, TREE_MAX_BLOCKS, LOG_FROM_LEAVES_RADIUS);
     }
 
     public Result tick(CompanionResourceRequest request, long gameTime) {
@@ -124,25 +143,63 @@ public final class CompanionTreeHarvestController {
             requestPlayerId = request.getPlayerId();
             if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
                 treesRemaining = requestAmount;
+                if (isTreeChopActive()) {
+                    captureTreeChopBaseline();
+                }
             } else {
                 logsRequired = requestAmount;
+                if (isTreeChopActive()) {
+                    logsBaseline = countLogsInInventory();
+                    logsCollected = 0;
+                }
             }
         }
         if (inventory.isFull()) {
             clearTargetState();
             return Result.NEED_CHEST;
         }
+        if (isTreeChopActive() && treeChopWaitPos != null) {
+            if (!isTreeChopComplete(treeChopWaitPos)) {
+                return Result.IN_PROGRESS;
+            }
+            collectTreeChopDrops(treeChopWaitPos);
+            treeChopWaitPos = null;
+            treeChopLockedBase = null;
+            treeChopTrackedLogs.clear();
+            if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
+                treesRemaining = Math.max(0, treesRemaining - 1);
+                failedSearchAttempts = 0;
+                resetScanCache();
+            }
+        }
+        if (treeMode == CompanionTreeRequestMode.LOG_BLOCKS && isTreeChopActive()) {
+            logsCollected = Math.max(0, countLogsInInventory() - logsBaseline);
+        }
         if (treeMode == CompanionTreeRequestMode.TREE_COUNT && treesRemaining <= 0 && targetBlock == null) {
+            if (isTreeChopActive()) {
+                captureTreeChopDrops();
+            }
             return Result.DONE;
         }
         if (treeMode == CompanionTreeRequestMode.LOG_BLOCKS && logsCollected >= logsRequired && targetBlock == null) {
+            if (isTreeChopInProgress()) {
+                return Result.IN_PROGRESS;
+            }
             return Result.DONE;
         }
         if (targetBlock == null || !isTargetValid()) {
             TargetSelection selection = findTreeTarget(gameTime);
             if (selection == null) {
+                if (isTreeChopInProgress()) {
+                    return Result.IN_PROGRESS;
+                }
                 if (gameTime == lastScanTick && !lastScanFound) {
-                    return Result.NOT_FOUND;
+                    failedSearchAttempts++;
+                    if (failedSearchAttempts >= TREE_SEARCH_RETRY_LIMIT) {
+                        clearTargetState();
+                        return Result.FAILED;
+                    }
+                    return Result.IN_PROGRESS;
                 }
                 return Result.IN_PROGRESS;
             }
@@ -150,6 +207,10 @@ public final class CompanionTreeHarvestController {
             resetMiningProgress();
         }
         return tickMining(gameTime);
+    }
+
+    public boolean isTreeChopInProgress() {
+        return isTreeChopActive() && treeChopLockedBase != null;
     }
 
     public List<ItemStack> takeCollectedDrops() {
@@ -201,7 +262,10 @@ public final class CompanionTreeHarvestController {
         }
         owner.getNavigation().stop();
         Player player = owner.getPlayerById(requestPlayerId);
-        if (!toolHandler.prepareTool(state, targetBlock, player, gameTime)) {
+        boolean suppressToolNotice = treeBasePos != null && pendingResourceBlock != null;
+        if (suppressToolNotice) {
+            toolHandler.prepareToolSilent(state, targetBlock);
+        } else if (!toolHandler.prepareTool(state, targetBlock, player, gameTime)) {
             resetMiningProgress();
             return Result.IN_PROGRESS;
         }
@@ -223,28 +287,24 @@ public final class CompanionTreeHarvestController {
         }
         if (miningProgress >= 1.0F) {
             resetMiningProgress();
-            if (treeBasePos != null && targetBlock.equals(treeBasePos)
-                    && CompanionConfig.isFullTreeChopEnabled()) {
-                boolean harvested = treeChopper.harvestTree(treeBasePos);
-                treeBasePos = null;
-                trunkLogPos = null;
-                resetScanCache();
-                if (!harvested) {
-                    clearTargetState();
-                    return Result.NEED_CHEST;
+            boolean mined = mineBlock(targetBlock);
+            if (!mined) {
+                clearTargetState();
+                if (isTreeChopActive()) {
+                    return Result.IN_PROGRESS;
                 }
-                if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
-                    treesRemaining = Math.max(0, treesRemaining - 1);
+                return Result.NEED_CHEST;
+            }
+            if (treeBasePos != null && isTreeChopActive() && targetBlock.equals(treeBasePos)) {
+                treeChopWaitPos = treeBasePos;
+                if (treeChopLockedBase == null) {
+                    treeChopLockedBase = treeBasePos;
+                    captureTreeChopLogPositions(treeBasePos);
                 }
                 clearTargetState();
                 return Result.IN_PROGRESS;
             }
-            boolean mined = mineBlock(targetBlock);
-            if (!mined) {
-                clearTargetState();
-                return Result.NEED_CHEST;
-            }
-            if (treeBasePos != null && !CompanionConfig.isFullTreeChopEnabled()) {
+            if (treeBasePos != null && !isTreeChopActive()) {
                 if (treeMode == CompanionTreeRequestMode.LOG_BLOCKS && logsCollected >= logsRequired) {
                     clearTargetState();
                     return Result.IN_PROGRESS;
@@ -263,6 +323,7 @@ public final class CompanionTreeHarvestController {
                     }
                     if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
                         treesRemaining = Math.max(0, treesRemaining - 1);
+                        failedSearchAttempts = 0;
                         resetScanCache();
                     }
                     clearTargetState();
@@ -278,20 +339,11 @@ public final class CompanionTreeHarvestController {
     }
 
     private TargetSelection findTreeTarget(long gameTime) {
-        if (gameTime < nextScanTick && cachedTarget != null) {
-            BlockState cached = owner.level().getBlockState(cachedTarget);
-            if (CompanionBlockRegistry.isLog(cached)) {
-                BlockPos base = findTreeBase(cachedTarget);
-                TargetSelection candidate = base != null
-                        ? new TargetSelection(base, base, cachedTarget)
-                        : new TargetSelection(cachedTarget, cachedTarget, cachedTarget);
-                TargetSelection resolved = resolveTreeObstruction(candidate);
-                if (resolved != null && (resolved.pendingResource == null || isTreeObstacle(resolved))
-                        && isPathAcceptable(resolved, owner.blockPosition().distSqr(resolved.treeBase))) {
-                    return resolved;
-                }
+        if (isTreeChopInProgress()) {
+            TargetSelection locked = resolveLockedTreeTarget();
+            if (locked != null) {
+                return locked;
             }
-            resetScanCache();
         }
         if (gameTime < nextScanTick && scanState == null && pathCheckState == null
                 && nearScanState == null && nearPathCheckState == null) {
@@ -305,6 +357,25 @@ public final class CompanionTreeHarvestController {
         if (nearSelection != null) {
             finishScan(nearSelection, gameTime, true);
             return nearSelection;
+        }
+        if (gameTime < nextScanTick && cachedTarget != null) {
+            BlockState cached = owner.level().getBlockState(cachedTarget);
+            if (CompanionBlockRegistry.isLog(cached)) {
+                BlockPos base = findTreeBase(cachedTarget);
+                if (base != null && !isValidTreeBase(base)) {
+                    resetScanCache();
+                    return null;
+                }
+                TargetSelection candidate = base != null
+                        ? new TargetSelection(base, base, cachedTarget)
+                        : new TargetSelection(cachedTarget, cachedTarget, cachedTarget);
+                TargetSelection resolved = resolveTreeObstruction(candidate);
+                if (resolved != null && (resolved.pendingResource == null || isTreeObstacle(resolved))
+                        && isPathAcceptable(resolved, owner.blockPosition().distSqr(resolved.treeBase))) {
+                    return resolved;
+                }
+            }
+            resetScanCache();
         }
         if (nearScanState != null || nearPathCheckState != null) {
             if (searchStartTick >= 0L && gameTime - searchStartTick >= TREE_SEARCH_TIMEOUT_TICKS) {
@@ -371,14 +442,16 @@ public final class CompanionTreeHarvestController {
         }
         if (nearScanState == null || !nearScanState.matches(origin)) {
             nearScanState = new ScanState(origin, owner.getEyePosition(), owner.getLookAngle().normalize(),
-                    NEAR_SCAN_RADIUS, true);
+                    NEAR_SCAN_RADIUS, false);
         }
         nearScanState.step(this, MAX_SCAN_BLOCKS_PER_TICK);
-        if (nearPathCheckState == null && !nearScanState.getCandidates().isEmpty()) {
-            nearPathCheckState = new PathCheckState(new ArrayList<>(nearScanState.getCandidates()));
-        }
-        if (nearScanState.isFinished() && nearPathCheckState == null) {
-            nearScanState = null;
+        if (nearScanState.isFinished()) {
+            if (nearPathCheckState == null && !nearScanState.getCandidates().isEmpty()) {
+                nearPathCheckState = new PathCheckState(new ArrayList<>(nearScanState.getCandidates()));
+            }
+            if (nearPathCheckState == null) {
+                nearScanState = null;
+            }
         }
         return null;
     }
@@ -387,18 +460,26 @@ public final class CompanionTreeHarvestController {
         if (CompanionBlockRegistry.isLog(state)) {
             BlockPos base = findTreeBase(pos);
             if (base != null) {
-                return new TargetSelection(base, base, pos);
+                if (!isValidTreeBase(base)) {
+                    return null;
+                }
+                BlockPos sight = isTreeChopActive() ? base : pos;
+                return new TargetSelection(base, base, sight);
             }
-            return new TargetSelection(pos, pos, pos);
+            return null;
         }
         if (CompanionBlockRegistry.isLeaves(state)) {
             BlockPos logPos = resolveLogFromLeaves(pos);
             if (logPos != null) {
                 BlockPos base = findTreeBase(logPos);
                 if (base != null) {
-                    return new TargetSelection(base, base, pos);
+                    if (!isValidTreeBase(base)) {
+                        return null;
+                    }
+                    BlockPos sight = isTreeChopActive() ? base : pos;
+                    return new TargetSelection(base, base, sight);
                 }
-                return new TargetSelection(logPos, logPos, pos);
+                return null;
             }
         }
         return null;
@@ -463,11 +544,6 @@ public final class CompanionTreeHarvestController {
         TargetSelection resolved = resolveObstruction(logPos, logPos);
         if (resolved == null) {
             return null;
-        }
-        if (!CompanionConfig.isFullTreeChopEnabled()
-                && resolved.pendingResource != null
-                && CompanionBlockRegistry.isLeaves(owner.level().getBlockState(resolved.target))) {
-            return new TargetSelection(logPos, base, logPos);
         }
         return new TargetSelection(resolved.target, base, resolved.sightPos, resolved.pendingResource, resolved.pendingSight);
     }
@@ -539,7 +615,9 @@ public final class CompanionTreeHarvestController {
             if (!visited.add(pos)) {
                 continue;
             }
-            if (start.distSqr(pos) > maxDistanceSqr) {
+            int dxBase = pos.getX() - start.getX();
+            int dzBase = pos.getZ() - start.getZ();
+            if (dxBase * dxBase + dzBase * dzBase > maxDistanceSqr) {
                 continue;
             }
             BlockState state = owner.level().getBlockState(pos);
@@ -550,6 +628,9 @@ public final class CompanionTreeHarvestController {
             boolean belowIsLog = CompanionBlockRegistry.isLog(belowState);
             boolean belowIsLeaves = CompanionBlockRegistry.isLeaves(belowState);
             if (!belowIsLog && !belowIsLeaves) {
+                if (!isSolidBaseSupport(pos.below(), belowState)) {
+                    continue;
+                }
                 boolean hasLogAbove = CompanionBlockRegistry.isLog(owner.level().getBlockState(pos.above()));
                 int y = pos.getY();
                 double dist = origin.distSqr(pos);
@@ -582,6 +663,67 @@ public final class CompanionTreeHarvestController {
         return bestWithAbove != null ? bestWithAbove : bestAny;
     }
 
+    private boolean isSolidBaseSupport(BlockPos pos, BlockState state) {
+        if (state.isAir()) {
+            return false;
+        }
+        if (!state.getFluidState().isEmpty()) {
+            return false;
+        }
+        return state.isFaceSturdy(owner.level(), pos, Direction.UP);
+    }
+
+    private boolean isValidTreeBase(BlockPos base) {
+        if (base == null) {
+            return false;
+        }
+        int trunkHeight = countTrunkHeight(base);
+        if (trunkHeight < MIN_TRUNK_HEIGHT) {
+            return false;
+        }
+        return hasTreeLeaves(base, trunkHeight);
+    }
+
+    private int countTrunkHeight(BlockPos base) {
+        if (base == null) {
+            return 0;
+        }
+        int maxY = Math.min(owner.level().getMaxBuildHeight() - 1,
+                base.getY() + TREE_MAX_RADIUS * 2 + LOG_FROM_LEAVES_MAX_DEPTH);
+        int height = 0;
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        for (int y = base.getY(); y <= maxY; y++) {
+            pos.set(base.getX(), y, base.getZ());
+            if (!CompanionBlockRegistry.isLog(owner.level().getBlockState(pos))) {
+                break;
+            }
+            height++;
+        }
+        return height;
+    }
+
+    private boolean hasTreeLeaves(BlockPos base, int trunkHeight) {
+        if (base == null || trunkHeight <= 0) {
+            return false;
+        }
+        int startY = Math.max(owner.level().getMinBuildHeight(), base.getY() + 1);
+        int endY = Math.min(owner.level().getMaxBuildHeight() - 1,
+                base.getY() + trunkHeight + LEAF_SEARCH_EXTRA_HEIGHT);
+        int leafStartY = Math.max(startY, base.getY() + Math.max(1, trunkHeight - LEAF_SEARCH_EXTRA_HEIGHT));
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        for (int dx = -LEAF_SEARCH_RADIUS; dx <= LEAF_SEARCH_RADIUS; dx++) {
+            for (int dz = -LEAF_SEARCH_RADIUS; dz <= LEAF_SEARCH_RADIUS; dz++) {
+                for (int y = leafStartY; y <= endY; y++) {
+                    pos.set(base.getX() + dx, y, base.getZ() + dz);
+                    if (CompanionBlockRegistry.isLeaves(owner.level().getBlockState(pos))) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     private void recordDrops(List<ItemStack> drops) {
         for (ItemStack stack : drops) {
             if (stack.isEmpty()) {
@@ -593,6 +735,177 @@ public final class CompanionTreeHarvestController {
                 logsCollected += stack.getCount();
             }
         }
+    }
+
+    private boolean isTreeChopActive() {
+        return CompanionConfig.isFullTreeChopEnabled() && ModList.get().isLoaded("treechop");
+    }
+
+    private void captureTreeChopBaseline() {
+        treeChopBaseline.clear();
+        for (ItemStack stack : inventory.getItems()) {
+            if (stack.isEmpty()) {
+                continue;
+            }
+            treeChopBaseline.merge(stack.getItem(), stack.getCount(), Integer::sum);
+        }
+    }
+
+    private void captureTreeChopDrops() {
+        if (treeChopBaseline.isEmpty()) {
+            return;
+        }
+        Map<Item, Integer> currentCounts = new HashMap<>();
+        for (ItemStack stack : inventory.getItems()) {
+            if (stack.isEmpty()) {
+                continue;
+            }
+            currentCounts.merge(stack.getItem(), stack.getCount(), Integer::sum);
+        }
+        collectedDrops.clear();
+        for (Map.Entry<Item, Integer> entry : currentCounts.entrySet()) {
+            int baseline = treeChopBaseline.getOrDefault(entry.getKey(), 0);
+            int delta = entry.getValue() - baseline;
+            if (delta > 0) {
+                collectedDrops.put(entry.getKey(), delta);
+            }
+        }
+    }
+
+    private void captureTreeChopLogPositions(BlockPos base) {
+        treeChopTrackedLogs.clear();
+        BlockPos start = resolveTreeChopLogStart(base);
+        if (start == null) {
+            return;
+        }
+        int maxY = Math.min(owner.level().getMaxBuildHeight() - 1,
+                start.getY() + TREE_MAX_RADIUS * 2 + LOG_FROM_LEAVES_MAX_DEPTH);
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        for (int y = start.getY(); y <= maxY && treeChopTrackedLogs.size() < TREE_MAX_BLOCKS; y++) {
+            pos.set(start.getX(), y, start.getZ());
+            if (!CompanionBlockRegistry.isLog(owner.level().getBlockState(pos))) {
+                break;
+            }
+            treeChopTrackedLogs.add(pos.immutable());
+        }
+    }
+
+    private BlockPos resolveTreeChopLogStart(BlockPos base) {
+        if (base == null) {
+            return null;
+        }
+        if (CompanionBlockRegistry.isLog(owner.level().getBlockState(base))) {
+            return base;
+        }
+        int maxY = Math.min(owner.level().getMaxBuildHeight() - 1,
+                base.getY() + TREE_MAX_RADIUS * 2 + LOG_FROM_LEAVES_MAX_DEPTH);
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        for (int y = base.getY() + 1; y <= maxY; y++) {
+            pos.set(base.getX(), y, base.getZ());
+            if (CompanionBlockRegistry.isLog(owner.level().getBlockState(pos))) {
+                return pos.immutable();
+            }
+        }
+        return null;
+    }
+
+    private boolean isTreeChopComplete(BlockPos base) {
+        if (base == null) {
+            return true;
+        }
+        if (treeChopTrackedLogs.isEmpty()) {
+            captureTreeChopLogPositions(base);
+        }
+        if (!treeChopTrackedLogs.isEmpty()) {
+            for (BlockPos pos : treeChopTrackedLogs) {
+                if (CompanionBlockRegistry.isLog(owner.level().getBlockState(pos))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return !hasNearbyTreeChopLogs(base);
+    }
+
+    private boolean hasNearbyTreeChopLogs(BlockPos base) {
+        int minY = Math.max(owner.level().getMinBuildHeight(), base.getY());
+        int maxY = Math.min(owner.level().getMaxBuildHeight() - 1,
+                base.getY() + TREE_MAX_RADIUS * 2 + LOG_FROM_LEAVES_MAX_DEPTH);
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        for (int y = minY; y <= maxY; y++) {
+            pos.set(base.getX(), y, base.getZ());
+            if (CompanionBlockRegistry.isLog(owner.level().getBlockState(pos))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private TargetSelection resolveLockedTreeTarget() {
+        BlockPos base = treeChopLockedBase;
+        if (base == null) {
+            return null;
+        }
+        if (!CompanionBlockRegistry.isLog(owner.level().getBlockState(base))) {
+            if (treeChopWaitPos == null) {
+                treeChopWaitPos = base;
+            }
+            return null;
+        }
+        TargetSelection candidate = new TargetSelection(base, base, base);
+        TargetSelection resolved = resolveTreeObstruction(candidate);
+        if (resolved == null) {
+            return null;
+        }
+        if (resolved.pendingResource == null || isTreeObstacle(resolved)) {
+            return resolved;
+        }
+        return resolved;
+    }
+
+    private void collectTreeChopDrops(BlockPos base) {
+        if (base == null || inventory.isFull()) {
+            return;
+        }
+        int vertical = TREE_MAX_RADIUS * 2 + LOG_FROM_LEAVES_MAX_DEPTH;
+        AABB range = new AABB(base).inflate(TREE_MAX_RADIUS, vertical, TREE_MAX_RADIUS);
+        List<ItemEntity> drops = owner.level().getEntitiesOfClass(ItemEntity.class, range);
+        for (ItemEntity itemEntity : drops) {
+            if (!itemEntity.isAlive()) {
+                continue;
+            }
+            ItemStack stack = itemEntity.getItem();
+            if (stack.isEmpty()) {
+                continue;
+            }
+            int before = stack.getCount();
+            inventory.add(stack);
+            int picked = before - stack.getCount();
+            if (picked <= 0) {
+                continue;
+            }
+            if (stack.isEmpty()) {
+                itemEntity.discard();
+            } else {
+                itemEntity.setItem(stack);
+            }
+            if (inventory.isFull()) {
+                break;
+            }
+        }
+    }
+
+    private int countLogsInInventory() {
+        int total = 0;
+        for (ItemStack stack : inventory.getItems()) {
+            if (stack.isEmpty()) {
+                continue;
+            }
+            if (CompanionResourceType.LOG.matchesItem(stack)) {
+                total += stack.getCount();
+            }
+        }
+        return total;
     }
 
     private boolean isBreakable(BlockState state, BlockPos pos) {
@@ -613,11 +926,14 @@ public final class CompanionTreeHarvestController {
         if (state.isAir()) {
             return false;
         }
+        if (isTreeChopActive()) {
+            return breakBlockWithPlayer(serverLevel, pos);
+        }
         ItemStack tool = owner.getMainHandItem();
         List<ItemStack> drops = Block.getDrops(state, serverLevel, pos, owner.level().getBlockEntity(pos),
                 owner, tool);
         if (CompanionBlockRegistry.isLeaves(state)) {
-            drops = CompanionTreeChopper.filterLeafDrops(drops);
+            drops = filterLeafDrops(drops);
         } else if (drops.isEmpty()) {
             Item item = state.getBlock().asItem();
             if (item != Items.AIR) {
@@ -634,36 +950,72 @@ public final class CompanionTreeHarvestController {
         return true;
     }
 
+    private boolean breakBlockWithPlayer(ServerLevel serverLevel, BlockPos pos) {
+        FakePlayer fakePlayer = FakePlayerFactory.get(serverLevel, MINING_PROFILE);
+        fakePlayer.setPos(owner.getX(), owner.getY(), owner.getZ());
+        fakePlayer.setPose(owner.getPose());
+        fakePlayer.setOnGround(owner.onGround());
+        fakePlayer.setXRot(owner.getXRot());
+        fakePlayer.setYRot(owner.getYRot());
+        fakePlayer.setGameMode(GameType.SURVIVAL);
+        fakePlayer.getInventory().selected = 0;
+        fakePlayer.setItemSlot(EquipmentSlot.MAINHAND, owner.getMainHandItem().copy());
+        fakePlayer.setItemSlot(EquipmentSlot.OFFHAND, owner.getOffhandItem().copy());
+        fakePlayer.setItemSlot(EquipmentSlot.HEAD, owner.getItemBySlot(EquipmentSlot.HEAD).copy());
+        fakePlayer.setItemSlot(EquipmentSlot.CHEST, owner.getItemBySlot(EquipmentSlot.CHEST).copy());
+        fakePlayer.setItemSlot(EquipmentSlot.LEGS, owner.getItemBySlot(EquipmentSlot.LEGS).copy());
+        fakePlayer.setItemSlot(EquipmentSlot.FEET, owner.getItemBySlot(EquipmentSlot.FEET).copy());
+        fakePlayer.removeAllEffects();
+        for (MobEffectInstance effect : owner.getActiveEffects()) {
+            fakePlayer.addEffect(new MobEffectInstance(effect));
+        }
+        boolean broken = fakePlayer.gameMode.destroyBlock(pos);
+        if (broken) {
+            CompanionToolWear.applyToolWear(owner, owner.getMainHandItem(), InteractionHand.MAIN_HAND);
+        }
+        return broken;
+    }
+
+    private static List<ItemStack> filterLeafDrops(List<ItemStack> drops) {
+        if (drops.isEmpty()) {
+            return drops;
+        }
+        List<ItemStack> filtered = new ArrayList<>();
+        for (ItemStack stack : drops) {
+            if (stack.isEmpty()) {
+                continue;
+            }
+            if (stack.is(ItemTags.LEAVES)) {
+                continue;
+            }
+            filtered.add(stack);
+        }
+        return filtered;
+    }
+
     private float getBreakProgress(BlockState state, BlockPos pos) {
-        float hardness = state.getDestroySpeed(owner.level(), pos);
-        if (hardness <= 0.0F) {
+        if (!(owner.level() instanceof ServerLevel serverLevel)) {
             return 0.0F;
         }
-        ItemStack tool = owner.getMainHandItem();
-        float toolSpeed = 1.0F;
-        if (!tool.isEmpty()) {
-            toolSpeed = resolveToolSpeed(state, tool);
+        FakePlayer fakePlayer = FakePlayerFactory.get(serverLevel, MINING_PROFILE);
+        fakePlayer.setPos(owner.getX(), owner.getY(), owner.getZ());
+        fakePlayer.setPose(owner.getPose());
+        fakePlayer.setOnGround(owner.onGround());
+        fakePlayer.setXRot(owner.getXRot());
+        fakePlayer.setYRot(owner.getYRot());
+        fakePlayer.getInventory().selected = 0;
+        fakePlayer.setItemSlot(EquipmentSlot.MAINHAND, owner.getMainHandItem().copy());
+        fakePlayer.setItemSlot(EquipmentSlot.OFFHAND, owner.getOffhandItem().copy());
+        fakePlayer.setItemSlot(EquipmentSlot.HEAD, owner.getItemBySlot(EquipmentSlot.HEAD).copy());
+        fakePlayer.setItemSlot(EquipmentSlot.CHEST, owner.getItemBySlot(EquipmentSlot.CHEST).copy());
+        fakePlayer.setItemSlot(EquipmentSlot.LEGS, owner.getItemBySlot(EquipmentSlot.LEGS).copy());
+        fakePlayer.setItemSlot(EquipmentSlot.FEET, owner.getItemBySlot(EquipmentSlot.FEET).copy());
+        fakePlayer.removeAllEffects();
+        for (MobEffectInstance effect : owner.getActiveEffects()) {
+            fakePlayer.addEffect(new MobEffectInstance(effect));
         }
-        boolean canHarvest = !state.requiresCorrectToolForDrops() || tool.isCorrectToolForDrops(state);
-        float divisor = canHarvest ? 30.0F : 100.0F;
-        return toolSpeed / hardness / divisor;
-    }
-
-    private float resolveToolSpeed(BlockState state, ItemStack tool) {
-        float speed = tool.getDestroySpeed(state);
-        if (speed < 1.0F && tool.getItem() instanceof TieredItem tiered) {
-            if (isToolEffectiveForBlock(state, tool)) {
-                speed = tiered.getTier().getSpeed();
-            }
-        }
-        return Math.max(1.0F, speed);
-    }
-
-    private boolean isToolEffectiveForBlock(BlockState state, ItemStack tool) {
-        return (state.is(BlockTags.MINEABLE_WITH_AXE) && tool.is(ItemTags.AXES))
-                || (state.is(BlockTags.MINEABLE_WITH_PICKAXE) && tool.is(ItemTags.PICKAXES))
-                || (state.is(BlockTags.MINEABLE_WITH_SHOVEL) && tool.is(ItemTags.SHOVELS))
-                || (state.is(BlockTags.MINEABLE_WITH_HOE) && tool.is(ItemTags.HOES));
+        fakePlayer.updateFluidHeightAndDoFluidPushing(fluidState -> true);
+        return state.getDestroyProgress(fakePlayer, serverLevel, pos);
     }
 
     private void resetMiningProgress() {
@@ -696,6 +1048,10 @@ public final class CompanionTreeHarvestController {
         pendingResourceBlock = selection.pendingResource;
         pendingSightPos = selection.pendingSight;
         treeBasePos = selection.treeBase;
+        if (isTreeChopActive() && treeChopLockedBase == null && treeBasePos != null) {
+            treeChopLockedBase = treeBasePos;
+            captureTreeChopLogPositions(treeBasePos);
+        }
         if (treeBasePos != null && (previousBase == null || !treeBasePos.equals(previousBase))) {
             trunkLogPos = treeBasePos;
         } else if (treeBasePos == null) {
@@ -719,8 +1075,14 @@ public final class CompanionTreeHarvestController {
         treesRemaining = 0;
         logsRequired = 0;
         logsCollected = 0;
+        logsBaseline = 0;
         requestPlayerId = null;
+        treeChopWaitPos = null;
+        treeChopLockedBase = null;
+        treeChopTrackedLogs.clear();
+        failedSearchAttempts = 0;
         collectedDrops.clear();
+        treeChopBaseline.clear();
         resetScanCache();
     }
 
@@ -760,7 +1122,7 @@ public final class CompanionTreeHarvestController {
         }
         int nodes = findBestPathNodes(selection.treeBase);
         if (nodes < 0) {
-            return false;
+            return true;
         }
         if (nodes <= 0) {
             return true;
@@ -813,14 +1175,11 @@ public final class CompanionTreeHarvestController {
             return false;
         }
         BlockState state = owner.level().getBlockState(selection.target);
-        if (CompanionConfig.isFullTreeChopEnabled()) {
-            return CompanionBlockRegistry.isLeaves(state) || CompanionBlockRegistry.isLog(state);
-        }
-        return CompanionBlockRegistry.isLog(state);
+        return isBreakable(state, selection.target);
     }
 
     private boolean shouldPlaceStepBlock() {
-        if (CompanionConfig.isFullTreeChopEnabled() || treeBasePos == null) {
+        if (isTreeChopActive() || treeBasePos == null) {
             return false;
         }
         if (treeMode == CompanionTreeRequestMode.LOG_BLOCKS && logsCollected >= logsRequired) {
@@ -976,7 +1335,6 @@ public final class CompanionTreeHarvestController {
         private int iy;
         private int iz;
         private final List<Candidate> candidates = new ArrayList<>();
-        private boolean foundVisible;
         private boolean finished;
 
         private ScanState(BlockPos origin, Vec3 eye, Vec3 look, int radius, boolean requireVisible) {
@@ -1062,13 +1420,6 @@ public final class CompanionTreeHarvestController {
 
         private void offerCandidate(TargetSelection selection, double distanceSqr, boolean visible) {
             if (requireVisible && !visible) {
-                return;
-            }
-            if (!requireVisible && visible && !foundVisible) {
-                candidates.clear();
-                foundVisible = true;
-            }
-            if (!requireVisible && foundVisible && !visible) {
                 return;
             }
             int index = 0;

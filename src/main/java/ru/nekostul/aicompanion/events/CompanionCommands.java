@@ -20,17 +20,10 @@ import ru.nekostul.aicompanion.client.gui.CompanionEquipmentMenu;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
 import ru.nekostul.aicompanion.entity.CompanionSingleNpcManager;
 
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-
 @Mod.EventBusSubscriber(modid = AiCompanionMod.MOD_ID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class CompanionCommands {
-    private static final String TELEPORT_NONE_KEY = "entity.aicompanion.companion.teleport.none";
     private static final String TREECHOP_ENABLED_KEY = "entity.aicompanion.companion.treechop.enabled";
     private static final String TREECHOP_DISABLED_KEY = "entity.aicompanion.companion.treechop.disabled";
-    private static final int NO_REQUEST_COOLDOWN_TICKS = 1200;
-    private static final Map<UUID, Long> NO_REQUEST_MESSAGE_TICKS = new ConcurrentHashMap<>();
 
     private CompanionCommands() {
     }
@@ -77,7 +70,7 @@ public final class CompanionCommands {
     private static int handleGui(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
         ServerPlayer player = context.getSource().getPlayerOrException();
         CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
-        if (companion == null) {
+        if (companion == null || !companion.canPlayerControl(player)) {
             return 0;
         }
         NetworkHooks.openScreen(player, new SimpleMenuProvider(
@@ -92,9 +85,12 @@ public final class CompanionCommands {
     private static int handleTreeChop(CommandContext<CommandSourceStack> context, boolean enabled)
             throws CommandSyntaxException {
         ServerPlayer player = context.getSource().getPlayerOrException();
+        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
+        if (companion != null && !companion.canPlayerControl(player)) {
+            return 0;
+        }
         CompanionConfig.setFullTreeChopEnabled(enabled);
         Component message = Component.translatable(enabled ? TREECHOP_ENABLED_KEY : TREECHOP_DISABLED_KEY);
-        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
         if (companion != null) {
             companion.sendReply(player, message);
         } else {

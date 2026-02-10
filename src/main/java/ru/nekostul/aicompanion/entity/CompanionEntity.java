@@ -7,21 +7,21 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.StringTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.tags.BlockTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EquipmentSlot;
-import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
-import net.minecraft.world.entity.animal.Animal;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.goal.FloatGoal;
@@ -30,8 +30,6 @@ import net.minecraft.world.entity.ai.goal.OpenDoorGoal;
 import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
 import net.minecraft.world.entity.ai.goal.WaterAvoidingRandomStrollGoal;
 import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
-import net.minecraft.world.entity.monster.Monster;
-import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -63,24 +61,17 @@ import ru.nekostul.aicompanion.entity.tool.CompanionToolSlot;
 import ru.nekostul.aicompanion.entity.tree.CompanionTreeHarvestController;
 
 import java.util.EnumMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadLocalRandom;
 
 public class CompanionEntity extends PathfinderMob {
     public enum CompanionMode {
         STOPPED,
         FOLLOW,
         AUTONOMOUS
-    }
-
-    private enum ChatContext {
-        NONE,
-        VILLAGE,
-        HOSTILE,
-        MINING,
-        CRAFT
     }
 
     private enum ChatGroup {
@@ -107,6 +98,8 @@ public class CompanionEntity extends PathfinderMob {
     private static final String TELEPORT_REMINDER_PLAYER_NBT = "CompanionTeleportReminderPlayer";
     private static final String TELEPORT_REMINDER_TICK_NBT = "CompanionTeleportReminderTick";
     private static final String TOOL_SLOTS_NBT = "CompanionToolSlots";
+    private static final String OWNER_NBT = "CompanionOwner";
+    private static final String PARTY_NBT = "CompanionParty";
     private static final String TOOL_SLOT_PICKAXE_NBT = "Pickaxe";
     private static final String TOOL_SLOT_AXE_NBT = "Axe";
     private static final String TOOL_SLOT_SHOVEL_NBT = "Shovel";
@@ -121,11 +114,8 @@ public class CompanionEntity extends PathfinderMob {
     private static final String COMMANDS_STOP_HINT_KEY = "entity.aicompanion.companion.commands.stop_hint";
     private static final String COMMAND_STOP_KEY = "entity.aicompanion.companion.command.stop";
     private static final String COMMAND_FOLLOW_KEY = "entity.aicompanion.companion.command.follow";
-    private static final String COMMAND_FREE_KEY = "entity.aicompanion.companion.command.free";
     private static final int REACTION_COOLDOWN_TICKS = 60;
     private static final double REACTION_RANGE = 24.0D;
-    private static final double FOLLOW_MAX_DISTANCE = 48.0D;
-    private static final double FOLLOW_MAX_DISTANCE_SQR = FOLLOW_MAX_DISTANCE * FOLLOW_MAX_DISTANCE;
     private static final double FOLLOW_SEARCH_DISTANCE = 48.0D;
     private static final double TELEPORT_REQUEST_DISTANCE = 48.0D;
     private static final double TELEPORT_REQUEST_DISTANCE_SQR = TELEPORT_REQUEST_DISTANCE * TELEPORT_REQUEST_DISTANCE;
@@ -138,34 +128,12 @@ public class CompanionEntity extends PathfinderMob {
     private static final int TELEPORT_NEARBY_RADIUS = 5;
     private static final String TELEPORT_REQUEST_KEY = "entity.aicompanion.companion.teleport.request";
     private static final String TELEPORT_REQUEST_ALT_KEY = "entity.aicompanion.companion.teleport.request.alt";
-    private static final String TELEPORT_REQUEST_REPEAT_KEY = "entity.aicompanion.companion.teleport.request.repeat";
-    private static final String TELEPORT_ACCEPT_KEY = "entity.aicompanion.companion.teleport.accept";
-    private static final String TELEPORT_DENY_KEY = "entity.aicompanion.companion.teleport.deny";
-    private static final String TELEPORT_YES_KEY = "entity.aicompanion.companion.teleport.button.yes";
-    private static final String TELEPORT_NO_KEY = "entity.aicompanion.companion.teleport.button.no";
-    private static final String[] TELEPORT_ACCEPT_KEYS =
-            range("entity.aicompanion.companion.teleport.accept.", 1, 10);
-    private static final String[] TELEPORT_DENY_KEYS =
-            range("entity.aicompanion.companion.teleport.deny.", 1, 10);
-    private static final String[] TELEPORT_IGNORE_KEYS =
-            range("entity.aicompanion.companion.teleport.ignore.", 1, 10);
     private static final int TELEPORT_MESSAGE_COOLDOWN_TICKS = 6000;
-    private static final int TELEPORT_REPEAT_DELAY_TICKS = 800;
     private static final int TELEPORT_ORIGINAL_COOLDOWN_TICKS = 12000;
-    private static final int TELEPORT_RESPONSE_TIMEOUT_TICKS = 600;
     private static final int TELEPORT_IGNORE_GRACE_TICKS = TELEPORT_MESSAGE_COOLDOWN_TICKS;
     private static final int INVENTORY_SIZE = 27;
-    private static final int DEFENSE_RADIUS = 12;
-    private static final double DEFENSE_RADIUS_SQR = DEFENSE_RADIUS * DEFENSE_RADIUS;
     private static final int ITEM_PICKUP_RADIUS = 3;
     private static final int ITEM_PICKUP_COOLDOWN_TICKS = 10;
-    private static final int AMBIENT_CHAT_MIN_TICKS = 1000;
-    private static final int AMBIENT_CHAT_MAX_TICKS = 1800;
-    private static final int CONTEXT_CHAT_SOON_MIN_TICKS = 200;
-    private static final int CONTEXT_CHAT_SOON_MAX_TICKS = 400;
-    private static final int CHAT_GROUP_COOLDOWN_TICKS = 6000;
-    private static final int LOG_FROM_LEAVES_RADIUS = 2;
-    private static final int LOG_FROM_LEAVES_MAX_DEPTH = 6;
 
     private static final EntityDataAccessor<ItemStack> TOOL_PICKAXE =
             SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
@@ -219,30 +187,6 @@ public class CompanionEntity extends PathfinderMob {
     private static final String[] DEATH_GENERIC_KEYS =
             range("entity.aicompanion.companion.death.generic.", 1, 40);
 
-    private static final String[] CHAT_FOLLOW_KEYS =
-            range("entity.aicompanion.companion.chat.follow.", 1, 20);
-
-    private static final String[] CHAT_AUTONOMOUS_KEYS =
-            range("entity.aicompanion.companion.chat.autonomous.", 1, 20);
-
-    private static final String[] CHAT_STOP_KEYS =
-            range("entity.aicompanion.companion.chat.stop.", 1, 12);
-
-    private static final String[] CHAT_GENERIC_KEYS =
-            range("entity.aicompanion.companion.chat.generic.", 1, 12);
-
-    private static final String[] CHAT_CONTEXT_VILLAGE_KEYS =
-            range("entity.aicompanion.companion.chat.context.village.", 1, 8);
-
-    private static final String[] CHAT_CONTEXT_HOSTILE_KEYS =
-            range("entity.aicompanion.companion.chat.context.hostile.", 1, 8);
-
-    private static final String[] CHAT_CONTEXT_MINING_KEYS =
-            range("entity.aicompanion.companion.chat.context.mining.", 1, 8);
-
-    private static final String[] CHAT_CONTEXT_CRAFT_KEYS =
-            range("entity.aicompanion.companion.chat.context.craft.", 1, 8);
-
     private CompanionMode mode = CompanionMode.AUTONOMOUS;
     private boolean hasGreeted;
     private final CompanionInventory inventory;
@@ -264,11 +208,6 @@ public class CompanionEntity extends PathfinderMob {
     private final CompanionTaskCoordinator taskCoordinator;
     private final CompanionTorchHandler torchHandler;
     private final EnumMap<ChatGroup, Long> chatGroupCooldowns = new EnumMap<>(ChatGroup.class);
-    private String lastAmbientKey;
-    private long nextAmbientChatTick = -1L;
-    private long lastAmbientChatTick = -10000L;
-    private ChatContext pendingChatContext = ChatContext.NONE;
-    private long pendingChatContextUntilTick = -1L;
     private long lastReactionTick = -1000L;
     private long nextItemPickupTick = -1L;
     private long lastTeleportCycleTick = -10000L;
@@ -277,8 +216,8 @@ public class CompanionEntity extends PathfinderMob {
     private UUID pendingTeleportPlayerId;
     private long pendingTeleportReminderTick = -1L;
     private UUID pendingTeleportReminderPlayerId;
-    private String pendingTeleportMessageKey;
-    private int pendingTeleportSecondsLeft = -1;
+    private UUID ownerId;
+    private final Set<UUID> partyMembers = new HashSet<>();
 
     public CompanionEntity(EntityType<? extends PathfinderMob> type, Level level) {
         super(type, level);
@@ -323,6 +262,9 @@ public class CompanionEntity extends PathfinderMob {
     @Override
     public void onAddedToWorld() {
         super.onAddedToWorld();
+        if (!this.level().isClientSide) {
+            ensureOwnerFromNearby();
+        }
         CompanionSingleNpcManager.register(this);
     }
 
@@ -354,6 +296,9 @@ public class CompanionEntity extends PathfinderMob {
         if (mode == null || this.mode == mode) {
             return false;
         }
+        if (treeHarvestController.isTreeChopInProgress()) {
+            return false;
+        }
         this.mode = mode;
         if (mode == CompanionMode.STOPPED) {
             this.getNavigation().stop();
@@ -365,12 +310,74 @@ public class CompanionEntity extends PathfinderMob {
         sendDirectMessage(player, message);
     }
 
+    public boolean canPlayerControl(ServerPlayer player) {
+        if (player == null) {
+            return false;
+        }
+        if (ownerId == null) {
+            ownerId = player.getUUID();
+            return true;
+        }
+        if (ownerId.equals(player.getUUID())) {
+            return true;
+        }
+        return partyMembers.contains(player.getUUID());
+    }
+
+    public boolean canManageParty(ServerPlayer player) {
+        return ensureOwner(player);
+    }
+
+    public boolean addPartyMember(ServerPlayer owner, ServerPlayer member) {
+        if (!canManageParty(owner) || member == null) {
+            return false;
+        }
+        if (ownerId != null && ownerId.equals(member.getUUID())) {
+            return false;
+        }
+        return partyMembers.add(member.getUUID());
+    }
+
+    public boolean removePartyMember(ServerPlayer owner, ServerPlayer member) {
+        if (!canManageParty(owner) || member == null) {
+            return false;
+        }
+        return partyMembers.remove(member.getUUID());
+    }
+
     public boolean handlePlayerCommand(ServerPlayer player, String message) {
+        if (!canPlayerControl(player)) {
+            return false;
+        }
+        if (treeHarvestController.isTreeChopInProgress()) {
+            return true;
+        }
         return this.taskCoordinator.handlePlayerMessage(player, message);
     }
 
     public boolean handleThanks(ServerPlayer player, String message) {
         return this.gratitudeResponder.handle(player, message, this.level().getGameTime());
+    }
+
+    private boolean ensureOwner(ServerPlayer player) {
+        if (player == null) {
+            return false;
+        }
+        if (ownerId == null) {
+            ownerId = player.getUUID();
+            return true;
+        }
+        return ownerId.equals(player.getUUID());
+    }
+
+    private void ensureOwnerFromNearby() {
+        if (ownerId != null) {
+            return;
+        }
+        Player nearest = this.level().getNearestPlayer(this, 8.0D);
+        if (nearest instanceof ServerPlayer serverPlayer && !serverPlayer.isSpectator()) {
+            ownerId = serverPlayer.getUUID();
+        }
     }
 
     public void onInventoryUpdated() {
@@ -451,6 +458,16 @@ public class CompanionEntity extends PathfinderMob {
             tag.putUUID(TELEPORT_REMINDER_PLAYER_NBT, this.pendingTeleportReminderPlayerId);
             tag.putLong(TELEPORT_REMINDER_TICK_NBT, this.pendingTeleportReminderTick);
         }
+        if (this.ownerId != null) {
+            tag.putUUID(OWNER_NBT, this.ownerId);
+        }
+        if (!this.partyMembers.isEmpty()) {
+            ListTag partyTag = new ListTag();
+            for (UUID memberId : this.partyMembers) {
+                partyTag.add(StringTag.valueOf(memberId.toString()));
+            }
+            tag.put(PARTY_NBT, partyTag);
+        }
     }
 
     @Override
@@ -503,6 +520,16 @@ public class CompanionEntity extends PathfinderMob {
         if (tag.hasUUID(TELEPORT_PENDING_PLAYER_NBT) || tag.hasUUID(TELEPORT_REMINDER_PLAYER_NBT)) {
             clearTeleportRequestState();
             clearTeleportReminder();
+        }
+        this.ownerId = tag.hasUUID(OWNER_NBT) ? tag.getUUID(OWNER_NBT) : null;
+        this.partyMembers.clear();
+        ListTag partyTag = tag.getList(PARTY_NBT, Tag.TAG_STRING);
+        for (int i = 0; i < partyTag.size(); i++) {
+            String rawId = partyTag.getString(i);
+            try {
+                this.partyMembers.add(UUID.fromString(rawId));
+            } catch (IllegalArgumentException ignored) {
+            }
         }
         if (!this.level().isClientSide) {
             restoreToolSlotsFromHand();
@@ -721,6 +748,13 @@ public class CompanionEntity extends PathfinderMob {
         long gameTime = this.level().getGameTime();
         Player nearest = this.level().getNearestPlayer(this, FOLLOW_SEARCH_DISTANCE);
         this.toolHandler.resetToolRequest();
+        if (treeHarvestController.isTreeChopInProgress()) {
+            this.taskCoordinator.tick(this.mode, gameTime);
+            if (!this.toolHandler.wasToolRequested()) {
+                this.equipment.equipIdleHand();
+            }
+            return;
+        }
         if (combatController.tick(nearest, gameTime)) {
             return;
         }
@@ -781,89 +815,10 @@ public class CompanionEntity extends PathfinderMob {
         this.entityData.set(HUNGER_FULL, hungerSystem.isHungerFull());
     }
 
-    private ChatGroup resolveChatGroup(ChatContext context) {
-        return switch (context) {
-            case VILLAGE -> ChatGroup.VILLAGE;
-            case HOSTILE -> ChatGroup.HOSTILE;
-            case MINING -> ChatGroup.MINING;
-            case CRAFT -> ChatGroup.CRAFT;
-            case NONE -> switch (this.mode) {
-                case STOPPED -> ChatGroup.STOPPED;
-                case FOLLOW -> ChatGroup.FOLLOW;
-                case AUTONOMOUS -> ChatGroup.AUTONOMOUS;
-            };
-        };
-    }
-
-    private long getChatGroupNextAllowedTick(ChatGroup group) {
-        Long last = this.chatGroupCooldowns.get(group);
-        if (last == null) {
-            return 0L;
-        }
-        return last + CHAT_GROUP_COOLDOWN_TICKS;
-    }
-
-    private void markChatGroupUsed(ChatGroup group, long gameTime) {
-        this.chatGroupCooldowns.put(group, gameTime);
-    }
-
-    private String pickAmbientChatKey(ChatContext context) {
-        String[] pool = switch (context) {
-            case VILLAGE -> CHAT_CONTEXT_VILLAGE_KEYS;
-            case HOSTILE -> CHAT_CONTEXT_HOSTILE_KEYS;
-            case MINING -> CHAT_CONTEXT_MINING_KEYS;
-            case CRAFT -> CHAT_CONTEXT_CRAFT_KEYS;
-            case NONE -> switch (this.mode) {
-                case STOPPED -> CHAT_STOP_KEYS;
-                case AUTONOMOUS -> CHAT_AUTONOMOUS_KEYS;
-                case FOLLOW -> CHAT_FOLLOW_KEYS;
-            };
-        };
-        return pickRandomKeyAvoiding(pool, this.lastAmbientKey);
-    }
-
-    private ChatContext resolveChatContext(long gameTime) {
-        if (this.pendingChatContext != ChatContext.NONE) {
-            if (gameTime <= this.pendingChatContextUntilTick) {
-                return this.pendingChatContext;
-            }
-            this.pendingChatContext = ChatContext.NONE;
-            this.pendingChatContextUntilTick = -1L;
-        }
-        if (this.taskCoordinator.isBusy()) {
-            return ChatContext.MINING;
-        }
-        if (findNearestHostile(DEFENSE_RADIUS) != null) {
-            return ChatContext.HOSTILE;
-        }
-        if (isVillageNearby()) {
-            return ChatContext.VILLAGE;
-        }
-        return ChatContext.NONE;
-    }
-
-    private boolean isVillageNearby() {
-        AABB range = this.getBoundingBox().inflate(16.0D);
-        return !this.level().getEntitiesOfClass(Villager.class, range).isEmpty();
-    }
-
-    private void queueContextChat(ChatContext context, long gameTime) {
-        if (context == null || context == ChatContext.NONE) {
-            return;
-        }
-        this.pendingChatContext = context;
-        this.pendingChatContextUntilTick = gameTime + CONTEXT_CHAT_SOON_MAX_TICKS;
-        if (gameTime - this.lastAmbientChatTick < CONTEXT_CHAT_SOON_MIN_TICKS) {
-            return;
-        }
-        if (this.nextAmbientChatTick < 0L
-                || this.nextAmbientChatTick - gameTime > CONTEXT_CHAT_SOON_MAX_TICKS) {
-            this.nextAmbientChatTick = gameTime + randomBetween(CONTEXT_CHAT_SOON_MIN_TICKS,
-                    CONTEXT_CHAT_SOON_MAX_TICKS);
-        }
-    }
-
     private boolean isFollowModeActive() {
+        if (treeHarvestController.isTreeChopInProgress()) {
+            return false;
+        }
         if (this.mode == CompanionMode.FOLLOW) {
             return !this.taskCoordinator.isBusy();
         }
@@ -875,39 +830,6 @@ public class CompanionEntity extends PathfinderMob {
 
     private boolean isStopMode() {
         return this.mode == CompanionMode.STOPPED;
-    }
-
-    private static Component buildTeleportMessage(String messageKey, int secondsLeft) {
-        Component yesButton = Component.translatable(TELEPORT_YES_KEY)
-                .withStyle(style -> style
-                        .withColor(ChatFormatting.GREEN)
-                        .withBold(true)
-                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ainpc tp yes")));
-        Component noButton = Component.translatable(TELEPORT_NO_KEY)
-                .withStyle(style -> style
-                        .withColor(ChatFormatting.RED)
-                        .withBold(true)
-                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ainpc tp no")));
-        return Component.translatable(messageKey, secondsLeft)
-                .append(Component.literal(" "))
-                .append(Component.literal("["))
-                .append(yesButton)
-                .append(Component.literal("] "))
-                .append(Component.literal("["))
-                .append(noButton)
-                .append(Component.literal("]"));
-    }
-
-    private static void sendTeleportMessage(Player player, Component message) {
-        if (player == null || message == null) {
-            return;
-        }
-        Component fullMessage = Component.literal(DISPLAY_NAME + ": ").append(message);
-        player.sendSystemMessage(fullMessage);
-    }
-
-    private void sendTeleportRequest(Player player, String messageKey) {
-        sendTeleportMessage(player, buildTeleportMessage(messageKey, pendingTeleportSecondsLeft));
     }
 
     private void tickTeleportRequest() {
@@ -1206,8 +1128,6 @@ public class CompanionEntity extends PathfinderMob {
     private void clearTeleportRequestState() {
         pendingTeleportPlayerId = null;
         pendingTeleportUntilTick = -1L;
-        pendingTeleportMessageKey = null;
-        pendingTeleportSecondsLeft = -1;
     }
 
     private static void removePendingTeleportRequest(UUID playerId, UUID companionId) {
@@ -1411,70 +1331,6 @@ public class CompanionEntity extends PathfinderMob {
                 && pendingTeleportPlayerId.equals(player.getUUID());
     }
 
-    private boolean isTeleportAltOrRepeatRequest() {
-        return TELEPORT_REQUEST_ALT_KEY.equals(pendingTeleportMessageKey)
-                || TELEPORT_REQUEST_REPEAT_KEY.equals(pendingTeleportMessageKey);
-    }
-
-    private boolean tickPendingTeleport(ServerPlayer player) {
-        long gameTime = player.level().getGameTime();
-        if (!this.isAlive() || player.isSpectator() || !player.isAlive()) {
-            clearTeleportRequest();
-            clearTeleportReminder();
-            return false;
-        }
-        if (this.distanceToSqr(player) <= TELEPORT_REQUEST_DISTANCE_SQR) {
-            clearTeleportRequest();
-            clearTeleportReminder();
-            return false;
-        }
-        if (pendingTeleportMessageKey == null) {
-            pendingTeleportMessageKey = TELEPORT_REQUEST_KEY;
-        }
-        updateTeleportTimer(player, gameTime);
-        if (pendingTeleportUntilTick < 0L || gameTime >= pendingTeleportUntilTick) {
-            sendDirectMessage(player, Component.translatable(pickRandomKey(TELEPORT_IGNORE_KEYS)));
-            recordTeleportIgnored(player, gameTime);
-            clearTeleportReminder();
-            clearTeleportRequest();
-            return false;
-        }
-        return true;
-    }
-
-    private static void recordTeleportIgnored(Player player, long gameTime) {
-        if (player != null) {
-            TELEPORT_IGNORED_TICKS.put(player.getUUID(), gameTime);
-        }
-    }
-
-    private static String pickRandomTeleportKey(String[] keys) {
-        if (keys.length == 0) {
-            return TELEPORT_DENY_KEY;
-        }
-        return keys[ThreadLocalRandom.current().nextInt(keys.length)];
-    }
-
-    private void updateTeleportTimer(Player player, long gameTime) {
-        if (pendingTeleportMessageKey == null || player == null) {
-            return;
-        }
-        int secondsLeft = getTeleportSecondsLeft(pendingTeleportUntilTick, gameTime);
-        if (secondsLeft <= 0 || secondsLeft == pendingTeleportSecondsLeft) {
-            return;
-        }
-        pendingTeleportSecondsLeft = secondsLeft;
-        sendTeleportRequest(player, pendingTeleportMessageKey);
-    }
-
-    private static int getTeleportSecondsLeft(long untilTick, long gameTime) {
-        long ticksLeft = untilTick - gameTime;
-        if (ticksLeft <= 0L) {
-            return 0;
-        }
-        return (int) ((ticksLeft + 19L) / 20L);
-    }
-
     private String pickDeathKey(DamageSource source) {
         String msgId = source.getMsgId();
         if ("lava".equals(msgId)) {
@@ -1557,97 +1413,6 @@ public class CompanionEntity extends PathfinderMob {
             }
         }
         return false;
-    }
-
-    private Animal findNearestAnimal(double radius) {
-        AABB range = this.getBoundingBox().inflate(radius);
-        Animal nearest = null;
-        double nearestDistance = Double.MAX_VALUE;
-        for (Animal animal : this.level().getEntitiesOfClass(Animal.class, range)) {
-            if (!animal.isAlive()) {
-                continue;
-            }
-            double distance = this.distanceToSqr(animal);
-            if (distance < nearestDistance) {
-                nearestDistance = distance;
-                nearest = animal;
-            }
-        }
-        return nearest;
-    }
-
-    private Monster findNearestHostile(double radius) {
-        AABB range = this.getBoundingBox().inflate(radius);
-        Monster nearest = null;
-        double nearestDistance = Double.MAX_VALUE;
-        for (Monster monster : this.level().getEntitiesOfClass(Monster.class, range)) {
-            if (!monster.isAlive()) {
-                continue;
-            }
-            double distance = this.distanceToSqr(monster);
-            if (distance < nearestDistance) {
-                nearestDistance = distance;
-                nearest = monster;
-            }
-        }
-        return nearest;
-    }
-
-    private LivingEntity findLivingEntityById(UUID entityId) {
-        if (entityId == null) {
-            return null;
-        }
-        AABB range = this.getBoundingBox().inflate(32.0D);
-        for (LivingEntity entity : this.level().getEntitiesOfClass(LivingEntity.class, range)) {
-            if (entity.getUUID().equals(entityId)) {
-                return entity;
-            }
-        }
-        return null;
-    }
-
-    private BlockPos findNearestLog(int radius) {
-        BlockPos origin = this.blockPosition();
-        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        BlockPos nearest = null;
-        double nearestDistance = Double.MAX_VALUE;
-        for (int dx = -radius; dx <= radius; dx++) {
-            for (int dy = -radius; dy <= radius; dy++) {
-                for (int dz = -radius; dz <= radius; dz++) {
-                    pos.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
-                    if (!this.level().getBlockState(pos).is(BlockTags.LOGS)) {
-                        continue;
-                    }
-                    double distance = origin.distSqr(pos);
-                    if (distance < nearestDistance) {
-                        nearestDistance = distance;
-                        nearest = pos.immutable();
-                    }
-                }
-            }
-        }
-        return nearest;
-    }
-
-    private int randomBetween(int minTicks, int maxTicks) {
-        if (maxTicks <= minTicks) {
-            return minTicks;
-        }
-        return minTicks + this.random.nextInt(maxTicks - minTicks + 1);
-    }
-
-    private String pickRandomKeyAvoiding(String[] keys, String lastKey) {
-        if (keys.length == 0) {
-            return "entity.aicompanion.companion.chat.generic.1";
-        }
-        if (keys.length == 1) {
-            return keys[0];
-        }
-        String key;
-        do {
-            key = keys[this.random.nextInt(keys.length)];
-        } while (key.equals(lastKey));
-        return key;
     }
 
     private static void saveToolSlot(CompoundTag tag, String key, ItemStack stack) {

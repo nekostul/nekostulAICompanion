@@ -9,7 +9,7 @@ import java.util.Locale;
 
 public final class CompanionGratitudeResponder {
     private static final int COOLDOWN_TICKS = 40;
-    private static final String[] THANKS_KEYS = range("entity.aicompanion.companion.thanks.", 1, 14);
+    private static final String[] THANKS_KEYS = range("entity.aicompanion.companion.thanks.", 1, 20);
     private static final String[] THANKS_KEYWORDS = {"спасибо", "спс", "thanks"};
 
     private final CompanionEntity owner;
