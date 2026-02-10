@@ -82,6 +82,7 @@ public final class CompanionTreeHarvestController {
     private static final int STUCK_RETRY_INTERVAL_TICKS = 40;
     private static final int STUCK_RETRY_LIMIT = 10;
     private static final double STUCK_MOVE_EPSILON_SQR = 0.0004D;
+    private static final int STEP_CLEANUP_INTERVAL_TICKS = 10;
     private static final double TREE_MOVE_SPEED_BLOCKS_PER_TICK = 0.35D;
     private static final GameProfile MINING_PROFILE = new GameProfile(
             UUID.fromString("d44fdfd6-11c2-4766-9fd2-9a7f702cc563"), "CompanionLumber");
@@ -110,6 +111,8 @@ public final class CompanionTreeHarvestController {
     private final Set<BlockPos> treeChopTrackedLogs = new HashSet<>();
     private boolean forceTrunkChop;
     private final Deque<PlacedStep> placedSteps = new ArrayDeque<>();
+    private boolean stepCleanupActive;
+    private long nextStepCleanupTick = -1L;
     private boolean scanSawCandidate;
     private boolean lastScanHadCandidates;
     private long nextScanTick = -1L;
@@ -173,12 +176,15 @@ public final class CompanionTreeHarvestController {
             clearTargetState();
             return finalizeResult(Result.NEED_CHEST, gameTime);
         }
+        if (stepCleanupActive && tickStepCleanup(gameTime)) {
+            return finalizeResult(Result.IN_PROGRESS, gameTime);
+        }
         if (isTreeChopActive() && treeChopWaitPos != null) {
             if (!isTreeChopComplete(treeChopWaitPos)) {
                 return finalizeResult(Result.IN_PROGRESS, gameTime);
             }
             collectTreeChopDrops(treeChopWaitPos);
-            removePlacedStepBlock();
+            startStepCleanup(gameTime);
             treeChopWaitPos = null;
             treeChopLockedBase = null;
             treeChopTrackedLogs.clear();
@@ -270,6 +276,14 @@ public final class CompanionTreeHarvestController {
     }
 
     private void updateProgress(long gameTime) {
+        if (stepCleanupActive) {
+            lastProgressTick = gameTime;
+            lastProgressHash = computeProgressHash();
+            lastProgressMining = miningProgress;
+            lastProgressPos = owner.position();
+            stuckRetryCount = 0;
+            return;
+        }
         if (isScanInProgress()) {
             lastProgressTick = gameTime;
             lastProgressHash = computeProgressHash();
@@ -540,7 +554,7 @@ public final class CompanionTreeHarvestController {
             }
             if (treeBasePos != null && (!isTreeChopActive() || forceTrunkChop)) {
                 if (treeMode == CompanionTreeRequestMode.LOG_BLOCKS && logsCollected >= logsRequired) {
-                    removePlacedStepBlock();
+                    startStepCleanup(gameTime);
                     clearTargetState();
                     return Result.IN_PROGRESS;
                 }
@@ -568,7 +582,7 @@ public final class CompanionTreeHarvestController {
                         failedSearchAttempts = 0;
                         resetScanCache();
                     }
-                    removePlacedStepBlock();
+                    startStepCleanup(gameTime);
                     clearTargetState();
                     return Result.IN_PROGRESS;
                 }
@@ -1568,45 +1582,81 @@ public final class CompanionTreeHarvestController {
 
     private void clearPlacedStepBlock() {
         placedSteps.clear();
+        stepCleanupActive = false;
+        nextStepCleanupTick = -1L;
     }
 
-    private void removePlacedStepBlock() {
+    private void startStepCleanup(long gameTime) {
         if (placedSteps.isEmpty()) {
             return;
         }
+        stepCleanupActive = true;
+        if (nextStepCleanupTick < 0L) {
+            nextStepCleanupTick = gameTime;
+        }
+    }
+
+    private boolean tickStepCleanup(long gameTime) {
+        if (!stepCleanupActive) {
+            return false;
+        }
+        if (placedSteps.isEmpty()) {
+            stepCleanupActive = false;
+            nextStepCleanupTick = -1L;
+            return false;
+        }
+        if (gameTime < nextStepCleanupTick) {
+            return true;
+        }
         if (!(owner.level() instanceof ServerLevel serverLevel)) {
             clearPlacedStepBlock();
-            return;
+            return false;
         }
-        while (!placedSteps.isEmpty()) {
-            PlacedStep step = placedSteps.removeLast();
-            BlockState state = owner.level().getBlockState(step.pos);
-            if (state.isAir()) {
-                continue;
-            }
-            if (step.block != null && state.getBlock() != step.block) {
-                continue;
-            }
-            ItemStack tool = owner.getMainHandItem();
-            List<ItemStack> drops = Block.getDrops(state, serverLevel, step.pos,
-                    owner.level().getBlockEntity(step.pos), owner, tool);
-            if (drops.isEmpty()) {
-                Item item = state.getBlock().asItem();
-                if (item != Items.AIR) {
-                    drops = List.of(new ItemStack(item));
-                }
-            }
-            if (!inventory.canStoreAll(drops)) {
-                clearPlacedStepBlock();
-                return;
-            }
-            owner.level().destroyBlock(step.pos, false);
-            inventory.addAll(drops);
-            if (step.isLog) {
-                recordDrops(drops);
-            }
-            CompanionToolWear.applyToolWear(owner, tool, InteractionHand.MAIN_HAND);
+        PlacedStep step = placedSteps.peekLast();
+        if (step == null) {
+            clearPlacedStepBlock();
+            return false;
         }
+        if (!tryBreakPlacedStep(serverLevel, step)) {
+            clearPlacedStepBlock();
+            return false;
+        }
+        placedSteps.removeLast();
+        nextStepCleanupTick = gameTime + STEP_CLEANUP_INTERVAL_TICKS;
+        if (placedSteps.isEmpty()) {
+            stepCleanupActive = false;
+            nextStepCleanupTick = -1L;
+        }
+        return stepCleanupActive;
+    }
+
+    private boolean tryBreakPlacedStep(ServerLevel serverLevel, PlacedStep step) {
+        BlockState state = owner.level().getBlockState(step.pos);
+        if (state.isAir()) {
+            return true;
+        }
+        if (step.block != null && state.getBlock() != step.block) {
+            return true;
+        }
+        ItemStack tool = owner.getMainHandItem();
+        List<ItemStack> drops = Block.getDrops(state, serverLevel, step.pos,
+                owner.level().getBlockEntity(step.pos), owner, tool);
+        if (drops.isEmpty()) {
+            Item item = state.getBlock().asItem();
+            if (item != Items.AIR) {
+                drops = List.of(new ItemStack(item));
+            }
+        }
+        if (!inventory.canStoreAll(drops)) {
+            return false;
+        }
+        owner.level().destroyBlock(step.pos, false);
+        inventory.addAll(drops);
+        if (step.isLog) {
+            recordDrops(drops);
+        }
+        CompanionToolWear.applyToolWear(owner, tool, InteractionHand.MAIN_HAND);
+        return true;
     }
 
     private static final class PlacedStep {
