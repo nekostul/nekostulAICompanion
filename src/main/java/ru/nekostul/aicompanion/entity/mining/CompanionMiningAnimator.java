@@ -20,7 +20,7 @@ public final class CompanionMiningAnimator {
         Vec3 center = Vec3.atCenterOf(target);
         lookAt(center);
         if (!owner.swinging) {
-            owner.swing(InteractionHand.MAIN_HAND);
+            owner.swing(InteractionHand.MAIN_HAND, true);
         }
     }
 

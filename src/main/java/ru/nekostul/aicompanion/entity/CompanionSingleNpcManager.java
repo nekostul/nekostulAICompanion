@@ -6,6 +6,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
+import net.minecraft.core.registries.Registries;
 
 import java.util.UUID;
 
@@ -13,6 +14,8 @@ public final class CompanionSingleNpcManager {
     private static UUID activeId;
     private static ResourceKey<Level> activeDimension;
     private static BlockPos lastKnownPos;
+    private static BlockPos lastHomePos;
+    private static ResourceKey<Level> lastHomeDimension;
     private static CompanionEntity.CompanionMode lastMode = CompanionEntity.CompanionMode.AUTONOMOUS;
     private static boolean lastBusy;
     private static long lastTeleportCycleTick = -10000L;
@@ -38,8 +41,10 @@ public final class CompanionSingleNpcManager {
         activeId = currentId;
         activeDimension = entity.level().dimension();
         lastKnownPos = entity.blockPosition();
+        updateHomeState(entity);
         lastMode = entity.getMode();
         lastBusy = false;
+        updatePersistedState(entity);
     }
 
     static void unregister(CompanionEntity entity) {
@@ -50,11 +55,16 @@ public final class CompanionSingleNpcManager {
             if (entity.isAlive()) {
                 activeDimension = entity.level().dimension();
                 lastKnownPos = entity.blockPosition();
+                updateHomeState(entity);
                 lastMode = entity.getMode();
+                updatePersistedState(entity);
             } else {
                 activeId = null;
                 activeDimension = null;
                 lastKnownPos = null;
+                lastHomePos = null;
+                lastHomeDimension = null;
+                clearPersistedState(entity);
             }
         }
     }
@@ -63,6 +73,7 @@ public final class CompanionSingleNpcManager {
         if (player == null || player.server == null) {
             return null;
         }
+        ensureLoaded(player.server);
         if (activeId == null || activeDimension == null) {
             return null;
         }
@@ -90,10 +101,12 @@ public final class CompanionSingleNpcManager {
         activeId = entity.getUUID();
         activeDimension = entity.level().dimension();
         lastKnownPos = entity.blockPosition();
+        updateHomeState(entity);
         lastMode = entity.getMode();
         lastBusy = busy;
         lastTeleportCycleTick = teleportCycleTick;
         lastTeleportOriginalTick = teleportOriginalTick;
+        updatePersistedState(entity);
     }
 
     public static UUID getActiveId() {
@@ -106,6 +119,14 @@ public final class CompanionSingleNpcManager {
 
     public static BlockPos getLastKnownPos() {
         return lastKnownPos;
+    }
+
+    public static BlockPos getLastHomePos() {
+        return lastHomePos;
+    }
+
+    public static ResourceKey<Level> getLastHomeDimension() {
+        return lastHomeDimension;
     }
 
     public static CompanionEntity.CompanionMode getLastMode() {
@@ -137,5 +158,65 @@ public final class CompanionSingleNpcManager {
             return null;
         }
         return entity.getServer().getLevel(dimension);
+    }
+
+    private static void updateHomeState(CompanionEntity entity) {
+        if (entity == null) {
+            return;
+        }
+        BlockPos homePos = entity.getHomePos();
+        if (homePos == null) {
+            lastHomePos = null;
+            lastHomeDimension = null;
+            return;
+        }
+        lastHomePos = homePos;
+        if (entity.getHomeDimensionId() != null) {
+            lastHomeDimension = ResourceKey.create(Registries.DIMENSION, entity.getHomeDimensionId());
+        }
+    }
+
+    private static void updatePersistedState(CompanionEntity entity) {
+        if (entity == null || entity.getServer() == null) {
+            return;
+        }
+        CompanionMemoryData data = CompanionMemoryData.get(entity.getServer());
+        if (data == null) {
+            return;
+        }
+        data.setActive(activeId, activeDimension, lastKnownPos);
+        data.setHome(lastHomePos, lastHomeDimension);
+        data.setDirty();
+    }
+
+    private static void clearPersistedState(CompanionEntity entity) {
+        if (entity == null || entity.getServer() == null) {
+            return;
+        }
+        CompanionMemoryData data = CompanionMemoryData.get(entity.getServer());
+        if (data == null) {
+            return;
+        }
+        data.setActive(null, null, null);
+        data.setHome(null, null);
+        data.setDirty();
+    }
+
+    public static void ensureLoaded(net.minecraft.server.MinecraftServer server) {
+        if (server == null) {
+            return;
+        }
+        if (activeId != null || activeDimension != null || lastKnownPos != null || lastHomePos != null) {
+            return;
+        }
+        CompanionMemoryData data = CompanionMemoryData.get(server);
+        if (data == null) {
+            return;
+        }
+        activeId = data.getActiveId();
+        activeDimension = data.getActiveDimension();
+        lastKnownPos = data.getLastKnownPos();
+        lastHomePos = data.getHomePos();
+        lastHomeDimension = data.getHomeDimension();
     }
 }

@@ -27,6 +27,7 @@ public final class CompanionInventoryExchange {
     private static final String DROP_CONFIRM_BUTTON_KEY = "entity.aicompanion.companion.inventory.drop.confirm.button";
     private static final String DROP_TOOLS_NOTICE_KEY = "entity.aicompanion.companion.inventory.drop.tools.notice";
     private static final String DROP_TOOLS_BUTTON_KEY = "entity.aicompanion.companion.inventory.drop.tools.button";
+    private static final String DROP_TOOLS_IGNORE_KEY = "entity.aicompanion.companion.teleport.ignore.tools";
     private static final String RETURN_EMPTY_KEY = "entity.aicompanion.companion.inventory.return.empty";
     private static final String RETURN_EMPTY_INVENTORY_KEY = "entity.aicompanion.companion.inventory.return.empty.inventory";
     private static final String RETURN_TOOL_KEY = "entity.aicompanion.companion.inventory.return.tool";
@@ -47,6 +48,7 @@ public final class CompanionInventoryExchange {
     private boolean pendingDropKeepToolsAndFood;
     private UUID pendingToolDropPlayerId;
     private long pendingToolDropUntilTick = -1L;
+    private int pendingToolDropLastSeconds = -1;
 
     public CompanionInventoryExchange(CompanionEntity owner, CompanionInventory inventory) {
         this.owner = owner;
@@ -191,7 +193,7 @@ public final class CompanionInventoryExchange {
             owner.onInventoryUpdated();
             dropStacksNearPlayer(player, drops);
         }
-        if (keepToolsAndFood && (hasTools || hasFood)) {
+        if (keepToolsAndFood && hasFood) {
             sendToolDropNotice(player, gameTime);
         }
     }
@@ -264,18 +266,10 @@ public final class CompanionInventoryExchange {
         }
         pendingToolDropPlayerId = player.getUUID();
         pendingToolDropUntilTick = gameTime + TOOL_DROP_WINDOW_TICKS;
-        Component button = Component.translatable(DROP_TOOLS_BUTTON_KEY)
-                .withStyle(style -> style
-                        .withColor(ChatFormatting.AQUA)
-                        .withBold(true)
-                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND,
-                                "/ainpc msg " + TOOL_DROP_COMMAND_TEXT)));
-        Component message = Component.translatable(DROP_TOOLS_NOTICE_KEY)
-                .append(Component.literal(" "))
-                .append(Component.literal("["))
-                .append(button)
-                .append(Component.literal("]"));
-        owner.sendReply(player, message);
+        pendingToolDropLastSeconds = -1;
+        int secondsLeft = secondsLeft(pendingToolDropUntilTick, gameTime);
+        sendToolDropMessage(player, secondsLeft);
+        pendingToolDropLastSeconds = secondsLeft;
     }
 
     private int countOccupiedSlots() {
@@ -339,17 +333,25 @@ public final class CompanionInventoryExchange {
             return false;
         }
         if (gameTime >= pendingToolDropUntilTick) {
-            clearToolDropRequest();
+            clearToolDropRequest(true);
             return false;
         }
-        clearToolDropRequest();
+        clearToolDropRequest(true);
         dropTools(player);
         return true;
     }
 
     private void clearToolDropRequest() {
+        clearToolDropRequest(false);
+    }
+
+    private void clearToolDropRequest(boolean notifyRemove) {
+        if (pendingToolDropPlayerId != null && notifyRemove) {
+            sendToolDropRemoval(pendingToolDropPlayerId);
+        }
         pendingToolDropPlayerId = null;
         pendingToolDropUntilTick = -1L;
+        pendingToolDropLastSeconds = -1;
     }
 
     private void expireToolDropIfNeeded(long gameTime) {
@@ -357,8 +359,56 @@ public final class CompanionInventoryExchange {
             return;
         }
         if (gameTime >= pendingToolDropUntilTick) {
-            clearToolDropRequest();
+            clearToolDropRequest(true);
         }
+    }
+
+    public void tickToolDropNotice(long gameTime) {
+        if (pendingToolDropPlayerId == null) {
+            return;
+        }
+        Player player = owner.getPlayerById(pendingToolDropPlayerId);
+        if (player == null) {
+            clearToolDropRequest(false);
+            return;
+        }
+        if (gameTime >= pendingToolDropUntilTick) {
+            clearToolDropRequest(true);
+            return;
+        }
+        int secondsLeft = secondsLeft(pendingToolDropUntilTick, gameTime);
+        if (secondsLeft != pendingToolDropLastSeconds) {
+            pendingToolDropLastSeconds = secondsLeft;
+            sendToolDropMessage(player, secondsLeft);
+        }
+    }
+
+    private int secondsLeft(long untilTick, long gameTime) {
+        long remaining = Math.max(0L, untilTick - gameTime);
+        return (int) Math.ceil(remaining / 20.0D);
+    }
+
+    private void sendToolDropRemoval(UUID playerId) {
+        Player player = owner.getPlayerById(playerId);
+        if (player == null) {
+            return;
+        }
+        owner.sendReply(player, Component.translatable(DROP_TOOLS_IGNORE_KEY));
+    }
+
+    private void sendToolDropMessage(Player player, int secondsLeft) {
+        Component button = Component.translatable(DROP_TOOLS_BUTTON_KEY)
+                .withStyle(style -> style
+                        .withColor(ChatFormatting.AQUA)
+                        .withBold(true)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND,
+                                "/ainpc msg " + TOOL_DROP_COMMAND_TEXT)));
+        Component message = Component.translatable(DROP_TOOLS_NOTICE_KEY, secondsLeft)
+                .append(Component.literal(" "))
+                .append(Component.literal("["))
+                .append(button)
+                .append(Component.literal("]"));
+        owner.sendReply(player, message);
     }
 
     private void sendReturnNotice(Player player, ItemStack stack) {

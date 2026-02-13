@@ -62,11 +62,15 @@ public final class CompanionChatEvents {
         }
 
         if (isWhereCommand(message)) {
-            CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
-            if (companion == null) {
-                return false;
+            CompanionEntity active = CompanionSingleNpcManager.getActive(player);
+            if (active != null) {
+                return active.handleWhereCommand(player);
             }
-            return companion.handleWhereCommand(player);
+            CompanionEntity nearest = findNearestCompanion(player);
+            if (nearest != null) {
+                return nearest.handleWhereCommand(player);
+            }
+            return CompanionEntity.handleWhereCommandFallback(player);
         }
 
         CompanionEntity companion = findNearestCompanion(player);

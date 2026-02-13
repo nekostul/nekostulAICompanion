@@ -21,6 +21,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
@@ -173,6 +174,7 @@ public class CompanionEntity extends PathfinderMob {
     private static final double HOME_LEAVE_SPEED = 0.28D;
     private static final double HOME_SET_RANGE = 6.0D;
     private static final int HOME_MOVE_RETRY_TICKS = 10;
+    private static final int SWING_DURATION_TICKS = 6;
 
     private static final EntityDataAccessor<ItemStack> TOOL_PICKAXE =
             SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
@@ -188,19 +190,23 @@ public class CompanionEntity extends PathfinderMob {
     private static final Map<UUID, CompanionEntity> PENDING_TELEPORTS = new ConcurrentHashMap<>();
     private static final Map<UUID, PendingTeleportRequest> PENDING_TELEPORT_REQUESTS = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> TELEPORT_IGNORED_TICKS = new ConcurrentHashMap<>();
+    private static final Map<UUID, Long> WHERE_FALLBACK_COOLDOWNS = new ConcurrentHashMap<>();
 
     private static final class PendingTeleportRequest {
         private final UUID companionId;
         private final ResourceKey<Level> levelKey;
+        private final BlockPos originPos;
         private ChunkPos chunkPos;
         private final long untilTick;
         private final String messageKey;
         private int lastSeconds;
 
-        private PendingTeleportRequest(UUID companionId, ResourceKey<Level> levelKey, ChunkPos chunkPos,
+        private PendingTeleportRequest(UUID companionId, ResourceKey<Level> levelKey, BlockPos originPos,
+                                       ChunkPos chunkPos,
                                        long untilTick, String messageKey, int lastSeconds) {
             this.companionId = companionId;
             this.levelKey = levelKey;
+            this.originPos = originPos;
             this.chunkPos = chunkPos;
             this.untilTick = untilTick;
             this.messageKey = messageKey;
@@ -344,6 +350,8 @@ public class CompanionEntity extends PathfinderMob {
                 return !CompanionEntity.this.isFollowModeActive()
                         && !CompanionEntity.this.isAtHome()
                         && !CompanionEntity.this.returningHome
+                        && !CompanionEntity.this.combatController.isEngaged(
+                        CompanionEntity.this.level().getGameTime())
                         && !CompanionEntity.this.taskCoordinator.isBusy()
                         && super.canUse();
             }
@@ -353,6 +361,8 @@ public class CompanionEntity extends PathfinderMob {
                 return !CompanionEntity.this.isFollowModeActive()
                         && !CompanionEntity.this.isAtHome()
                         && !CompanionEntity.this.returningHome
+                        && !CompanionEntity.this.combatController.isEngaged(
+                        CompanionEntity.this.level().getGameTime())
                         && !CompanionEntity.this.taskCoordinator.isBusy()
                         && super.canContinueToUse();
             }
@@ -508,7 +518,7 @@ public class CompanionEntity extends PathfinderMob {
         if (pendingHomePlayerId == null || !pendingHomePlayerId.equals(player.getUUID())) {
             return false;
         }
-        long gameTime = this.level().getGameTime();
+        long gameTime = getServerTick();
         if (gameTime >= pendingHomeUntilTick) {
             sendTimedMessageRemoval(TELEPORT_IGNORE_HOME_KEY, pendingHomePlayerId);
             clearHomeRequest();
@@ -563,13 +573,48 @@ public class CompanionEntity extends PathfinderMob {
         if (this.distanceToSqr(player) <= (double) WHERE_MIN_DISTANCE * WHERE_MIN_DISTANCE) {
             return true;
         }
-        long gameTime = this.level().getGameTime();
+        long gameTime = getServerTick();
         Long lastTick = whereCooldowns.get(player.getUUID());
         if (lastTick != null && gameTime - lastTick < WHERE_COOLDOWN_TICKS) {
             return true;
         }
         whereCooldowns.put(player.getUUID(), gameTime);
         requestWhereTeleport(player, gameTime);
+        return true;
+    }
+
+    public static boolean handleWhereCommandFallback(ServerPlayer player) {
+        if (player == null || player.server == null) {
+            return false;
+        }
+        CompanionSingleNpcManager.ensureLoaded(player.server);
+        UUID companionId = CompanionSingleNpcManager.getActiveId();
+        ResourceKey<Level> levelKey = CompanionSingleNpcManager.getActiveDimension();
+        BlockPos lastPos = CompanionSingleNpcManager.getLastKnownPos();
+        if (companionId == null || levelKey == null || lastPos == null) {
+            return false;
+        }
+        ServerLevel level = player.server.getLevel(levelKey);
+        if (level == null) {
+            return false;
+        }
+        double distanceSqr = player.distanceToSqr(
+                lastPos.getX() + 0.5D, lastPos.getY() + 0.5D, lastPos.getZ() + 0.5D);
+        if (distanceSqr <= (double) WHERE_MIN_DISTANCE * WHERE_MIN_DISTANCE) {
+            return true;
+        }
+        long gameTime = player.server.getTickCount();
+        Long lastTick = WHERE_FALLBACK_COOLDOWNS.get(player.getUUID());
+        if (lastTick != null && gameTime - lastTick < WHERE_COOLDOWN_TICKS) {
+            return true;
+        }
+        WHERE_FALLBACK_COOLDOWNS.put(player.getUUID(), gameTime);
+        long untilTick = gameTime + WHERE_TELEPORT_TICKS;
+        int secondsLeft = secondsLeftStatic(untilTick, gameTime);
+        PENDING_TELEPORT_REQUESTS.remove(player.getUUID());
+        PENDING_TELEPORTS.remove(player.getUUID());
+        registerPendingTeleportRequest(player, companionId, levelKey, lastPos, WHERE_STATUS_KEY, untilTick, secondsLeft);
+        sendWhereMessageFallback(player, lastPos, secondsLeft);
         return true;
     }
 
@@ -685,6 +730,18 @@ public class CompanionEntity extends PathfinderMob {
         sendReply(player, base.append(Component.literal(" ")).append(button));
     }
 
+    private static void sendWhereMessageFallback(ServerPlayer player, BlockPos pos, int secondsLeft) {
+        if (player == null || pos == null) {
+            return;
+        }
+        MutableComponent base = Component.translatable(WHERE_STATUS_KEY, pos.getX(), pos.getY(), pos.getZ(), secondsLeft);
+        Component button = Component.translatable(WHERE_TELEPORT_BUTTON_KEY)
+                .withStyle(style -> style.withColor(ChatFormatting.AQUA)
+                        .withBold(true)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ainpc tp yes")));
+        sendDirectMessageStatic(player, base.append(Component.literal(" ")).append(button));
+    }
+
     private void clearWhereRequest() {
         if (pendingWherePlayerId != null) {
             removePendingTeleportRequest(pendingWherePlayerId, this.getUUID());
@@ -752,11 +809,12 @@ public class CompanionEntity extends PathfinderMob {
             clearWhereRequest();
             return;
         }
-        if (gameTime >= pendingWhereUntilTick) {
+        long serverTick = getServerTick();
+        if (serverTick >= pendingWhereUntilTick) {
             clearWhereRequest();
             return;
         }
-        int secondsLeft = secondsLeft(pendingWhereUntilTick, gameTime);
+        int secondsLeft = secondsLeft(pendingWhereUntilTick, serverTick);
         if (secondsLeft != pendingWhereLastSeconds) {
             pendingWhereLastSeconds = secondsLeft;
             sendWhereMessage(serverPlayer, secondsLeft);
@@ -950,6 +1008,11 @@ public class CompanionEntity extends PathfinderMob {
         return (int) Math.ceil(remaining / 20.0D);
     }
 
+    private static int secondsLeftStatic(long untilTick, long gameTime) {
+        long remaining = Math.max(0L, untilTick - gameTime);
+        return (int) Math.ceil(remaining / 20.0D);
+    }
+
     public void onInventoryUpdated() {
         this.taskCoordinator.onInventoryUpdated();
     }
@@ -967,6 +1030,16 @@ public class CompanionEntity extends PathfinderMob {
         }
         ItemStack toStore = stack == null ? ItemStack.EMPTY : stack.copy();
         this.entityData.set(toolAccessor(slot), toStore);
+    }
+
+    @Override
+    public float getAttackAnim(float partialTicks) {
+        if (!this.swinging) {
+            return 0.0F;
+        }
+        float swingTicks = this.swingTime + partialTicks;
+        float progress = swingTicks / (float) SWING_DURATION_TICKS;
+        return Mth.clamp(progress, 0.0F, 1.0F);
     }
 
     public ItemStack takeToolSlot(CompanionToolSlot slot) {
@@ -1138,6 +1211,7 @@ public class CompanionEntity extends PathfinderMob {
             tickGreeting();
             tickChestStatus();
             tickItemPickup();
+            inventoryExchange.tickToolDropNotice(gameTime);
             tickHomeRequests(gameTime);
             if (returningHome) {
                 tickHomeReturn(gameTime);
@@ -1153,6 +1227,23 @@ public class CompanionEntity extends PathfinderMob {
     }
 
     @Override
+    public void swing(InteractionHand hand, boolean fromServerPlayer) {
+        boolean wasSwinging = this.swinging;
+        super.swing(hand, fromServerPlayer);
+        if (!this.level().isClientSide && !wasSwinging) {
+            this.level().broadcastEntityEvent(this, (byte) 4);
+        }
+    }
+
+    @Override
+    public void handleEntityEvent(byte id) {
+        super.handleEntityEvent(id);
+        if (id == 4 && !this.swinging) {
+            this.swinging = true;
+            this.swingTime = 0;
+        }
+    }
+
     public InteractionResult mobInteract(Player player, InteractionHand hand) {
         ItemStack stack = player.getItemInHand(hand);
         if (!stack.isEmpty() && stack.isEdible() && !isNegativeFood(stack)) {
@@ -1263,6 +1354,22 @@ public class CompanionEntity extends PathfinderMob {
     private void sendDirectMessage(Player player, Component message) {
         Component fullMessage = Component.literal(DISPLAY_NAME + ": ").append(message);
         player.sendSystemMessage(fullMessage);
+    }
+
+    private static void sendDirectMessageStatic(Player player, Component message) {
+        if (player == null || message == null) {
+            return;
+        }
+        Component fullMessage = Component.literal(DISPLAY_NAME + ": ").append(message);
+        player.sendSystemMessage(fullMessage);
+    }
+
+    private long getServerTick() {
+        MinecraftServer server = this.level().getServer();
+        if (server != null) {
+            return server.getTickCount();
+        }
+        return this.level().getGameTime();
     }
 
     private void tickItemPickup() {
@@ -1445,6 +1552,9 @@ public class CompanionEntity extends PathfinderMob {
 
     private boolean isFollowModeActive() {
         if (treeHarvestController.isTreeChopInProgress()) {
+            return false;
+        }
+        if (combatController.isEngaged(this.level().getGameTime())) {
             return false;
         }
         if (this.mode == CompanionMode.FOLLOW) {
@@ -1713,6 +1823,7 @@ public class CompanionEntity extends PathfinderMob {
         PendingTeleportRequest request = new PendingTeleportRequest(
                 this.getUUID(),
                 this.level().dimension(),
+                this.blockPosition(),
                 new ChunkPos(this.blockPosition()),
                 untilTick,
                 messageKey,
@@ -1734,6 +1845,7 @@ public class CompanionEntity extends PathfinderMob {
         PendingTeleportRequest request = new PendingTeleportRequest(
                 companionId,
                 levelKey,
+                position,
                 new ChunkPos(position),
                 untilTick,
                 messageKey,
@@ -1860,6 +1972,9 @@ public class CompanionEntity extends PathfinderMob {
         }
         ServerLevel level = server.getLevel(request.levelKey);
         long gameTime = level != null ? level.getGameTime() : player.level().getGameTime();
+        if (WHERE_STATUS_KEY.equals(request.messageKey) && player.getServer() != null) {
+            gameTime = player.getServer().getTickCount();
+        }
         if (gameTime >= request.untilTick) {
             if (WHERE_STATUS_KEY.equals(request.messageKey)) {
                 sendTeleportIgnore(player, TELEPORT_IGNORE_WHERE_KEY);
@@ -1876,6 +1991,21 @@ public class CompanionEntity extends PathfinderMob {
                 companion = (CompanionEntity) level.getEntity(request.companionId);
             }
         }
+        if (companion == null) {
+            ResourceKey<Level> homeLevelKey = CompanionSingleNpcManager.getLastHomeDimension();
+            BlockPos homePos = CompanionSingleNpcManager.getLastHomePos();
+            if (homeLevelKey != null && homePos != null && server != null) {
+                ServerLevel homeLevel = server.getLevel(homeLevelKey);
+                if (homeLevel != null) {
+                    homeLevel.getChunkSource().getChunk(homePos.getX() >> 4, homePos.getZ() >> 4,
+                            ChunkStatus.FULL, true);
+                    Entity homeEntity = homeLevel.getEntity(request.companionId);
+                    if (homeEntity instanceof CompanionEntity homeCompanion && homeCompanion.isAlive()) {
+                        companion = homeCompanion;
+                    }
+                }
+            }
+        }
         if (WHERE_STATUS_KEY.equals(request.messageKey)) {
             if (companion != null) {
                 companion.clearWhereRequest();
@@ -1883,10 +2013,18 @@ public class CompanionEntity extends PathfinderMob {
                 sendTeleportIgnore(player, TELEPORT_IGNORE_WHERE_KEY);
             }
         }
+        boolean shouldFollowAfterTeleport = false;
+        if (companion != null) {
+            shouldFollowAfterTeleport = companion.isAtHome()
+                    || companion.getMode() == CompanionMode.STOPPED;
+        }
         if (accepted && companion != null && companion.isAlive()) {
             Vec3 targetPos = companion.resolveTeleportTarget(player);
             companion.teleportTo(targetPos.x, targetPos.y, targetPos.z);
             companion.getNavigation().stop();
+            if (shouldFollowAfterTeleport) {
+                companion.setMode(CompanionMode.AUTONOMOUS);
+            }
         }
         PENDING_TELEPORT_REQUESTS.remove(player.getUUID(), request);
         PENDING_TELEPORTS.remove(player.getUUID());
@@ -1904,6 +2042,25 @@ public class CompanionEntity extends PathfinderMob {
         player.sendSystemMessage(Component.translatable(key));
     }
 
+    private static void removeExpiredPendingRequest(MinecraftServer server, UUID playerId,
+                                                    PendingTeleportRequest request) {
+        if (playerId == null || request == null) {
+            return;
+        }
+        PENDING_TELEPORT_REQUESTS.remove(playerId, request);
+        PENDING_TELEPORTS.remove(playerId);
+        if (!WHERE_STATUS_KEY.equals(request.messageKey)) {
+            return;
+        }
+        if (server == null) {
+            return;
+        }
+        ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+        if (player != null) {
+            sendTeleportIgnore(player, TELEPORT_IGNORE_WHERE_KEY);
+        }
+    }
+
     public static void tickPendingTeleports(MinecraftServer server) {
         if (server == null) {
             return;
@@ -1919,9 +2076,34 @@ public class CompanionEntity extends PathfinderMob {
                 continue;
             }
             ServerLevel level = server.getLevel(request.levelKey);
-            if (level == null || level.getGameTime() >= request.untilTick) {
-                PENDING_TELEPORT_REQUESTS.remove(entry.getKey(), request);
-                PENDING_TELEPORTS.remove(entry.getKey());
+            if (level == null) {
+                removeExpiredPendingRequest(server, entry.getKey(), request);
+                continue;
+            }
+            long gameTime = level.getGameTime();
+            if (WHERE_STATUS_KEY.equals(request.messageKey)) {
+                gameTime = server.getTickCount();
+            }
+            if (gameTime >= request.untilTick) {
+                removeExpiredPendingRequest(server, entry.getKey(), request);
+                continue;
+            }
+            if (WHERE_STATUS_KEY.equals(request.messageKey) && request.originPos != null) {
+                if (level.hasChunk(request.chunkPos.x, request.chunkPos.z)) {
+                    Entity entity = level.getEntity(request.companionId);
+                    if (!(entity instanceof CompanionEntity companion) || !companion.isAlive()) {
+                        removeExpiredPendingRequest(server, entry.getKey(), request);
+                    }
+                    continue;
+                }
+                int secondsLeft = secondsLeftStatic(request.untilTick, gameTime);
+                if (secondsLeft != request.lastSeconds) {
+                    request.lastSeconds = secondsLeft;
+                    ServerPlayer player = server.getPlayerList().getPlayer(entry.getKey());
+                    if (player != null) {
+                        sendWhereMessageFallback(player, request.originPos, secondsLeft);
+                    }
+                }
             }
         }
     }
@@ -2070,6 +2252,14 @@ public class CompanionEntity extends PathfinderMob {
             }
         }
         return false;
+    }
+
+    BlockPos getHomePos() {
+        return homePos;
+    }
+
+    ResourceLocation getHomeDimensionId() {
+        return homeDimension;
     }
 
     private static void saveToolSlot(CompoundTag tag, String key, ItemStack stack) {

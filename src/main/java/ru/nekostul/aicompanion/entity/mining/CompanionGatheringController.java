@@ -819,6 +819,11 @@ public final class CompanionGatheringController {
         fakePlayer.setItemSlot(EquipmentSlot.CHEST, owner.getItemBySlot(EquipmentSlot.CHEST).copy());
         fakePlayer.setItemSlot(EquipmentSlot.LEGS, owner.getItemBySlot(EquipmentSlot.LEGS).copy());
         fakePlayer.setItemSlot(EquipmentSlot.FEET, owner.getItemBySlot(EquipmentSlot.FEET).copy());
+        fakePlayer.getAbilities().instabuild = false;
+        fakePlayer.getAbilities().flying = false;
+        fakePlayer.getAbilities().mayfly = false;
+        fakePlayer.getAbilities().invulnerable = false;
+        fakePlayer.onUpdateAbilities();
         fakePlayer.removeAllEffects();
         for (MobEffectInstance effect : owner.getActiveEffects()) {
             fakePlayer.addEffect(new MobEffectInstance(effect));

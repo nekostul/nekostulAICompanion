@@ -26,7 +26,8 @@ public final class CompanionTeleportChatHandler {
             "entity.aicompanion.companion.teleport.request.repeat",
             "entity.aicompanion.companion.home.confirm",
             "entity.aicompanion.companion.where.status",
-            "entity.aicompanion.companion.home.follow"
+            "entity.aicompanion.companion.home.follow",
+            "entity.aicompanion.companion.inventory.drop.tools.notice"
     );
     private static final String TELEPORT_IGNORE_PREFIX = "entity.aicompanion.companion.teleport.ignore.";
 
