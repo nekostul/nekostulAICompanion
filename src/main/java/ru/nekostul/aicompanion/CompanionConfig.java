@@ -14,12 +14,24 @@ public final class CompanionConfig {
     private static final ForgeConfigSpec.Builder BUILDER = new ForgeConfigSpec.Builder();
 
     public static final ForgeConfigSpec.BooleanValue FULL_TREE_CHOP = BUILDER
-            .comment("Полная рубка деревьев: ломать весь ствол и листву после нижнего блока.")
+            .comment("Full tree chop: break the whole trunk and leaves after the bottom log.")
             .define("tree.fullChop", true);
 
     public static final ForgeConfigSpec.BooleanValue NPC_PANEL_BUTTON = BUILDER
-            .comment("Показывать кнопку панели NPC в инвентаре. Если кнопка отключена — открыть панель можно командой /ainpc gui.")
+            .comment("Show the NPC panel button in the inventory.",
+                    "If disabled, the panel can be opened with /ainpc gui.")
             .define("gui.npcPanelButton", true);
+
+    public static final ForgeConfigSpec.IntValue MAX_BLOCKS_PER_TASK = BUILDER
+            .comment("Maximum number of regular blocks per single task.",
+                    "If player asks for more, amount is automatically clamped to this limit.")
+            .defineInRange("limits.maxBlocksPerTask", 64, 1, 4096);
+
+    public static final ForgeConfigSpec.IntValue MAX_TREES_PER_TASK = BUILDER
+            .comment("Maximum number of full trees (treechop) per single task.",
+                    "If player asks for more, amount is automatically clamped to this limit.")
+            .defineInRange("limits.maxTreesPerTask", 5, 1, 256);
+
     public static final ForgeConfigSpec SPEC = BUILDER.build();
 
     private CompanionConfig() {
@@ -31,6 +43,14 @@ public final class CompanionConfig {
 
     public static boolean isNpcPanelButtonEnabled() {
         return NPC_PANEL_BUTTON.get();
+    }
+
+    public static int getMaxBlocksPerTask() {
+        return MAX_BLOCKS_PER_TASK.get();
+    }
+
+    public static int getMaxTreesPerTask() {
+        return MAX_TREES_PER_TASK.get();
     }
 
     public static void setFullTreeChopEnabled(boolean enabled) {
@@ -68,4 +88,6 @@ public final class CompanionConfig {
         }
     }
 }
+
+
 

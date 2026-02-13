@@ -15,15 +15,13 @@ import java.util.Map;
 import java.util.UUID;
 
 public final class BugReportCooldown {
-    private static final long DEFAULT_COOLDOWN_SECONDS = 15 * 60;
+    private static final long COOLDOWN_MILLIS = 15L * 60L * 1000L;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Map<UUID, Long> LAST_SENT = new HashMap<>();
 
     private static final Path CONFIG_DIR = FMLPaths.CONFIGDIR.get().resolve("aicompanion");
-    private static final Path COOLDOWN_CONFIG = CONFIG_DIR.resolve("bugreport_cooldown.json");
     private static final Path COOLDOWN_DB = CONFIG_DIR.resolve("bugreport_cooldown_db.json");
 
-    private static long cooldownSeconds = DEFAULT_COOLDOWN_SECONDS;
     private static boolean loaded;
 
     private BugReportCooldown() {
@@ -34,7 +32,6 @@ public final class BugReportCooldown {
             return;
         }
         loaded = true;
-        loadCooldownConfig();
         loadCooldownDb();
     }
 
@@ -42,10 +39,9 @@ public final class BugReportCooldown {
         load();
         UUID id = player.getUUID();
         long now = System.currentTimeMillis();
-        long cooldownMs = cooldownSeconds * 1000L;
 
         return !LAST_SENT.containsKey(id)
-                || now - LAST_SENT.get(id) >= cooldownMs;
+                || now - LAST_SENT.get(id) >= COOLDOWN_MILLIS;
     }
 
     public static long getRemainingSeconds(ServerPlayer player) {
@@ -54,8 +50,7 @@ public final class BugReportCooldown {
         if (last == null) {
             return 0;
         }
-        long cooldownMs = cooldownSeconds * 1000L;
-        long diff = cooldownMs - (System.currentTimeMillis() - last);
+        long diff = COOLDOWN_MILLIS - (System.currentTimeMillis() - last);
         return Math.max(0, diff / 1000);
     }
 
@@ -63,40 +58,6 @@ public final class BugReportCooldown {
         load();
         LAST_SENT.put(player.getUUID(), System.currentTimeMillis());
         saveCooldownDb();
-    }
-
-    private static void loadCooldownConfig() {
-        if (!Files.exists(COOLDOWN_CONFIG)) {
-            saveCooldownConfig();
-            return;
-        }
-        try {
-            JsonObject obj = readJsonFile(COOLDOWN_CONFIG);
-            if (obj == null) {
-                return;
-            }
-            if (obj.has("cooldownSeconds")) {
-                long seconds = obj.get("cooldownSeconds").getAsLong();
-                if (seconds > 0) {
-                    cooldownSeconds = seconds;
-                }
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
-    private static void saveCooldownConfig() {
-        try {
-            Files.createDirectories(CONFIG_DIR);
-            JsonObject obj = new JsonObject();
-            obj.addProperty("cooldownSeconds", DEFAULT_COOLDOWN_SECONDS);
-            Files.writeString(COOLDOWN_CONFIG, GSON.toJson(obj),
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.TRUNCATE_EXISTING);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
     }
 
     private static void loadCooldownDb() {

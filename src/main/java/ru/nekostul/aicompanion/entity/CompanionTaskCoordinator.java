@@ -10,6 +10,7 @@ import net.minecraft.world.entity.ai.village.poi.PoiManager;
 import net.minecraft.world.entity.ai.village.poi.PoiType;
 import net.minecraft.world.entity.player.Player;
 
+import ru.nekostul.aicompanion.CompanionConfig;
 import ru.nekostul.aicompanion.entity.command.CompanionCommandParser;
 import ru.nekostul.aicompanion.entity.inventory.CompanionDeliveryController;
 import ru.nekostul.aicompanion.entity.inventory.CompanionEquipment;
@@ -19,6 +20,7 @@ import ru.nekostul.aicompanion.entity.mining.CompanionGatheringController;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
 import ru.nekostul.aicompanion.entity.tree.CompanionTreeHarvestController;
+import ru.nekostul.aicompanion.entity.tree.CompanionTreeRequestMode;
 
 final class CompanionTaskCoordinator {
     private enum TaskState {
@@ -39,6 +41,8 @@ final class CompanionTaskCoordinator {
     private static final String TREE_NOT_FOUND_KEY = "entity.aicompanion.companion.tree.harvest.not_found";
     private static final String TREE_VILLAGE_BLOCK_KEY = "entity.aicompanion.companion.tree.harvest.village_block";
     private static final String GATHER_FAIL_KEY = "entity.aicompanion.companion.gather.failed";
+    private static final String BLOCK_LIMIT_KEY = "entity.aicompanion.companion.gather.limit.blocks";
+    private static final String TREE_LIMIT_KEY = "entity.aicompanion.companion.gather.limit.trees";
 
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
@@ -167,14 +171,15 @@ final class CompanionTaskCoordinator {
 
     private void startRequest(Player player, CompanionCommandParser.CommandRequest parsed) {
         if (parsed.getTreeMode() != null
-                && parsed.getTreeMode() != ru.nekostul.aicompanion.entity.tree.CompanionTreeRequestMode.NONE
+                && parsed.getTreeMode() != CompanionTreeRequestMode.NONE
                 && isPlayerInVillage(player)) {
             owner.sendReply(player, Component.translatable(TREE_VILLAGE_BLOCK_KEY));
             activeRequest = null;
             taskState = TaskState.IDLE;
             return;
         }
-        activeRequest = new CompanionResourceRequest(player.getUUID(), parsed.getResourceType(), parsed.getAmount(),
+        int amount = clampTaskAmount(parsed, player);
+        activeRequest = new CompanionResourceRequest(player.getUUID(), parsed.getResourceType(), amount,
                 parsed.getTreeMode());
         if (parsed.getResourceType().isBucketResource()) {
             if (bucketHandler.ensureBuckets(activeRequest, player, owner.level().getGameTime())
@@ -187,6 +192,43 @@ final class CompanionTaskCoordinator {
         if (!activeRequest.isTreeCountRequest()) {
             delivery.startDelivery();
         }
+    }
+
+    private int clampTaskAmount(CompanionCommandParser.CommandRequest parsed, Player player) {
+        int requested = parsed.getAmount();
+        if (requested <= 0) {
+            return requested;
+        }
+        if (parsed.getTreeMode() == CompanionTreeRequestMode.TREE_COUNT) {
+            int maxTrees = CompanionConfig.getMaxTreesPerTask();
+            if (requested > maxTrees) {
+                if (player != null) {
+                    owner.sendReply(player, limitMessage(TREE_LIMIT_KEY, maxTrees));
+                }
+                return maxTrees;
+            }
+            return requested;
+        }
+        if (isRegularBlockRequest(parsed.getResourceType())) {
+            int maxBlocks = CompanionConfig.getMaxBlocksPerTask();
+            if (requested > maxBlocks) {
+                if (player != null) {
+                    owner.sendReply(player, limitMessage(BLOCK_LIMIT_KEY, maxBlocks));
+                }
+                return maxBlocks;
+            }
+        }
+        return requested;
+    }
+
+    private boolean isRegularBlockRequest(CompanionResourceType type) {
+        if (type == null) {
+            return false;
+        }
+        if (type.isBucketResource()) {
+            return false;
+        }
+        return type != CompanionResourceType.TORCH;
     }
 
     private void tickGathering(Player player, long gameTime) {
@@ -334,5 +376,22 @@ final class CompanionTaskCoordinator {
                 PoiManager.Occupancy.ANY)
                 .findAny()
                 .isPresent();
+    }
+
+    private Component limitMessage(String baseKey, int amount) {
+        return Component.translatable(baseKey + "." + pluralCategory(amount), amount);
+    }
+
+    private String pluralCategory(int amount) {
+        int value = Math.abs(amount);
+        int mod10 = value % 10;
+        int mod100 = value % 100;
+        if (mod10 == 1 && mod100 != 11) {
+            return "one";
+        }
+        if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+            return "few";
+        }
+        return "many";
     }
 }
