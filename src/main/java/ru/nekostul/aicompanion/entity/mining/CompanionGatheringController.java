@@ -8,6 +8,7 @@ import net.minecraft.tags.ItemTags;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -71,6 +72,7 @@ public final class CompanionGatheringController {
     private static final int STUCK_RETRY_INTERVAL_TICKS = 40;
     private static final int STUCK_RETRY_LIMIT = 10;
     private static final double STUCK_MOVE_EPSILON_SQR = 0.0004D;
+    private static final double MOVE_SPEED_BLOCKS_PER_TICK = 0.35D;
     private static final GameProfile MINING_PROFILE = new GameProfile(
             UUID.fromString("a0f7c96f-0a96-4b07-b7c6-8f2c19b2b9e4"), "CompanionMiner");
 
@@ -104,6 +106,8 @@ public final class CompanionGatheringController {
     private int lastProgressHash;
     private float lastProgressMining;
     private Vec3 lastProgressPos;
+    private BlockPos lastMoveTarget;
+    private long lastMoveAttemptTick = -1L;
     private ScanPhase scanPhase;
     private ScanState scanState;
     private StoneDigScanState stoneDigScanState;
@@ -149,7 +153,17 @@ public final class CompanionGatheringController {
             resetRequestState();
             return finalizeResult(Result.TOOL_REQUIRED, gameTime);
         }
-        if (targetBlock == null || !isTargetValid()) {
+        if (targetBlock != null && !isTargetValid()) {
+            clearTargetState();
+            lastRestartTick = gameTime;
+        }
+        if (targetBlock == null) {
+            if (isRestartCooldownActive(gameTime)) {
+                if (!owner.getNavigation().isDone()) {
+                    owner.getNavigation().stop();
+                }
+                return finalizeResult(Result.IN_PROGRESS, gameTime);
+            }
             TargetSelection selection = findTarget(activeType, gameTime);
             if (selection == null) {
                 if (gameTime == lastScanTick && !lastScanFound) {
@@ -262,6 +276,33 @@ public final class CompanionGatheringController {
         return hasMovementGoal();
     }
 
+    private boolean isRestartCooldownActive(long gameTime) {
+        return lastRestartTick >= 0L && gameTime - lastRestartTick < STUCK_RETRY_INTERVAL_TICKS;
+    }
+
+    private boolean shouldIssueMoveTo(BlockPos moveTarget, long gameTime) {
+        if (moveTarget == null) {
+            return false;
+        }
+        if (lastMoveTarget == null || !lastMoveTarget.equals(moveTarget)) {
+            return true;
+        }
+        if (!owner.getNavigation().isDone()) {
+            return false;
+        }
+        return lastMoveAttemptTick < 0L || gameTime - lastMoveAttemptTick >= STUCK_RETRY_INTERVAL_TICKS;
+    }
+
+    private void rememberMoveTo(BlockPos moveTarget, long gameTime) {
+        lastMoveTarget = moveTarget;
+        lastMoveAttemptTick = gameTime;
+    }
+
+    private void resetMoveTracking() {
+        lastMoveTarget = null;
+        lastMoveAttemptTick = -1L;
+    }
+
     private void restartStuckSearch(long gameTime) {
         owner.getNavigation().stop();
         clearTargetState();
@@ -299,11 +340,16 @@ public final class CompanionGatheringController {
         }
         Vec3 center = Vec3.atCenterOf(targetBlock);
         if (!miningReach.canMine(targetBlock)) {
-            owner.getNavigation().moveTo(center.x, center.y, center.z, 1.0D);
+            if (shouldIssueMoveTo(targetBlock, gameTime)) {
+                owner.getNavigation().moveTo(center.x, center.y, center.z,
+                        speedModifierFor(MOVE_SPEED_BLOCKS_PER_TICK));
+                rememberMoveTo(targetBlock, gameTime);
+            }
             resetMiningProgress();
             return Result.IN_PROGRESS;
         }
         owner.getNavigation().stop();
+        resetMoveTracking();
         if (oreToolGate.isBlockBlocked(state)) {
             clearTargetState();
             return Result.IN_PROGRESS;
@@ -849,6 +895,7 @@ public final class CompanionGatheringController {
         digStonePos = null;
         resetMiningProgress();
         resetScanState();
+        resetMoveTracking();
     }
 
     private void resetRequestState() {
@@ -880,6 +927,7 @@ public final class CompanionGatheringController {
         lastProgressHash = 0;
         lastProgressMining = 0.0F;
         lastProgressPos = null;
+        resetMoveTracking();
     }
 
     private static int[] buildOffsets(int radius) {
@@ -892,6 +940,14 @@ public final class CompanionGatheringController {
             offsets[idx++] = -i;
         }
         return offsets;
+    }
+
+    private double speedModifierFor(double desiredSpeed) {
+        double base = owner.getAttributeValue(Attributes.MOVEMENT_SPEED);
+        if (base <= 0.0D) {
+            return 0.0D;
+        }
+        return desiredSpeed / base;
     }
 
     private static final class ScanState {

@@ -130,6 +130,8 @@ public final class CompanionTreeHarvestController {
     private int lastProgressHash;
     private float lastProgressMining;
     private Vec3 lastProgressPos;
+    private BlockPos lastMoveTarget;
+    private long lastMoveAttemptTick = -1L;
     private final Map<Item, Integer> collectedDrops = new HashMap<>();
     private final Map<Item, Integer> treeChopBaseline = new HashMap<>();
     private ScanState scanState;
@@ -210,7 +212,17 @@ public final class CompanionTreeHarvestController {
             }
             return finalizeResult(Result.DONE, gameTime);
         }
-        if (targetBlock == null || !isTargetValid()) {
+        if (targetBlock != null && !isTargetValid()) {
+            clearTargetState();
+            lastRestartTick = gameTime;
+        }
+        if (targetBlock == null) {
+            if (isRestartCooldownActive(gameTime)) {
+                if (!owner.getNavigation().isDone()) {
+                    owner.getNavigation().stop();
+                }
+                return finalizeResult(Result.IN_PROGRESS, gameTime);
+            }
             TargetSelection selection = findTreeTarget(gameTime);
             if (selection == null) {
                 if (isTreeChopInProgress()) {
@@ -410,6 +422,33 @@ public final class CompanionTreeHarvestController {
         return targetBlock != null || pendingResourceBlock != null || treeBasePos != null;
     }
 
+    private boolean isRestartCooldownActive(long gameTime) {
+        return lastRestartTick >= 0L && gameTime - lastRestartTick < STUCK_RETRY_INTERVAL_TICKS;
+    }
+
+    private boolean shouldIssueMoveTo(BlockPos moveTarget, long gameTime) {
+        if (moveTarget == null) {
+            return false;
+        }
+        if (lastMoveTarget == null || !lastMoveTarget.equals(moveTarget)) {
+            return true;
+        }
+        if (!owner.getNavigation().isDone()) {
+            return false;
+        }
+        return lastMoveAttemptTick < 0L || gameTime - lastMoveAttemptTick >= STUCK_RETRY_INTERVAL_TICKS;
+    }
+
+    private void rememberMoveTo(BlockPos moveTarget, long gameTime) {
+        lastMoveTarget = moveTarget;
+        lastMoveAttemptTick = gameTime;
+    }
+
+    private void resetMoveTracking() {
+        lastMoveTarget = null;
+        lastMoveAttemptTick = -1L;
+    }
+
     private boolean tryStartManualTrunkChop(long gameTime) {
         if (!isTreeChopActive() || forceTrunkChop) {
             return false;
@@ -501,14 +540,19 @@ public final class CompanionTreeHarvestController {
         Vec3 center = Vec3.atCenterOf(targetBlock);
         if (!miningReach.canMine(targetBlock)) {
             if (shouldPlaceStepBlock() && tryPlaceStepBlock()) {
+                resetMoveTracking();
                 resetMiningProgress();
                 return Result.IN_PROGRESS;
             }
-            owner.getNavigation().moveTo(center.x, center.y, center.z, speedModifierFor(TREE_MOVE_SPEED_BLOCKS_PER_TICK));
+            if (shouldIssueMoveTo(targetBlock, gameTime)) {
+                owner.getNavigation().moveTo(center.x, center.y, center.z, speedModifierFor(TREE_MOVE_SPEED_BLOCKS_PER_TICK));
+                rememberMoveTo(targetBlock, gameTime);
+            }
             resetMiningProgress();
             return Result.IN_PROGRESS;
         }
         owner.getNavigation().stop();
+        resetMoveTracking();
         Player player = owner.getPlayerById(requestPlayerId);
         boolean suppressToolNotice = treeBasePos != null && pendingResourceBlock != null;
         if (suppressToolNotice) {
@@ -1356,6 +1400,7 @@ public final class CompanionTreeHarvestController {
         treeBasePos = null;
         trunkLogPos = null;
         resetMiningProgress();
+        resetMoveTracking();
     }
 
     private void resetRequestState() {
@@ -1400,6 +1445,7 @@ public final class CompanionTreeHarvestController {
         lastProgressHash = 0;
         lastProgressMining = 0.0F;
         lastProgressPos = null;
+        resetMoveTracking();
     }
 
     private void finishScan(TargetSelection selection, long gameTime, boolean found) {

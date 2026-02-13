@@ -278,12 +278,16 @@ public class CompanionEntity extends PathfinderMob {
         this.goalSelector.addGoal(4, new WaterAvoidingRandomStrollGoal(this, 0.8D) {
             @Override
             public boolean canUse() {
-                return !CompanionEntity.this.isFollowModeActive() && super.canUse();
+                return !CompanionEntity.this.isFollowModeActive()
+                        && !CompanionEntity.this.taskCoordinator.isBusy()
+                        && super.canUse();
             }
 
             @Override
             public boolean canContinueToUse() {
-                return !CompanionEntity.this.isFollowModeActive() && super.canContinueToUse();
+                return !CompanionEntity.this.isFollowModeActive()
+                        && !CompanionEntity.this.taskCoordinator.isBusy()
+                        && super.canContinueToUse();
             }
         });
         this.goalSelector.addGoal(5, new LookAtPlayerGoal(this, Player.class, 8.0F));

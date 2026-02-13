@@ -5,6 +5,7 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.core.BlockPos;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
 
@@ -22,6 +23,8 @@ public final class CompanionDeliveryController {
     private long nextDeliverTick;
     private List<ItemStack> pendingDrops;
     private int pendingDropIndex;
+    private BlockPos lastMoveTarget;
+    private long lastMoveAttemptTick = -1L;
 
     public CompanionDeliveryController(CompanionEntity owner, CompanionInventory inventory) {
         this.owner = owner;
@@ -33,11 +36,13 @@ public final class CompanionDeliveryController {
         nextDeliverTick = -1L;
         pendingDrops = null;
         pendingDropIndex = 0;
+        resetMoveTracking();
     }
 
     public void startDelivery(List<ItemStack> drops) {
         deliveredCount = 0;
         nextDeliverTick = -1L;
+        resetMoveTracking();
         if (drops == null || drops.isEmpty()) {
             pendingDrops = null;
             pendingDropIndex = 0;
@@ -54,17 +59,25 @@ public final class CompanionDeliveryController {
 
     public boolean tickDelivery(CompanionResourceRequest request, Player player, long gameTime) {
         if (request == null || player == null) {
+            resetMoveTracking();
             return false;
         }
         if (deliveredCount >= request.getAmount()) {
+            resetMoveTracking();
             return true;
         }
         Vec3 target = player.position();
         if (owner.distanceToSqr(target) > DELIVERY_RANGE_SQR) {
-            owner.getNavigation().moveTo(target.x, target.y, target.z, speedModifierFor(DELIVERY_SPEED_BLOCKS_PER_TICK));
+            if (shouldIssueMoveTo(target, gameTime)) {
+                owner.getNavigation().moveTo(target.x, target.y, target.z, speedModifierFor(DELIVERY_SPEED_BLOCKS_PER_TICK));
+                rememberMoveTo(target, gameTime);
+            }
             return false;
         }
-        owner.getNavigation().stop();
+        if (!owner.getNavigation().isDone()) {
+            owner.getNavigation().stop();
+        }
+        resetMoveTracking();
         if (gameTime < nextDeliverTick) {
             return false;
         }
@@ -78,17 +91,25 @@ public final class CompanionDeliveryController {
 
     public boolean tickDeliveryStacks(Player player, long gameTime) {
         if (player == null) {
+            resetMoveTracking();
             return false;
         }
         if (pendingDrops == null || pendingDropIndex >= pendingDrops.size()) {
+            resetMoveTracking();
             return true;
         }
         Vec3 target = player.position();
         if (owner.distanceToSqr(target) > DELIVERY_RANGE_SQR) {
-            owner.getNavigation().moveTo(target.x, target.y, target.z, speedModifierFor(DELIVERY_SPEED_BLOCKS_PER_TICK));
+            if (shouldIssueMoveTo(target, gameTime)) {
+                owner.getNavigation().moveTo(target.x, target.y, target.z, speedModifierFor(DELIVERY_SPEED_BLOCKS_PER_TICK));
+                rememberMoveTo(target, gameTime);
+            }
             return false;
         }
-        owner.getNavigation().stop();
+        if (!owner.getNavigation().isDone()) {
+            owner.getNavigation().stop();
+        }
+        resetMoveTracking();
         if (gameTime < nextDeliverTick) {
             return false;
         }
@@ -120,6 +141,30 @@ public final class CompanionDeliveryController {
             player.level().addFreshEntity(entity);
         }
         return dropped;
+    }
+
+    private boolean shouldIssueMoveTo(Vec3 target, long gameTime) {
+        if (target == null) {
+            return false;
+        }
+        BlockPos targetBlock = BlockPos.containing(target);
+        if (lastMoveTarget == null || !lastMoveTarget.equals(targetBlock)) {
+            return true;
+        }
+        if (!owner.getNavigation().isDone()) {
+            return false;
+        }
+        return lastMoveAttemptTick < 0L || gameTime - lastMoveAttemptTick >= DELIVERY_COOLDOWN_TICKS;
+    }
+
+    private void rememberMoveTo(Vec3 target, long gameTime) {
+        lastMoveTarget = target != null ? BlockPos.containing(target) : null;
+        lastMoveAttemptTick = gameTime;
+    }
+
+    private void resetMoveTracking() {
+        lastMoveTarget = null;
+        lastMoveAttemptTick = -1L;
     }
 
     private double speedModifierFor(double desiredSpeed) {

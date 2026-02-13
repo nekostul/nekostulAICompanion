@@ -2,6 +2,7 @@ package ru.nekostul.aicompanion.entity;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -34,6 +35,7 @@ final class CompanionBucketHandler {
     private static final int FLUID_SCAN_COOLDOWN_TICKS = 80;
     private static final float FLUID_FOV_DOT = -1.0F;
     private static final double FLUID_USE_RANGE_SQR = 6.0D;
+    private static final double MOVE_SPEED_BLOCKS_PER_TICK = 0.35D;
     private static final int FILL_COOLDOWN_TICKS = 10;
     private static final int HIDDEN_RESCAN_TICKS = 20;
 
@@ -45,6 +47,8 @@ final class CompanionBucketHandler {
     private long nextFillTick = -1L;
     private long lastScanTick = -1L;
     private boolean lastScanFound = true;
+    private BlockPos lastMoveTarget;
+    private long lastMoveAttemptTick = -1L;
 
     CompanionBucketHandler(CompanionEntity owner, CompanionInventory inventory) {
         this.owner = owner;
@@ -71,17 +75,21 @@ final class CompanionBucketHandler {
 
     FillResult tickFillBuckets(CompanionResourceRequest request, Player player, long gameTime) {
         if (request == null || !request.getResourceType().isBucketResource()) {
+            resetMoveTracking();
             return FillResult.IN_PROGRESS;
         }
         int filled = inventory.countMatching(request.getResourceType()::matchesItem);
         if (filled >= request.getAmount()) {
+            resetMoveTracking();
             return FillResult.DONE;
         }
         if (inventory.countItem(Items.BUCKET) <= 0) {
+            resetMoveTracking();
             return FillResult.IN_PROGRESS;
         }
         BlockPos target = findFluidSource(request.getResourceType(), gameTime);
         if (target == null) {
+            resetMoveTracking();
             if (gameTime == lastScanTick && !lastScanFound) {
                 return FillResult.NOT_FOUND;
             }
@@ -90,10 +98,17 @@ final class CompanionBucketHandler {
         Vec3 center = Vec3.atCenterOf(target);
         double distance = owner.distanceToSqr(center);
         if (distance > FLUID_USE_RANGE_SQR) {
-            owner.getNavigation().moveTo(center.x, center.y, center.z, 1.0D);
+            if (shouldIssueMoveTo(target, gameTime)) {
+                owner.getNavigation().moveTo(center.x, center.y, center.z,
+                        speedModifierFor(MOVE_SPEED_BLOCKS_PER_TICK));
+                rememberMoveTo(target, gameTime);
+            }
             return FillResult.IN_PROGRESS;
         }
-        owner.getNavigation().stop();
+        if (!owner.getNavigation().isDone()) {
+            owner.getNavigation().stop();
+        }
+        resetMoveTracking();
         owner.getLookControl().setLookAt(center.x, center.y, center.z);
         if (gameTime < nextFillTick) {
             return FillResult.IN_PROGRESS;
@@ -108,6 +123,37 @@ final class CompanionBucketHandler {
         owner.swing(InteractionHand.MAIN_HAND, true);
         return inventory.countMatching(request.getResourceType()::matchesItem) >= request.getAmount()
                 ? FillResult.DONE : FillResult.IN_PROGRESS;
+    }
+
+    private boolean shouldIssueMoveTo(BlockPos target, long gameTime) {
+        if (target == null) {
+            return false;
+        }
+        if (lastMoveTarget == null || !lastMoveTarget.equals(target)) {
+            return true;
+        }
+        if (!owner.getNavigation().isDone()) {
+            return false;
+        }
+        return lastMoveAttemptTick < 0L || gameTime - lastMoveAttemptTick >= FILL_COOLDOWN_TICKS;
+    }
+
+    private void rememberMoveTo(BlockPos target, long gameTime) {
+        lastMoveTarget = target;
+        lastMoveAttemptTick = gameTime;
+    }
+
+    private void resetMoveTracking() {
+        lastMoveTarget = null;
+        lastMoveAttemptTick = -1L;
+    }
+
+    private double speedModifierFor(double desiredSpeed) {
+        double base = owner.getAttributeValue(Attributes.MOVEMENT_SPEED);
+        if (base <= 0.0D) {
+            return 0.0D;
+        }
+        return desiredSpeed / base;
     }
 
     private BlockPos findFluidSource(CompanionResourceType type, long gameTime) {
