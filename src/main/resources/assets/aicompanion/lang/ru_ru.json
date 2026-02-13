@@ -291,5 +291,7 @@
   "entity.aicompanion.companion.torch.need.sticks.only": "Для крафта факелов мне нужно %s, уголь у меня есть.",
   "entity.aicompanion.companion.torch.ready": "Сделаю факелы и принесу.",
   "entity.aicompanion.companion.ore.require.stone": "Для добычи этой руды мне нужна хотя бы каменная кирка.",
-  "entity.aicompanion.companion.ore.require.iron": "Для добычи этой руды мне нужна хотя бы железная кирка."
+  "entity.aicompanion.companion.ore.require.iron": "Для добычи этой руды мне нужна хотя бы железная кирка.",
+  "message.aicompanion.update.available": "Доступна новая версия: %s (у тебя %s).",
+  "message.aicompanion.update.button": "[Обновить]"
 }

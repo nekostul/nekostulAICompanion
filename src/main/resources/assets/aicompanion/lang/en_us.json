@@ -291,5 +291,7 @@
   "entity.aicompanion.companion.torch.need.sticks.only": "I need %s to craft torches; I already have coal.",
   "entity.aicompanion.companion.torch.ready": "I'll make the torches and bring them.",
   "entity.aicompanion.companion.ore.require.stone": "I need at least a stone pickaxe to mine this ore.",
-  "entity.aicompanion.companion.ore.require.iron": "I need at least an iron pickaxe to mine this ore."
+  "entity.aicompanion.companion.ore.require.iron": "I need at least an iron pickaxe to mine this ore.",
+  "message.aicompanion.update.available": "A new version is available: %s (you have %s).",
+  "message.aicompanion.update.button": "[Update]"
 }
