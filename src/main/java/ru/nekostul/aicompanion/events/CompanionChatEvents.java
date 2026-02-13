@@ -11,6 +11,7 @@ import net.minecraftforge.server.ServerLifecycleHooks;
 
 import ru.nekostul.aicompanion.AiCompanionMod;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
+import ru.nekostul.aicompanion.entity.CompanionSingleNpcManager;
 
 import java.util.Locale;
 import java.util.Queue;
@@ -60,6 +61,14 @@ public final class CompanionChatEvents {
             return true;
         }
 
+        if (isWhereCommand(message)) {
+            CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
+            if (companion == null) {
+                return false;
+            }
+            return companion.handleWhereCommand(player);
+        }
+
         CompanionEntity companion = findNearestCompanion(player);
         if (companion == null) {
             return false;
@@ -67,6 +76,10 @@ public final class CompanionChatEvents {
 
         if (companion.handleThanks(player, message)) {
             return true;
+        }
+
+        if (isGoHomeCommand(message)) {
+            return companion.handleGoHomeCommand(player);
         }
 
         if (handlePartyCommand(player, companion, message)) {
@@ -91,6 +104,9 @@ public final class CompanionChatEvents {
             }
             boolean changed = companion.setMode(mode);
             if (changed) {
+                if (mode == CompanionEntity.CompanionMode.STOPPED) {
+                    companion.markStopCommand(player);
+                }
                 companion.sendReply(player, Component.translatable(modeKey(mode)));
             }
             return true;
@@ -227,6 +243,19 @@ public final class CompanionChatEvents {
         return message.trim()
                 .toLowerCase(Locale.ROOT)
                 .replace('\u0451', '\u0435');
+    }
+
+    private static boolean isWhereCommand(String message) {
+        String normalized = normalize(message);
+        return normalized.equals("\u0433\u0434\u0435 \u0442\u044b")
+                || normalized.equals("\u0433\u0434\u0435 \u0442\u044b?")
+                || normalized.equals("where are you");
+    }
+
+    private static boolean isGoHomeCommand(String message) {
+        String normalized = normalize(message);
+        return normalized.equals("\u0438\u0434\u0438 \u0434\u043e\u043c\u043e\u0439")
+                || normalized.equals("\u0438\u0434\u0438 \u0434\u043e\u043c\u043e\u0439!");
     }
 
     private enum PartyAction {

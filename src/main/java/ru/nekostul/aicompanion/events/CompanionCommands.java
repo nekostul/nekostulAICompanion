@@ -47,6 +47,15 @@ public final class CompanionCommands {
                         .then(Commands.literal("bug")
                                 .then(Commands.argument("text", StringArgumentType.greedyString())
                                         .executes(CompanionCommands::handleBugReport)))
+                        .then(Commands.literal("sethome")
+                                .executes(CompanionCommands::handleSetHome))
+                        .then(Commands.literal("delhome")
+                                .executes(CompanionCommands::handleDelHome))
+                        .then(Commands.literal("home")
+                                .then(Commands.literal("yes")
+                                        .executes(context -> handleHomeConfirm(context, true)))
+                                .then(Commands.literal("no")
+                                        .executes(context -> handleHomeConfirm(context, false))))
                         .then(Commands.literal("treechop")
                                 .then(Commands.literal("on")
                                         .executes(context -> handleTreeChop(context, true)))
@@ -91,6 +100,34 @@ public final class CompanionCommands {
         String message = StringArgumentType.getString(context, "text");
         BugReportService.sendAsync(player, message);
         return 1;
+    }
+
+    private static int handleSetHome(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
+        if (companion == null || !companion.canPlayerControl(player)) {
+            return 0;
+        }
+        return companion.handleSetHome(player) ? 1 : 0;
+    }
+
+    private static int handleDelHome(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
+        if (companion == null || !companion.canPlayerControl(player)) {
+            return 0;
+        }
+        return companion.handleDeleteHome(player) ? 1 : 0;
+    }
+
+    private static int handleHomeConfirm(CommandContext<CommandSourceStack> context, boolean accepted)
+            throws CommandSyntaxException {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
+        if (companion == null || !companion.canPlayerControl(player)) {
+            return 0;
+        }
+        return companion.handleHomeConfirmation(player, accepted) ? 1 : 0;
     }
 
     private static int handleTreeChop(CommandContext<CommandSourceStack> context, boolean enabled)

@@ -23,7 +23,10 @@ public final class CompanionTeleportChatHandler {
     private static final Set<String> TELEPORT_REQUEST_KEYS = Set.of(
             "entity.aicompanion.companion.teleport.request",
             "entity.aicompanion.companion.teleport.request.alt",
-            "entity.aicompanion.companion.teleport.request.repeat"
+            "entity.aicompanion.companion.teleport.request.repeat",
+            "entity.aicompanion.companion.home.confirm",
+            "entity.aicompanion.companion.where.status",
+            "entity.aicompanion.companion.home.follow"
     );
     private static final String TELEPORT_IGNORE_PREFIX = "entity.aicompanion.companion.teleport.ignore.";
 
@@ -46,7 +49,7 @@ public final class CompanionTeleportChatHandler {
                 return;
             }
             ChatComponent chat = minecraft.gui.getChat();
-            replaceTeleportMessage(chat, message);
+            replaceTeleportMessage(chat, message, containsTeleportIgnore(message));
         }
     }
 
@@ -82,7 +85,7 @@ public final class CompanionTeleportChatHandler {
         return false;
     }
 
-    private static void replaceTeleportMessage(ChatComponent chat, Component message) {
+    private static void replaceTeleportMessage(ChatComponent chat, Component message, boolean ignore) {
         List<GuiMessage> messages = getChatMessages(chat);
         if (messages != null) {
             boolean removed = false;
@@ -97,7 +100,9 @@ public final class CompanionTeleportChatHandler {
                 chat.rescaleChat();
             }
         }
-        chat.addMessage(message);
+        if (!ignore) {
+            chat.addMessage(message);
+        }
     }
 
     @SuppressWarnings("unchecked")

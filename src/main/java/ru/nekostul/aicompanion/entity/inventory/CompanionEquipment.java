@@ -16,9 +16,12 @@ import ru.nekostul.aicompanion.entity.tool.CompanionToolSlot;
 import ru.nekostul.aicompanion.entity.resource.CompanionBlockRegistry;
 
 public final class CompanionEquipment {
+    private static final int TOOL_HOLD_TICKS = 10 * 20;
+
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
     private CompanionToolSlot activeToolSlot;
+    private long toolHoldUntilTick = -1L;
 
     public CompanionEquipment(CompanionEntity owner, CompanionInventory inventory) {
         this.owner = owner;
@@ -47,10 +50,22 @@ public final class CompanionEquipment {
     }
 
     public void equipIdleHand() {
+        long gameTime = owner.level().getGameTime();
+        if (gameTime < toolHoldUntilTick
+                && !owner.getMainHandItem().isEmpty()
+                && !owner.getMainHandItem().is(ItemTags.SWORDS)) {
+            return;
+        }
         if (!storeActiveTool()) {
             return;
         }
+        if (!storeMainHandIfUntracked()) {
+            return;
+        }
         if (equipFromToolSlot(CompanionToolSlot.SWORD)) {
+            return;
+        }
+        if (equipBestTool(ItemTags.SWORDS)) {
             return;
         }
         if (owner.getMainHandItem().isEmpty()) {
@@ -87,22 +102,35 @@ public final class CompanionEquipment {
 
     public boolean equipBestTool(TagKey<Item> tag) {
         if (owner.getMainHandItem().is(tag)) {
+            toolHoldUntilTick = owner.level().getGameTime() + TOOL_HOLD_TICKS;
             return true;
         }
         if (owner.getOffhandItem().is(tag)) {
             activeToolSlot = null;
-            return moveOffhandToMainHand();
+            if (moveOffhandToMainHand()) {
+                toolHoldUntilTick = owner.level().getGameTime() + TOOL_HOLD_TICKS;
+                return true;
+            }
+            return false;
         }
         CompanionToolSlot toolSlot = CompanionToolSlot.fromTag(tag);
         if (toolSlot != null && equipFromToolSlot(toolSlot)) {
-            return owner.getMainHandItem().is(tag);
+            if (owner.getMainHandItem().is(tag)) {
+                toolHoldUntilTick = owner.level().getGameTime() + TOOL_HOLD_TICKS;
+                return true;
+            }
+            return false;
         }
         int slot = findBestToolSlot(tag);
         if (slot < 0) {
             return false;
         }
         activeToolSlot = null;
-        return moveInventoryToMainHand(slot);
+        if (moveInventoryToMainHand(slot)) {
+            toolHoldUntilTick = owner.level().getGameTime() + TOOL_HOLD_TICKS;
+            return true;
+        }
+        return false;
     }
 
     private int findBestToolSlot(TagKey<Item> tag) {

@@ -4,8 +4,10 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.StringTag;
@@ -36,11 +38,14 @@ import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.ChunkStatus;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 import ru.nekostul.aicompanion.entity.ai.FollowNearestPlayerGoal;
@@ -61,6 +66,7 @@ import ru.nekostul.aicompanion.entity.tool.CompanionToolSlot;
 import ru.nekostul.aicompanion.entity.tree.CompanionTreeHarvestController;
 
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -100,6 +106,8 @@ public class CompanionEntity extends PathfinderMob {
     private static final String TOOL_SLOTS_NBT = "CompanionToolSlots";
     private static final String OWNER_NBT = "CompanionOwner";
     private static final String PARTY_NBT = "CompanionParty";
+    private static final String HOME_POS_NBT = "CompanionHomePos";
+    private static final String HOME_DIM_NBT = "CompanionHomeDim";
     private static final String TOOL_SLOT_PICKAXE_NBT = "Pickaxe";
     private static final String TOOL_SLOT_AXE_NBT = "Axe";
     private static final String TOOL_SLOT_SHOVEL_NBT = "Shovel";
@@ -114,6 +122,23 @@ public class CompanionEntity extends PathfinderMob {
     private static final String COMMANDS_STOP_HINT_KEY = "entity.aicompanion.companion.commands.stop_hint";
     private static final String COMMAND_STOP_KEY = "entity.aicompanion.companion.command.stop";
     private static final String COMMAND_FOLLOW_KEY = "entity.aicompanion.companion.command.follow";
+    private static final String HOME_SET_KEY = "entity.aicompanion.companion.home.set";
+    private static final String HOME_ALREADY_KEY = "entity.aicompanion.companion.home.already";
+    private static final String HOME_MISSING_KEY = "entity.aicompanion.companion.home.missing";
+    private static final String HOME_LOOK_DOWN_KEY = "entity.aicompanion.companion.home.look_down";
+    private static final String HOME_DELETED_KEY = "entity.aicompanion.companion.home.deleted";
+    private static final String HOME_CONFIRM_KEY = "entity.aicompanion.companion.home.confirm";
+    private static final String HOME_DISTANCE_KEY = "entity.aicompanion.companion.home.distance";
+    private static final String HOME_CONFIRM_BUTTON_KEY = "entity.aicompanion.companion.home.confirm.button";
+    private static final String HOME_AUTO_GO_KEY = "entity.aicompanion.companion.home.auto_go";
+    private static final String HOME_INTERACT_KEY = "entity.aicompanion.companion.home.interact";
+    private static final String HOME_FOLLOW_KEY = "entity.aicompanion.companion.home.follow";
+    private static final String HOME_FOLLOW_BUTTON_KEY = "entity.aicompanion.companion.home.follow.button";
+    private static final String WHERE_STATUS_KEY = "entity.aicompanion.companion.where.status";
+    private static final String WHERE_TELEPORT_BUTTON_KEY = "entity.aicompanion.companion.where.button";
+    private static final String TELEPORT_IGNORE_HOME_KEY = "entity.aicompanion.companion.teleport.ignore.home";
+    private static final String TELEPORT_IGNORE_WHERE_KEY = "entity.aicompanion.companion.teleport.ignore.where";
+    private static final String TELEPORT_IGNORE_FOLLOW_KEY = "entity.aicompanion.companion.teleport.ignore.follow";
     private static final int REACTION_COOLDOWN_TICKS = 60;
     private static final double REACTION_RANGE = 24.0D;
     private static final double FOLLOW_SEARCH_DISTANCE = 48.0D;
@@ -134,6 +159,20 @@ public class CompanionEntity extends PathfinderMob {
     private static final int INVENTORY_SIZE = 27;
     private static final int ITEM_PICKUP_RADIUS = 3;
     private static final int ITEM_PICKUP_COOLDOWN_TICKS = 10;
+    private static final int HOME_LEAVE_DISTANCE = 96;
+    private static final int HOME_AUTO_DISTANCE = 500;
+    private static final int HOME_WARN_DISTANCE = 1000;
+    private static final int HOME_CONFIRM_TICKS = 15 * 20;
+    private static final int HOME_FOLLOW_TICKS = 5 * 20;
+    private static final int WHERE_TELEPORT_TICKS = 5 * 20;
+    private static final int WHERE_MIN_DISTANCE = 100;
+    private static final int WHERE_COOLDOWN_TICKS = 5 * 60 * 20;
+    private static final int HOME_INTERACT_COOLDOWN_TICKS = 1200;
+    private static final int HOME_REGEN_TICKS = 20;
+    private static final float HOME_REGEN_AMOUNT = 1.0F;
+    private static final double HOME_LEAVE_SPEED = 0.28D;
+    private static final double HOME_SET_RANGE = 6.0D;
+    private static final int HOME_MOVE_RETRY_TICKS = 10;
 
     private static final EntityDataAccessor<ItemStack> TOOL_PICKAXE =
             SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
@@ -216,6 +255,30 @@ public class CompanionEntity extends PathfinderMob {
     private UUID pendingTeleportPlayerId;
     private long pendingTeleportReminderTick = -1L;
     private UUID pendingTeleportReminderPlayerId;
+    private BlockPos homePos;
+    private ResourceLocation homeDimension;
+    private boolean returningHome;
+    private Vec3 homeLeaveTarget;
+    private UUID homeReturnPlayerId;
+    private boolean homeDirectReturn;
+    private BlockPos lastHomeMoveTarget;
+    private long lastHomeMoveAttemptTick = -1L;
+    private UUID lastStopPlayerId;
+    private boolean stopHomeTriggered;
+    private long lastHomeInteractTick = -10000L;
+    private UUID pendingHomePlayerId;
+    private long pendingHomeUntilTick = -1L;
+    private int pendingHomeLastSeconds = -1;
+    private int pendingHomeDistance;
+    private UUID pendingWherePlayerId;
+    private long pendingWhereUntilTick = -1L;
+    private int pendingWhereLastSeconds = -1;
+    private UUID pendingFollowPlayerId;
+    private long pendingFollowUntilTick = -1L;
+    private int pendingFollowLastSeconds = -1;
+    private final Map<UUID, Long> whereCooldowns = new HashMap<>();
+    private long lastHomeRegenTick = -1L;
+    private boolean wasAtHome;
     private UUID ownerId;
     private final Set<UUID> partyMembers = new HashSet<>();
 
@@ -279,6 +342,8 @@ public class CompanionEntity extends PathfinderMob {
             @Override
             public boolean canUse() {
                 return !CompanionEntity.this.isFollowModeActive()
+                        && !CompanionEntity.this.isAtHome()
+                        && !CompanionEntity.this.returningHome
                         && !CompanionEntity.this.taskCoordinator.isBusy()
                         && super.canUse();
             }
@@ -286,6 +351,8 @@ public class CompanionEntity extends PathfinderMob {
             @Override
             public boolean canContinueToUse() {
                 return !CompanionEntity.this.isFollowModeActive()
+                        && !CompanionEntity.this.isAtHome()
+                        && !CompanionEntity.this.returningHome
                         && !CompanionEntity.this.taskCoordinator.isBusy()
                         && super.canContinueToUse();
             }
@@ -314,6 +381,16 @@ public class CompanionEntity extends PathfinderMob {
             return false;
         }
         this.mode = mode;
+        clearFollowRequest(true);
+        if (mode != CompanionMode.STOPPED) {
+            lastStopPlayerId = null;
+            stopHomeTriggered = false;
+            if (returningHome) {
+                returningHome = false;
+                homeLeaveTarget = null;
+                homeReturnPlayerId = null;
+            }
+        }
         if (mode == CompanionMode.STOPPED) {
             this.getNavigation().stop();
         }
@@ -373,6 +450,129 @@ public class CompanionEntity extends PathfinderMob {
         return this.gratitudeResponder.handle(player, message, this.level().getGameTime());
     }
 
+    public void markStopCommand(ServerPlayer player) {
+        if (player == null) {
+            return;
+        }
+        lastStopPlayerId = player.getUUID();
+        stopHomeTriggered = false;
+    }
+
+    public boolean handleSetHome(ServerPlayer player) {
+        if (player == null) {
+            return false;
+        }
+        if (!canPlayerControl(player)) {
+            return true;
+        }
+        if (homePos != null) {
+            sendReply(player, Component.translatable(HOME_ALREADY_KEY));
+            return true;
+        }
+        BlockHitResult hit = findLookedAtBlock(player, HOME_SET_RANGE);
+        if (hit == null || hit.getDirection() != Direction.UP) {
+            sendReply(player, Component.translatable(HOME_LOOK_DOWN_KEY));
+            return true;
+        }
+        homePos = hit.getBlockPos().immutable();
+        homeDimension = this.level().dimension().location();
+        sendReply(player, Component.translatable(HOME_SET_KEY, homePos.getX(), homePos.getY(), homePos.getZ()));
+        return true;
+    }
+
+    public boolean handleDeleteHome(ServerPlayer player) {
+        if (player == null) {
+            return false;
+        }
+        if (!canPlayerControl(player)) {
+            return true;
+        }
+        if (homePos == null) {
+            sendReply(player, Component.translatable(HOME_MISSING_KEY));
+            return true;
+        }
+        homePos = null;
+        homeDimension = null;
+        returningHome = false;
+        homeLeaveTarget = null;
+        homeReturnPlayerId = null;
+        clearHomeRequest();
+        sendReply(player, Component.translatable(HOME_DELETED_KEY));
+        return true;
+    }
+
+    public boolean handleHomeConfirmation(ServerPlayer player, boolean accepted) {
+        if (player == null) {
+            return false;
+        }
+        if (pendingHomePlayerId == null || !pendingHomePlayerId.equals(player.getUUID())) {
+            return false;
+        }
+        long gameTime = this.level().getGameTime();
+        if (gameTime >= pendingHomeUntilTick) {
+            sendTimedMessageRemoval(TELEPORT_IGNORE_HOME_KEY, pendingHomePlayerId);
+            clearHomeRequest();
+            return false;
+        }
+        sendTimedMessageRemoval(TELEPORT_IGNORE_HOME_KEY, pendingHomePlayerId);
+        if (!accepted) {
+            clearHomeRequest();
+            return true;
+        }
+        clearHomeRequest();
+        startHomeReturn(player);
+        return true;
+    }
+
+    public boolean handleGoHomeCommand(ServerPlayer player) {
+        if (player == null) {
+            return false;
+        }
+        if (!canPlayerControl(player)) {
+            return true;
+        }
+        if (treeHarvestController.isTreeChopInProgress()) {
+            return true;
+        }
+        if (!isHomeInCurrentLevel()) {
+            sendReply(player, Component.translatable(HOME_MISSING_KEY));
+            return true;
+        }
+        if (isAtHome()) {
+            return true;
+        }
+        if (returningHome) {
+            return true;
+        }
+        int distance = homeDistance();
+        if (distance > HOME_WARN_DISTANCE) {
+            requestHomeConfirmation(player, distance);
+            return true;
+        }
+        startHomeReturn(player);
+        return true;
+    }
+
+    public boolean handleWhereCommand(ServerPlayer player) {
+        if (player == null) {
+            return false;
+        }
+        if (!canPlayerControl(player)) {
+            return true;
+        }
+        if (this.distanceToSqr(player) <= (double) WHERE_MIN_DISTANCE * WHERE_MIN_DISTANCE) {
+            return true;
+        }
+        long gameTime = this.level().getGameTime();
+        Long lastTick = whereCooldowns.get(player.getUUID());
+        if (lastTick != null && gameTime - lastTick < WHERE_COOLDOWN_TICKS) {
+            return true;
+        }
+        whereCooldowns.put(player.getUUID(), gameTime);
+        requestWhereTeleport(player, gameTime);
+        return true;
+    }
+
     private boolean ensureOwner(ServerPlayer player) {
         if (player == null) {
             return false;
@@ -392,6 +592,362 @@ public class CompanionEntity extends PathfinderMob {
         if (nearest instanceof ServerPlayer serverPlayer && !serverPlayer.isSpectator()) {
             ownerId = serverPlayer.getUUID();
         }
+    }
+
+    private BlockHitResult findLookedAtBlock(Player player, double range) {
+        Vec3 eye = player.getEyePosition();
+        Vec3 look = player.getLookAngle().normalize();
+        Vec3 end = eye.add(look.scale(range));
+        BlockHitResult hit = player.level().clip(new ClipContext(eye, end, ClipContext.Block.COLLIDER,
+                ClipContext.Fluid.NONE, player));
+        if (hit.getType() != HitResult.Type.BLOCK) {
+            return null;
+        }
+        return hit;
+    }
+
+    private boolean isHomeInCurrentLevel() {
+        return homePos != null && homeDimension != null
+                && this.level().dimension().location().equals(homeDimension);
+    }
+
+    private boolean isAtHome() {
+        return isHomeInCurrentLevel() && this.blockPosition().below().equals(homePos);
+    }
+
+    private void requestHomeConfirmation(ServerPlayer player, int distance) {
+        long gameTime = this.level().getGameTime();
+        pendingHomePlayerId = player.getUUID();
+        pendingHomeUntilTick = gameTime + HOME_CONFIRM_TICKS;
+        pendingHomeLastSeconds = -1;
+        pendingHomeDistance = distance;
+        int secondsLeft = secondsLeft(pendingHomeUntilTick, gameTime);
+        sendHomeConfirmMessage(player, secondsLeft);
+        pendingHomeLastSeconds = secondsLeft;
+    }
+
+    private void sendHomeConfirmMessage(ServerPlayer player, int secondsLeft) {
+        Component distance = Component.translatable(HOME_DISTANCE_KEY, Math.max(0, pendingHomeDistance));
+        MutableComponent base = Component.translatable(HOME_CONFIRM_KEY, distance, secondsLeft);
+        Component button = Component.translatable(HOME_CONFIRM_BUTTON_KEY)
+                .withStyle(style -> style.withColor(ChatFormatting.GREEN)
+                        .withBold(true)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ainpc home yes")));
+        sendReply(player, base.append(Component.literal(" ")).append(button));
+    }
+
+    private void requestFollowConfirmation(ServerPlayer player, long gameTime) {
+        clearFollowRequest(false);
+        pendingFollowPlayerId = player.getUUID();
+        pendingFollowUntilTick = gameTime + HOME_FOLLOW_TICKS;
+        pendingFollowLastSeconds = -1;
+        int secondsLeft = secondsLeft(pendingFollowUntilTick, gameTime);
+        sendFollowMessage(player, secondsLeft);
+        pendingFollowLastSeconds = secondsLeft;
+    }
+
+    private void sendFollowMessage(ServerPlayer player, int secondsLeft) {
+        MutableComponent base = Component.translatable(HOME_FOLLOW_KEY, secondsLeft);
+        Component button = Component.translatable(HOME_FOLLOW_BUTTON_KEY)
+                .withStyle(style -> style.withColor(ChatFormatting.AQUA)
+                        .withBold(true)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ainpc msg \u0421\u041b\u0415\u0414\u0423\u0419")));
+        sendReply(player, base.append(Component.literal(" ")).append(button));
+    }
+
+    private void clearHomeRequest() {
+        pendingHomePlayerId = null;
+        pendingHomeUntilTick = -1L;
+        pendingHomeLastSeconds = -1;
+        pendingHomeDistance = 0;
+    }
+
+    private void requestWhereTeleport(ServerPlayer player, long gameTime) {
+        clearWhereRequest();
+        pendingWherePlayerId = player.getUUID();
+        pendingWhereUntilTick = gameTime + WHERE_TELEPORT_TICKS;
+        pendingWhereLastSeconds = -1;
+        removePendingTeleportRequest(player.getUUID(), this.getUUID());
+        PENDING_TELEPORTS.remove(player.getUUID());
+        int secondsLeft = secondsLeft(pendingWhereUntilTick, gameTime);
+        registerPendingTeleportRequest(player, WHERE_STATUS_KEY, pendingWhereUntilTick, secondsLeft);
+        sendWhereMessage(player, secondsLeft);
+        pendingWhereLastSeconds = secondsLeft;
+    }
+
+    private void sendWhereMessage(ServerPlayer player, int secondsLeft) {
+        BlockPos pos = this.blockPosition();
+        MutableComponent base = Component.translatable(WHERE_STATUS_KEY, pos.getX(), pos.getY(), pos.getZ(), secondsLeft);
+        Component button = Component.translatable(WHERE_TELEPORT_BUTTON_KEY)
+                .withStyle(style -> style.withColor(ChatFormatting.AQUA)
+                        .withBold(true)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ainpc tp yes")));
+        sendReply(player, base.append(Component.literal(" ")).append(button));
+    }
+
+    private void clearWhereRequest() {
+        if (pendingWherePlayerId != null) {
+            removePendingTeleportRequest(pendingWherePlayerId, this.getUUID());
+            PENDING_TELEPORTS.remove(pendingWherePlayerId);
+            sendTimedMessageRemoval(TELEPORT_IGNORE_WHERE_KEY, pendingWherePlayerId);
+        }
+        pendingWherePlayerId = null;
+        pendingWhereUntilTick = -1L;
+        pendingWhereLastSeconds = -1;
+    }
+
+    private void clearFollowRequest(boolean notifyRemove) {
+        if (pendingFollowPlayerId != null && notifyRemove) {
+            sendTimedMessageRemoval(TELEPORT_IGNORE_FOLLOW_KEY, pendingFollowPlayerId);
+        }
+        pendingFollowPlayerId = null;
+        pendingFollowUntilTick = -1L;
+        pendingFollowLastSeconds = -1;
+    }
+
+    private void sendTimedMessageRemoval(String key, UUID playerId) {
+        if (key == null || playerId == null) {
+            return;
+        }
+        Player player = getPlayerById(playerId);
+        if (player instanceof ServerPlayer serverPlayer) {
+            sendReply(serverPlayer, Component.translatable(key));
+        }
+    }
+
+    private void tickHomeRequests(long gameTime) {
+        tickHomeConfirmation(gameTime);
+        tickWhereRequest(gameTime);
+        tickFollowRequest(gameTime);
+        tickStopHomeReturn(gameTime);
+    }
+
+    private void tickHomeConfirmation(long gameTime) {
+        if (pendingHomePlayerId == null) {
+            return;
+        }
+        Player player = getPlayerById(pendingHomePlayerId);
+        if (!(player instanceof ServerPlayer serverPlayer)) {
+            clearHomeRequest();
+            return;
+        }
+        if (gameTime >= pendingHomeUntilTick) {
+            sendTimedMessageRemoval(TELEPORT_IGNORE_HOME_KEY, pendingHomePlayerId);
+            clearHomeRequest();
+            return;
+        }
+        int secondsLeft = secondsLeft(pendingHomeUntilTick, gameTime);
+        if (secondsLeft != pendingHomeLastSeconds) {
+            pendingHomeLastSeconds = secondsLeft;
+            sendHomeConfirmMessage(serverPlayer, secondsLeft);
+        }
+    }
+
+    private void tickWhereRequest(long gameTime) {
+        if (pendingWherePlayerId == null) {
+            return;
+        }
+        Player player = getPlayerById(pendingWherePlayerId);
+        if (!(player instanceof ServerPlayer serverPlayer)) {
+            clearWhereRequest();
+            return;
+        }
+        if (gameTime >= pendingWhereUntilTick) {
+            clearWhereRequest();
+            return;
+        }
+        int secondsLeft = secondsLeft(pendingWhereUntilTick, gameTime);
+        if (secondsLeft != pendingWhereLastSeconds) {
+            pendingWhereLastSeconds = secondsLeft;
+            sendWhereMessage(serverPlayer, secondsLeft);
+        }
+    }
+
+    private void tickFollowRequest(long gameTime) {
+        if (pendingFollowPlayerId == null) {
+            return;
+        }
+        Player player = getPlayerById(pendingFollowPlayerId);
+        if (!(player instanceof ServerPlayer serverPlayer)) {
+            clearFollowRequest(false);
+            return;
+        }
+        if (gameTime >= pendingFollowUntilTick) {
+            clearFollowRequest(true);
+            return;
+        }
+        int secondsLeft = secondsLeft(pendingFollowUntilTick, gameTime);
+        if (secondsLeft != pendingFollowLastSeconds) {
+            pendingFollowLastSeconds = secondsLeft;
+            sendFollowMessage(serverPlayer, secondsLeft);
+        }
+    }
+
+    private void tickStopHomeReturn(long gameTime) {
+        if (returningHome || isAtHome()) {
+            return;
+        }
+        if (this.mode != CompanionMode.STOPPED || stopHomeTriggered || lastStopPlayerId == null) {
+            return;
+        }
+        if (!isHomeInCurrentLevel()) {
+            return;
+        }
+        Player player = getPlayerById(lastStopPlayerId);
+        if (!(player instanceof ServerPlayer serverPlayer)) {
+            return;
+        }
+        if (this.distanceToSqr(serverPlayer) < (double) HOME_AUTO_DISTANCE * HOME_AUTO_DISTANCE) {
+            return;
+        }
+        stopHomeTriggered = true;
+        sendReply(serverPlayer, Component.translatable(HOME_AUTO_GO_KEY));
+        startHomeReturn(serverPlayer);
+    }
+
+    private void startHomeReturn(ServerPlayer player) {
+        if (!isHomeInCurrentLevel()) {
+            if (player != null) {
+                sendReply(player, Component.translatable(HOME_MISSING_KEY));
+            }
+            return;
+        }
+        if (this.mode != CompanionMode.STOPPED && !setMode(CompanionMode.STOPPED)) {
+            return;
+        }
+        returningHome = true;
+        homeReturnPlayerId = player != null ? player.getUUID() : null;
+        homeDirectReturn = homeDistance() <= HOME_LEAVE_DISTANCE;
+        if (homeDirectReturn) {
+            homeLeaveTarget = new Vec3(homePos.getX() + 0.5D, homePos.getY() + 1.0D, homePos.getZ() + 0.5D);
+        } else {
+            homeLeaveTarget = player != null ? resolveHomeLeaveTarget(player) : null;
+        }
+        resetHomeMoveTracking();
+        if (homeLeaveTarget != null && shouldIssueHomeMoveTo(homeLeaveTarget, this.level().getGameTime())) {
+            this.getNavigation().moveTo(homeLeaveTarget.x, homeLeaveTarget.y, homeLeaveTarget.z, navSpeed(HOME_LEAVE_SPEED));
+            rememberHomeMoveTo(homeLeaveTarget, this.level().getGameTime());
+        }
+    }
+
+    private void tickHomeReturn(long gameTime) {
+        if (!returningHome) {
+            return;
+        }
+        if (!isHomeInCurrentLevel()) {
+            returningHome = false;
+            homeLeaveTarget = null;
+            homeReturnPlayerId = null;
+            homeDirectReturn = false;
+            return;
+        }
+        Player player = homeReturnPlayerId != null ? getPlayerById(homeReturnPlayerId) : null;
+        if (homeLeaveTarget == null && player != null && !homeDirectReturn) {
+            homeLeaveTarget = resolveHomeLeaveTarget(player);
+        }
+        if (homeLeaveTarget != null && shouldIssueHomeMoveTo(homeLeaveTarget, gameTime)) {
+            this.getNavigation().moveTo(homeLeaveTarget.x, homeLeaveTarget.y, homeLeaveTarget.z, navSpeed(HOME_LEAVE_SPEED));
+            rememberHomeMoveTo(homeLeaveTarget, gameTime);
+        }
+        if (homeDirectReturn) {
+            BlockPos feetGround = this.blockPosition().below();
+            if (feetGround.distManhattan(homePos) <= 1) {
+                teleportHome();
+                this.getNavigation().stop();
+                returningHome = false;
+                homeLeaveTarget = null;
+                homeReturnPlayerId = null;
+                homeDirectReturn = false;
+                resetHomeMoveTracking();
+                return;
+            }
+            if (isAtHome()) {
+                this.getNavigation().stop();
+                returningHome = false;
+                homeLeaveTarget = null;
+                homeReturnPlayerId = null;
+                homeDirectReturn = false;
+                resetHomeMoveTracking();
+            }
+            return;
+        }
+        boolean farEnough = player == null
+                || this.distanceToSqr(player) >= (double) HOME_LEAVE_DISTANCE * HOME_LEAVE_DISTANCE;
+        if (!farEnough) {
+            return;
+        }
+        teleportHome();
+        returningHome = false;
+        homeLeaveTarget = null;
+        homeReturnPlayerId = null;
+        homeDirectReturn = false;
+        resetHomeMoveTracking();
+    }
+
+    private Vec3 resolveHomeLeaveTarget(Player player) {
+        Vec3 playerPos = player.position();
+        Vec3 direction = this.position().subtract(playerPos);
+        direction = new Vec3(direction.x, 0.0D, direction.z);
+        if (direction.lengthSqr() < 1.0E-4D) {
+            Vec3 look = player.getLookAngle();
+            direction = new Vec3(-look.x, 0.0D, -look.z);
+        }
+        if (direction.lengthSqr() < 1.0E-4D) {
+            direction = new Vec3(1.0D, 0.0D, 0.0D);
+        }
+        direction = direction.normalize();
+        Vec3 target = playerPos.add(direction.scale(HOME_LEAVE_DISTANCE));
+        target = new Vec3(target.x, this.getY(), target.z);
+        Vec3 adjusted = adjustTeleportY(target);
+        return adjusted != null ? adjusted : target;
+    }
+
+    private double navSpeed(double desiredSpeed) {
+        double baseSpeed = this.getAttributeValue(Attributes.MOVEMENT_SPEED);
+        if (baseSpeed <= 0.0D) {
+            return desiredSpeed;
+        }
+        return desiredSpeed / baseSpeed;
+    }
+
+    private boolean shouldIssueHomeMoveTo(Vec3 target, long gameTime) {
+        if (target == null) {
+            return false;
+        }
+        BlockPos targetBlock = BlockPos.containing(target);
+        if (lastHomeMoveTarget == null || !lastHomeMoveTarget.equals(targetBlock)) {
+            return true;
+        }
+        if (!this.getNavigation().isDone()) {
+            return false;
+        }
+        return lastHomeMoveAttemptTick < 0L || gameTime - lastHomeMoveAttemptTick >= HOME_MOVE_RETRY_TICKS;
+    }
+
+    private void rememberHomeMoveTo(Vec3 target, long gameTime) {
+        lastHomeMoveTarget = target != null ? BlockPos.containing(target) : null;
+        lastHomeMoveAttemptTick = gameTime;
+    }
+
+    private void resetHomeMoveTracking() {
+        lastHomeMoveTarget = null;
+        lastHomeMoveAttemptTick = -1L;
+    }
+
+    private void teleportHome() {
+        Vec3 target = new Vec3(homePos.getX() + 0.5D, homePos.getY() + 1.0D, homePos.getZ() + 0.5D);
+        this.teleportTo(target.x, target.y, target.z);
+        this.getNavigation().stop();
+    }
+
+    private int homeDistance() {
+        Vec3 target = new Vec3(homePos.getX() + 0.5D, homePos.getY() + 0.5D, homePos.getZ() + 0.5D);
+        return (int) Math.round(this.position().distanceTo(target));
+    }
+
+    private int secondsLeft(long untilTick, long gameTime) {
+        long remaining = Math.max(0L, untilTick - gameTime);
+        return (int) Math.ceil(remaining / 20.0D);
     }
 
     public void onInventoryUpdated() {
@@ -472,6 +1028,10 @@ public class CompanionEntity extends PathfinderMob {
             tag.putUUID(TELEPORT_REMINDER_PLAYER_NBT, this.pendingTeleportReminderPlayerId);
             tag.putLong(TELEPORT_REMINDER_TICK_NBT, this.pendingTeleportReminderTick);
         }
+        if (this.homePos != null && this.homeDimension != null) {
+            tag.putLong(HOME_POS_NBT, this.homePos.asLong());
+            tag.putString(HOME_DIM_NBT, this.homeDimension.toString());
+        }
         if (this.ownerId != null) {
             tag.putUUID(OWNER_NBT, this.ownerId);
         }
@@ -535,6 +1095,15 @@ public class CompanionEntity extends PathfinderMob {
             clearTeleportRequestState();
             clearTeleportReminder();
         }
+        this.homePos = null;
+        this.homeDimension = null;
+        if (tag.contains(HOME_POS_NBT) && tag.contains(HOME_DIM_NBT)) {
+            ResourceLocation dim = ResourceLocation.tryParse(tag.getString(HOME_DIM_NBT));
+            if (dim != null) {
+                this.homePos = BlockPos.of(tag.getLong(HOME_POS_NBT));
+                this.homeDimension = dim;
+            }
+        }
         this.ownerId = tag.hasUUID(OWNER_NBT) ? tag.getUUID(OWNER_NBT) : null;
         this.partyMembers.clear();
         ListTag partyTag = tag.getList(PARTY_NBT, Tag.TAG_STRING);
@@ -558,11 +1127,25 @@ public class CompanionEntity extends PathfinderMob {
             Player nearest = this.level().getNearestPlayer(this, FOLLOW_SEARCH_DISTANCE);
             CompanionSingleNpcManager.updateState(this, this.taskCoordinator.isBusy(),
                     this.lastTeleportCycleTick, this.lastTeleportOriginalTick);
+            boolean atHome = isAtHome();
+            if (atHome && !wasAtHome) {
+                lastHomeInteractTick = -10000L;
+                clearFollowRequest(false);
+            } else if (!atHome && wasAtHome) {
+                clearFollowRequest(true);
+            }
+            wasAtHome = atHome;
             tickGreeting();
             tickChestStatus();
             tickItemPickup();
-            tickAutonomousBehavior();
+            tickHomeRequests(gameTime);
+            if (returningHome) {
+                tickHomeReturn(gameTime);
+            } else {
+                tickAutonomousBehavior();
+            }
             this.hungerSystem.tick(nearest, gameTime);
+            tickHomeRegen(gameTime);
             syncHungerFullFlag();
             tickAmbientChat();
             tickTeleportRequest();
@@ -587,11 +1170,22 @@ public class CompanionEntity extends PathfinderMob {
             syncHungerFullFlag();
             return InteractionResult.CONSUME;
         }
+        if (!this.level().isClientSide && isAtHome() && player instanceof ServerPlayer serverPlayer) {
+            long gameTime = this.level().getGameTime();
+            if (gameTime - this.lastHomeInteractTick >= HOME_INTERACT_COOLDOWN_TICKS) {
+                this.lastHomeInteractTick = gameTime;
+                requestFollowConfirmation(serverPlayer, gameTime);
+            }
+            return InteractionResult.SUCCESS;
+        }
         return super.mobInteract(player, hand);
     }
 
     @Override
     public boolean hurt(DamageSource source, float amount) {
+        if (!this.level().isClientSide && isAtHome()) {
+            return false;
+        }
         int[] armorBefore = snapshotArmorDamage();
         boolean result = super.hurt(source, amount);
         if (result && !this.level().isClientSide) {
@@ -616,6 +1210,9 @@ public class CompanionEntity extends PathfinderMob {
         }
         clearTeleportRequest();
         clearTeleportReminder();
+        clearHomeRequest();
+        clearWhereRequest();
+        clearFollowRequest(false);
         super.die(source);
     }
 
@@ -634,6 +1231,9 @@ public class CompanionEntity extends PathfinderMob {
         if (!this.isAlive()) {
             clearTeleportRequest();
             clearTeleportReminder();
+            clearHomeRequest();
+            clearWhereRequest();
+            clearFollowRequest(false);
         }
         CompanionSingleNpcManager.unregister(this);
         super.remove(reason);
@@ -781,6 +1381,20 @@ public class CompanionEntity extends PathfinderMob {
         }
     }
 
+    private void tickHomeRegen(long gameTime) {
+        if (!isAtHome() || !this.isAlive()) {
+            return;
+        }
+        if (this.getHealth() >= this.getMaxHealth()) {
+            return;
+        }
+        if (lastHomeRegenTick >= 0L && gameTime - lastHomeRegenTick < HOME_REGEN_TICKS) {
+            return;
+        }
+        lastHomeRegenTick = gameTime;
+        this.heal(HOME_REGEN_AMOUNT);
+    }
+
     private ItemStack tryAutoEquipDroppedTool(net.minecraft.world.entity.item.ItemEntity itemEntity, ItemStack stack) {
         if (itemEntity == null || stack == null || stack.isEmpty()) {
             return ItemStack.EMPTY;
@@ -843,7 +1457,7 @@ public class CompanionEntity extends PathfinderMob {
     }
 
     private boolean isStopMode() {
-        return this.mode == CompanionMode.STOPPED;
+        return this.mode == CompanionMode.STOPPED && !returningHome;
     }
 
     private void tickTeleportRequest() {
@@ -1247,6 +1861,9 @@ public class CompanionEntity extends PathfinderMob {
         ServerLevel level = server.getLevel(request.levelKey);
         long gameTime = level != null ? level.getGameTime() : player.level().getGameTime();
         if (gameTime >= request.untilTick) {
+            if (WHERE_STATUS_KEY.equals(request.messageKey)) {
+                sendTeleportIgnore(player, TELEPORT_IGNORE_WHERE_KEY);
+            }
             PENDING_TELEPORT_REQUESTS.remove(player.getUUID(), request);
             PENDING_TELEPORTS.remove(player.getUUID());
             return false;
@@ -1257,6 +1874,13 @@ public class CompanionEntity extends PathfinderMob {
             if (companion == null) {
                 level.getChunkSource().getChunk(request.chunkPos.x, request.chunkPos.z, ChunkStatus.FULL, true);
                 companion = (CompanionEntity) level.getEntity(request.companionId);
+            }
+        }
+        if (WHERE_STATUS_KEY.equals(request.messageKey)) {
+            if (companion != null) {
+                companion.clearWhereRequest();
+            } else {
+                sendTeleportIgnore(player, TELEPORT_IGNORE_WHERE_KEY);
             }
         }
         if (accepted && companion != null && companion.isAlive()) {
@@ -1273,13 +1897,32 @@ public class CompanionEntity extends PathfinderMob {
         return true;
     }
 
+    private static void sendTeleportIgnore(ServerPlayer player, String key) {
+        if (player == null || key == null) {
+            return;
+        }
+        player.sendSystemMessage(Component.translatable(key));
+    }
+
     public static void tickPendingTeleports(MinecraftServer server) {
         if (server == null) {
             return;
         }
-        if (!PENDING_TELEPORT_REQUESTS.isEmpty()) {
-            PENDING_TELEPORT_REQUESTS.clear();
-            PENDING_TELEPORTS.clear();
+        if (PENDING_TELEPORT_REQUESTS.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<UUID, PendingTeleportRequest> entry : PENDING_TELEPORT_REQUESTS.entrySet()) {
+            PendingTeleportRequest request = entry.getValue();
+            if (request == null) {
+                PENDING_TELEPORT_REQUESTS.remove(entry.getKey());
+                PENDING_TELEPORTS.remove(entry.getKey());
+                continue;
+            }
+            ServerLevel level = server.getLevel(request.levelKey);
+            if (level == null || level.getGameTime() >= request.untilTick) {
+                PENDING_TELEPORT_REQUESTS.remove(entry.getKey(), request);
+                PENDING_TELEPORTS.remove(entry.getKey());
+            }
         }
     }
 
