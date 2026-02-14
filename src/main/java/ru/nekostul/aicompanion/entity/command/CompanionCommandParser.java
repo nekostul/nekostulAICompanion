@@ -8,15 +8,53 @@ import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
 import ru.nekostul.aicompanion.entity.tree.CompanionTreeRequestMode;
 
 public final class CompanionCommandParser {
+    public enum TaskAction {
+        GATHER,
+        BRING
+    }
+
+    public enum ParseError {
+        NONE,
+        EMPTY_MESSAGE,
+        MISSING_ACTION,
+        MISSING_RESOURCE,
+        INVALID_AMOUNT
+    }
+
+    public static final class ParseResult {
+        private final CommandRequest request;
+        private final ParseError error;
+
+        private ParseResult(CommandRequest request, ParseError error) {
+            this.request = request;
+            this.error = error;
+        }
+
+        public CommandRequest getRequest() {
+            return request;
+        }
+
+        public ParseError getError() {
+            return error;
+        }
+    }
+
     public static final class CommandRequest {
+        private final TaskAction taskAction;
         private final CompanionResourceType resourceType;
         private final int amount;
         private final CompanionTreeRequestMode treeMode;
 
-        CommandRequest(CompanionResourceType resourceType, int amount, CompanionTreeRequestMode treeMode) {
+        CommandRequest(TaskAction taskAction, CompanionResourceType resourceType, int amount,
+                       CompanionTreeRequestMode treeMode) {
+            this.taskAction = taskAction;
             this.resourceType = resourceType;
             this.amount = amount;
             this.treeMode = treeMode;
+        }
+
+        public TaskAction getTaskAction() {
+            return taskAction;
         }
 
         public CompanionResourceType getResourceType() {
@@ -38,32 +76,56 @@ public final class CompanionCommandParser {
     private static final int DEFAULT_BUCKET_AMOUNT = 1;
 
     public CommandRequest parse(String message) {
+        return parseDetailed(message).getRequest();
+    }
+
+    public ParseResult parseDetailed(String message) {
+        return parseDetailed(message, null);
+    }
+
+    public ParseResult parseDetailed(String message, TaskAction fallbackAction) {
         String normalized = normalize(message);
         if (normalized.isEmpty()) {
-            return null;
+            return new ParseResult(null, ParseError.EMPTY_MESSAGE);
         }
-        if (!containsActionKeyword(normalized)) {
-            return null;
+        TaskAction taskAction = parseTaskAction(normalized, fallbackAction);
+        if (taskAction == null) {
+            return new ParseResult(null, ParseError.MISSING_ACTION);
         }
         CompanionResourceType resourceType = parseResourceType(normalized);
         if (resourceType == null) {
-            return null;
+            return new ParseResult(null, ParseError.MISSING_RESOURCE);
         }
         CompanionTreeRequestMode treeMode = parseTreeMode(normalized, resourceType);
         int amount = parseAmount(normalized, resourceType, treeMode);
         if (amount <= 0) {
-            return null;
+            return new ParseResult(null, ParseError.INVALID_AMOUNT);
         }
-        return new CommandRequest(resourceType, amount, treeMode);
+        return new ParseResult(new CommandRequest(taskAction, resourceType, amount, treeMode), ParseError.NONE);
     }
 
-    private boolean containsActionKeyword(String normalized) {
+    private TaskAction parseTaskAction(String normalized, TaskAction fallbackAction) {
+        if (containsBringKeyword(normalized)) {
+            return TaskAction.BRING;
+        }
+        if (containsGatherKeyword(normalized)) {
+            return TaskAction.GATHER;
+        }
+        return fallbackAction;
+    }
+
+    private boolean containsGatherKeyword(String normalized) {
         return normalized.contains("\u0434\u043e\u0431\u0443\u0434")
                 || normalized.contains("\u0434\u043e\u0431\u044b")
-                || normalized.contains("\u043f\u0440\u0438\u043d\u0435\u0441")
-                || normalized.contains("\u0434\u0430\u0439")
                 || normalized.contains("\u0441\u0434\u0435\u043b")
                 || normalized.contains("\u0441\u043e\u0431\u0435\u0440")
+                || normalized.contains("mine")
+                || normalized.contains("gather");
+    }
+
+    private boolean containsBringKeyword(String normalized) {
+        return normalized.contains("\u043f\u0440\u0438\u043d\u0435\u0441")
+                || normalized.contains("\u0434\u0430\u0439")
                 || normalized.contains("\u0434\u043e\u0441\u0442\u0430\u043d")
                 || normalized.contains("\u0434\u043e\u0441\u0442\u0430\u0442")
                 || normalized.contains("bring")

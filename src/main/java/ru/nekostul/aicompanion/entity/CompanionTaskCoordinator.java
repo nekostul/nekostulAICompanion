@@ -1,7 +1,8 @@
 package ru.nekostul.aicompanion.entity;
 
-import net.minecraft.network.chat.Component;
+import com.mojang.logging.LogUtils;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -9,7 +10,8 @@ import net.minecraft.tags.TagKey;
 import net.minecraft.world.entity.ai.village.poi.PoiManager;
 import net.minecraft.world.entity.ai.village.poi.PoiType;
 import net.minecraft.world.entity.player.Player;
-
+import net.minecraft.world.item.ItemStack;
+import org.slf4j.Logger;
 import ru.nekostul.aicompanion.CompanionConfig;
 import ru.nekostul.aicompanion.entity.command.CompanionCommandParser;
 import ru.nekostul.aicompanion.entity.inventory.CompanionDeliveryController;
@@ -22,6 +24,13 @@ import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
 import ru.nekostul.aicompanion.entity.tree.CompanionTreeHarvestController;
 import ru.nekostul.aicompanion.entity.tree.CompanionTreeRequestMode;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
+import java.util.UUID;
+import java.util.regex.Pattern;
+
 final class CompanionTaskCoordinator {
     private enum TaskState {
         IDLE,
@@ -33,6 +42,56 @@ final class CompanionTaskCoordinator {
         DELIVERING_ALL
     }
 
+    private static final class SequenceTask {
+        private final CompanionCommandParser.CommandRequest request;
+        private final String originalText;
+        private final int order;
+
+        private SequenceTask(CompanionCommandParser.CommandRequest request, String originalText, int order) {
+            this.request = request;
+            this.originalText = originalText;
+            this.order = order;
+        }
+    }
+
+    private static final class SequenceParseResult {
+        private final boolean sequenceCommand;
+        private final List<SequenceTask> tasks;
+        private final String failedSegment;
+        private final CompanionCommandParser.ParseError parseError;
+
+        private SequenceParseResult(boolean sequenceCommand,
+                                    List<SequenceTask> tasks,
+                                    String failedSegment,
+                                    CompanionCommandParser.ParseError parseError) {
+            this.sequenceCommand = sequenceCommand;
+            this.tasks = tasks;
+            this.failedSegment = failedSegment;
+            this.parseError = parseError;
+        }
+
+        private static SequenceParseResult notSequence() {
+            return new SequenceParseResult(false, List.of(), "", CompanionCommandParser.ParseError.NONE);
+        }
+
+        private static SequenceParseResult failed(String failedSegment, CompanionCommandParser.ParseError parseError) {
+            return new SequenceParseResult(true, List.of(), failedSegment, parseError);
+        }
+
+        private static SequenceParseResult success(List<SequenceTask> tasks) {
+            return new SequenceParseResult(true, tasks, "", CompanionCommandParser.ParseError.NONE);
+        }
+
+        private boolean isSequenceCommand() {
+            return sequenceCommand;
+        }
+
+        private boolean isValid() {
+            return !tasks.isEmpty();
+        }
+    }
+
+    private static final Logger LOGGER = LogUtils.getLogger();
     private static final int VILLAGE_POI_RADIUS = 32;
     private static final TagKey<PoiType> VILLAGE_POI_TAG = TagKey.create(
             Registries.POINT_OF_INTEREST_TYPE,
@@ -43,6 +102,30 @@ final class CompanionTaskCoordinator {
     private static final String GATHER_FAIL_KEY = "entity.aicompanion.companion.gather.failed";
     private static final String BLOCK_LIMIT_KEY = "entity.aicompanion.companion.gather.limit.blocks";
     private static final String TREE_LIMIT_KEY = "entity.aicompanion.companion.gather.limit.trees";
+    private static final String SEQUENCE_ACCEPTED_KEY = "entity.aicompanion.companion.sequence.accepted";
+    private static final String SEQUENCE_DONE_KEY = "entity.aicompanion.companion.sequence.done";
+    private static final String SEQUENCE_TASK_FAIL_KEY = "entity.aicompanion.companion.sequence.task.failed";
+    private static final String SEQUENCE_PARSE_FAILED_KEY = "entity.aicompanion.companion.sequence.parse.failed";
+    private static final String SEQUENCE_PARSE_REASON_ACTION_KEY =
+            "entity.aicompanion.companion.sequence.parse.reason.action";
+    private static final String SEQUENCE_PARSE_REASON_RESOURCE_KEY =
+            "entity.aicompanion.companion.sequence.parse.reason.resource";
+    private static final String SEQUENCE_PARSE_REASON_AMOUNT_KEY =
+            "entity.aicompanion.companion.sequence.parse.reason.amount";
+    private static final String SEQUENCE_PARSE_REASON_GENERIC_KEY =
+            "entity.aicompanion.companion.sequence.parse.reason.generic";
+    private static final Pattern SEQUENCE_MARKER_PATTERN = Pattern.compile(
+            "(?iu)(?:^|\\s)(?:\\u043f\\u043e\\u0442\\u043e\\u043c|\\u0437\\u0430\\u0442\\u0435\\u043c|then)(?:\\s|$)");
+    private static final Pattern SEQUENCE_DELIMITER_PATTERN = Pattern.compile(
+            "(?iu)\\s+(?:\\u043f\\u043e\\u0442\\u043e\\u043c|\\u0437\\u0430\\u0442\\u0435\\u043c|then)\\s+");
+    private static final Pattern SEQUENCE_AND_PATTERN = Pattern.compile(
+            "(?iu)(?:^|\\s)(?:\\u0438|and)(?:\\s|$)");
+    private static final Pattern SEQUENCE_AND_DELIMITER_PATTERN = Pattern.compile(
+            "(?iu)\\s+(?:\\u0438|and)\\s+");
+    private static final Pattern SEQUENCE_FIRST_PREFIX_PATTERN = Pattern.compile(
+            "(?iu)^(?:\\u0441\\u043d\\u0430\\u0447\\u0430\\u043b\\u0430|first|firstly)\\s+");
+    private static final Pattern SEQUENCE_NEXT_PREFIX_PATTERN = Pattern.compile(
+            "(?iu)^(?:\\u043f\\u043e\\u0442\\u043e\\u043c|\\u0437\\u0430\\u0442\\u0435\\u043c|then|\\u0438|and)\\s+");
 
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
@@ -59,6 +142,13 @@ final class CompanionTaskCoordinator {
 
     private CompanionResourceRequest activeRequest;
     private TaskState taskState = TaskState.IDLE;
+    private final Deque<SequenceTask> queuedSequenceTasks = new ArrayDeque<>();
+    private UUID sequencePlayerId;
+    private SequenceTask currentSequenceTask;
+    private int sequenceTotalTasks;
+    private int sequenceCompletedTasks;
+    private boolean sequenceDelivering;
+    private final List<ItemStack> sequencePendingDrops = new ArrayList<>();
 
     CompanionTaskCoordinator(CompanionEntity owner,
                              CompanionInventory inventory,
@@ -96,6 +186,21 @@ final class CompanionTaskCoordinator {
         if (inventoryExchange.handleMessage(player, message)) {
             return true;
         }
+        SequenceParseResult sequenceResult = parseSequenceMessage(message);
+        if (sequenceResult.isSequenceCommand()) {
+            if (!sequenceResult.isValid()) {
+                Component reason = Component.translatable(parseReasonKey(sequenceResult.parseError));
+                String failedSegment = sequenceResult.failedSegment.isBlank()
+                        ? normalizeTaskText(message)
+                        : sequenceResult.failedSegment;
+                owner.sendReply(player, Component.translatable(SEQUENCE_PARSE_FAILED_KEY, failedSegment, reason));
+                LOGGER.debug("task-sequence parse failed: npc={} player={} segment='{}' error={}",
+                        owner.getUUID(), player.getUUID(), failedSegment, sequenceResult.parseError);
+                return true;
+            }
+            startSequence(player, sequenceResult.tasks);
+            return true;
+        }
         CompanionCommandParser.CommandRequest parsed = commandParser.parse(message);
         if (parsed == null) {
             return false;
@@ -104,6 +209,7 @@ final class CompanionTaskCoordinator {
                 && parsed.getResourceType() == CompanionResourceType.TORCH) {
             return true;
         }
+        clearTaskSequence();
         startRequest(player, parsed);
         return true;
     }
@@ -119,6 +225,10 @@ final class CompanionTaskCoordinator {
         chestManager.tick(player);
         if (mode == CompanionEntity.CompanionMode.STOPPED) {
             owner.getNavigation().stop();
+            return;
+        }
+        if (sequenceDelivering && taskState == TaskState.DELIVERING_ALL) {
+            tickDeliveryAll(player, gameTime);
             return;
         }
         if (inventory.isFull()) {
@@ -142,11 +252,14 @@ final class CompanionTaskCoordinator {
         if (taskState == TaskState.WAITING_TORCH_RESOURCES) {
             CompanionTorchHandler.Result torchResult = torchHandler.tick(activeRequest, player, gameTime);
             if (torchResult == CompanionTorchHandler.Result.READY) {
-                taskState = TaskState.DELIVERING;
-                delivery.startDelivery();
+                if (isSequenceGatherPhaseActive()) {
+                    finishGatheringStep(player, List.of());
+                } else {
+                    taskState = TaskState.DELIVERING;
+                    delivery.startDelivery();
+                }
             } else if (torchResult == CompanionTorchHandler.Result.TIMED_OUT) {
-                activeRequest = null;
-                taskState = TaskState.IDLE;
+                failActiveTask(player, "torch_timeout_waiting_resources");
             }
             return;
         }
@@ -174,8 +287,7 @@ final class CompanionTaskCoordinator {
                 && parsed.getTreeMode() != CompanionTreeRequestMode.NONE
                 && isPlayerInVillage(player)) {
             owner.sendReply(player, Component.translatable(TREE_VILLAGE_BLOCK_KEY));
-            activeRequest = null;
-            taskState = TaskState.IDLE;
+            resetActiveTask();
             return;
         }
         int amount = clampTaskAmount(parsed, player);
@@ -189,7 +301,7 @@ final class CompanionTaskCoordinator {
             }
         }
         taskState = TaskState.GATHERING;
-        if (!activeRequest.isTreeCountRequest()) {
+        if (!activeRequest.isTreeCountRequest() && !isSequenceGatherPhaseActive()) {
             delivery.startDelivery();
         }
     }
@@ -239,27 +351,33 @@ final class CompanionTaskCoordinator {
         if (activeRequest.getResourceType() == CompanionResourceType.TORCH) {
             CompanionTorchHandler.Result torchResult = torchHandler.tick(activeRequest, player, gameTime);
             if (torchResult == CompanionTorchHandler.Result.READY) {
-                taskState = TaskState.DELIVERING;
-                delivery.startDelivery();
+                if (isSequenceGatherPhaseActive()) {
+                    finishGatheringStep(player, List.of());
+                } else {
+                    taskState = TaskState.DELIVERING;
+                    delivery.startDelivery();
+                }
             } else if (torchResult == CompanionTorchHandler.Result.WAITING_RESOURCES) {
                 taskState = TaskState.WAITING_TORCH_RESOURCES;
             } else if (torchResult == CompanionTorchHandler.Result.TIMED_OUT) {
-                activeRequest = null;
-                taskState = TaskState.IDLE;
+                failActiveTask(player, "torch_timeout_gathering");
             }
             return;
         }
         if (activeRequest.getResourceType().isBucketResource()) {
             CompanionBucketHandler.FillResult result = bucketHandler.tickFillBuckets(activeRequest, player, gameTime);
             if (result == CompanionBucketHandler.FillResult.DONE) {
-                taskState = TaskState.DELIVERING;
-                delivery.startDelivery();
+                if (isSequenceGatherPhaseActive()) {
+                    finishGatheringStep(player, List.of());
+                } else {
+                    taskState = TaskState.DELIVERING;
+                    delivery.startDelivery();
+                }
                 return;
             }
             if (result == CompanionBucketHandler.FillResult.NOT_FOUND) {
                 owner.sendReply(player, Component.translatable(missingKey(activeRequest.getResourceType())));
-                activeRequest = null;
-                taskState = TaskState.IDLE;
+                failActiveTask(player, "bucket_source_not_found");
                 return;
             }
             return;
@@ -268,28 +386,35 @@ final class CompanionTaskCoordinator {
             CompanionTreeHarvestController.Result treeResult = treeHarvest.tick(activeRequest, gameTime);
             if (treeResult == CompanionTreeHarvestController.Result.DONE) {
                 if (activeRequest.isTreeCountRequest()) {
-                    delivery.startDelivery(treeHarvest.takeCollectedDrops());
+                    List<ItemStack> treeDrops = treeHarvest.takeCollectedDrops();
                     treeHarvest.resetAfterRequest();
-                    taskState = TaskState.DELIVERING_ALL;
+                    if (isSequenceGatherPhaseActive()) {
+                        finishGatheringStep(player, treeDrops);
+                    } else {
+                        delivery.startDelivery(treeDrops);
+                        taskState = TaskState.DELIVERING_ALL;
+                    }
                     return;
                 }
                 treeHarvest.resetAfterRequest();
-                taskState = TaskState.DELIVERING;
-                delivery.startDelivery();
+                if (isSequenceGatherPhaseActive()) {
+                    finishGatheringStep(player, List.of());
+                } else {
+                    taskState = TaskState.DELIVERING;
+                    delivery.startDelivery();
+                }
                 return;
             }
             if (treeResult == CompanionTreeHarvestController.Result.FAILED) {
                 owner.sendReply(player, Component.translatable(TREE_FAIL_KEY));
                 treeHarvest.resetAfterRequest();
-                activeRequest = null;
-                taskState = TaskState.IDLE;
+                failActiveTask(player, "tree_failed");
                 return;
             }
             if (treeResult == CompanionTreeHarvestController.Result.NOT_FOUND) {
                 owner.sendReply(player, Component.translatable(TREE_NOT_FOUND_KEY));
                 treeHarvest.resetAfterRequest();
-                activeRequest = null;
-                taskState = TaskState.IDLE;
+                failActiveTask(player, "tree_not_found");
                 return;
             }
             if (treeResult == CompanionTreeHarvestController.Result.NEED_CHEST) {
@@ -303,25 +428,26 @@ final class CompanionTaskCoordinator {
         }
         CompanionGatheringController.Result result = gathering.tick(activeRequest, gameTime);
         if (result == CompanionGatheringController.Result.DONE) {
-            taskState = TaskState.DELIVERING;
-            delivery.startDelivery();
+            if (isSequenceGatherPhaseActive()) {
+                finishGatheringStep(player, List.of());
+            } else {
+                taskState = TaskState.DELIVERING;
+                delivery.startDelivery();
+            }
             return;
         }
         if (result == CompanionGatheringController.Result.TOOL_REQUIRED) {
-            activeRequest = null;
-            taskState = TaskState.IDLE;
+            failActiveTask(player, "tool_required");
             return;
         }
         if (result == CompanionGatheringController.Result.FAILED) {
             owner.sendReply(player, Component.translatable(GATHER_FAIL_KEY));
-            activeRequest = null;
-            taskState = TaskState.IDLE;
+            failActiveTask(player, "gather_failed");
             return;
         }
         if (result == CompanionGatheringController.Result.NOT_FOUND) {
             owner.sendReply(player, Component.translatable(missingKey(activeRequest.getResourceType())));
-            activeRequest = null;
-            taskState = TaskState.IDLE;
+            failActiveTask(player, "resource_not_found");
             return;
         }
         if (result == CompanionGatheringController.Result.NEED_CHEST) {
@@ -339,8 +465,7 @@ final class CompanionTaskCoordinator {
             return;
         }
         if (delivery.tickDelivery(activeRequest, player, gameTime)) {
-            activeRequest = null;
-            taskState = TaskState.IDLE;
+            finishActiveTaskSuccessfully(player);
         }
     }
 
@@ -350,9 +475,261 @@ final class CompanionTaskCoordinator {
             return;
         }
         if (delivery.tickDeliveryStacks(player, gameTime)) {
-            activeRequest = null;
-            taskState = TaskState.IDLE;
+            finishActiveTaskSuccessfully(player);
         }
+    }
+
+    private void startSequence(ServerPlayer player, List<SequenceTask> tasks) {
+        resetActiveTask();
+        clearTaskSequence();
+        sequencePlayerId = player.getUUID();
+        queuedSequenceTasks.addAll(tasks);
+        sequenceTotalTasks = tasks.size();
+        sequenceCompletedTasks = 0;
+        owner.sendReply(player, Component.translatable(SEQUENCE_ACCEPTED_KEY, tasks.size()));
+        LOGGER.debug("task-sequence accepted: npc={} player={} tasks={}",
+                owner.getUUID(), player.getUUID(), tasks.size());
+        if (!startNextSequenceTask(player) && sequencePlayerId != null) {
+            clearTaskSequence();
+        }
+    }
+
+    private boolean startNextSequenceTask(Player player) {
+        if (sequencePlayerId == null || player == null || !sequencePlayerId.equals(player.getUUID())) {
+            clearTaskSequence();
+            return false;
+        }
+        SequenceTask nextTask = queuedSequenceTasks.pollFirst();
+        if (nextTask == null) {
+            return false;
+        }
+        currentSequenceTask = nextTask;
+        CompanionCommandParser.CommandRequest request = nextTask.request;
+        LOGGER.debug("task-sequence step start: npc={} player={} step={}/{} action={} target={} amount={} text='{}'",
+                owner.getUUID(),
+                player.getUUID(),
+                nextTask.order,
+                sequenceTotalTasks,
+                request.getTaskAction(),
+                request.getResourceType(),
+                request.getAmount(),
+                nextTask.originalText);
+        startRequest(player, request);
+        if (activeRequest == null || taskState == TaskState.IDLE) {
+            failActiveTask(player, "request_rejected_on_start");
+            return false;
+        }
+        return true;
+    }
+
+    private void finishActiveTaskSuccessfully(Player player) {
+        SequenceTask completedTask = currentSequenceTask;
+        resetActiveTask();
+        if (sequencePlayerId == null) {
+            return;
+        }
+        if (completedTask != null && player != null) {
+            sequenceCompletedTasks = Math.min(sequenceTotalTasks, sequenceCompletedTasks + 1);
+            LOGGER.debug("task-sequence step done: npc={} player={} step={}/{} text='{}'",
+                    owner.getUUID(),
+                    player.getUUID(),
+                    sequenceCompletedTasks,
+                    sequenceTotalTasks,
+                    completedTask.originalText);
+        }
+        currentSequenceTask = null;
+        if (sequenceDelivering) {
+            if (sequencePlayerId != null && player != null) {
+                owner.sendReply(player, Component.translatable(SEQUENCE_DONE_KEY));
+                LOGGER.debug("task-sequence completed: npc={} player={} tasks={} completedSteps={}",
+                        owner.getUUID(), player.getUUID(), sequenceTotalTasks, sequenceCompletedTasks);
+            }
+            clearTaskSequence();
+            return;
+        }
+        if (startNextSequenceTask(player)) {
+            return;
+        }
+        if (sequencePlayerId != null && player != null) {
+            startSequenceFinalDelivery(player);
+        }
+    }
+
+    private void failActiveTask(Player player, String debugReason) {
+        SequenceTask failedTask = currentSequenceTask;
+        resetActiveTask();
+        owner.getNavigation().stop();
+        if (sequencePlayerId != null && failedTask != null && player != null) {
+            owner.sendReply(player, Component.translatable(SEQUENCE_TASK_FAIL_KEY, failedTask.originalText));
+            LOGGER.debug("task-sequence step failed: npc={} player={} step={}/{} text='{}' reason={}",
+                    owner.getUUID(),
+                    player.getUUID(),
+                    failedTask.order,
+                    sequenceTotalTasks,
+                    failedTask.originalText,
+                    debugReason);
+            clearTaskSequence();
+            return;
+        }
+        clearTaskSequence();
+    }
+
+    private void clearTaskSequence() {
+        queuedSequenceTasks.clear();
+        sequencePlayerId = null;
+        currentSequenceTask = null;
+        sequenceTotalTasks = 0;
+        sequenceCompletedTasks = 0;
+        sequenceDelivering = false;
+        sequencePendingDrops.clear();
+    }
+
+    private void resetActiveTask() {
+        activeRequest = null;
+        taskState = TaskState.IDLE;
+    }
+
+    private SequenceParseResult parseSequenceMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return SequenceParseResult.notSequence();
+        }
+        boolean hasThenMarker = SEQUENCE_MARKER_PATTERN.matcher(message).find();
+        boolean hasAndMarker = SEQUENCE_AND_PATTERN.matcher(message).find();
+        if (!hasThenMarker && !hasAndMarker) {
+            return SequenceParseResult.notSequence();
+        }
+        String prepared = message;
+        if (hasThenMarker) {
+            prepared = SEQUENCE_DELIMITER_PATTERN.matcher(prepared).replaceAll(",");
+        }
+        if (hasAndMarker) {
+            prepared = SEQUENCE_AND_DELIMITER_PATTERN.matcher(prepared).replaceAll(",");
+        }
+        String[] rawParts = prepared.split("[,;]");
+        List<SequenceTask> tasks = new ArrayList<>();
+        CompanionCommandParser.TaskAction fallbackAction = null;
+        int order = 1;
+        for (String rawPart : rawParts) {
+            String part = normalizeTaskText(rawPart);
+            if (part.isEmpty()) {
+                continue;
+            }
+            CompanionCommandParser.ParseResult parsed = commandParser.parseDetailed(part, fallbackAction);
+            if (parsed.getRequest() == null) {
+                return SequenceParseResult.failed(part, parsed.getError());
+            }
+            fallbackAction = parsed.getRequest().getTaskAction();
+            tasks.add(new SequenceTask(parsed.getRequest(), part, order));
+            order++;
+        }
+        if (tasks.size() < 2) {
+            return SequenceParseResult.notSequence();
+        }
+        return SequenceParseResult.success(tasks);
+    }
+
+    private void finishGatheringStep(Player player, List<ItemStack> extraDrops) {
+        if (!isSequenceGatherPhaseActive()) {
+            taskState = TaskState.DELIVERING;
+            delivery.startDelivery();
+            return;
+        }
+        stageCurrentTaskDrops(extraDrops);
+        finishActiveTaskSuccessfully(player);
+    }
+
+    private void stageCurrentTaskDrops(List<ItemStack> extraDrops) {
+        if (activeRequest == null) {
+            return;
+        }
+        if (activeRequest.isTreeCountRequest()) {
+            appendPendingDrops(extraDrops);
+            return;
+        }
+        List<ItemStack> staged = inventory.takeMatching(
+                activeRequest.getResourceType()::matchesItem,
+                activeRequest.getAmount());
+        appendPendingDrops(staged);
+    }
+
+    private void appendPendingDrops(List<ItemStack> drops) {
+        if (drops == null || drops.isEmpty()) {
+            return;
+        }
+        for (ItemStack stack : drops) {
+            if (stack == null || stack.isEmpty()) {
+                continue;
+            }
+            sequencePendingDrops.add(stack.copy());
+        }
+    }
+
+    private boolean isSequenceGatherPhaseActive() {
+        return sequencePlayerId != null && !sequenceDelivering;
+    }
+
+    private void startSequenceFinalDelivery(Player player) {
+        if (player == null || sequencePlayerId == null || !sequencePlayerId.equals(player.getUUID())) {
+            clearTaskSequence();
+            return;
+        }
+        if (sequencePendingDrops.isEmpty()) {
+            owner.sendReply(player, Component.translatable(SEQUENCE_DONE_KEY));
+            LOGGER.debug("task-sequence completed without drops: npc={} player={} tasks={}",
+                    owner.getUUID(), player.getUUID(), sequenceTotalTasks);
+            clearTaskSequence();
+            return;
+        }
+        List<ItemStack> toDeliver = new ArrayList<>(sequencePendingDrops.size());
+        for (ItemStack stack : sequencePendingDrops) {
+            if (stack != null && !stack.isEmpty()) {
+                toDeliver.add(stack.copy());
+            }
+        }
+        sequencePendingDrops.clear();
+        sequenceDelivering = true;
+        activeRequest = new CompanionResourceRequest(player.getUUID(), CompanionResourceType.LOG, 1,
+                CompanionTreeRequestMode.NONE);
+        taskState = TaskState.DELIVERING_ALL;
+        delivery.startDelivery(toDeliver);
+        LOGGER.debug("task-sequence delivery start: npc={} player={} stacks={} items={}",
+                owner.getUUID(), player.getUUID(), toDeliver.size(), countItems(toDeliver));
+    }
+
+    private int countItems(List<ItemStack> stacks) {
+        int total = 0;
+        if (stacks == null) {
+            return 0;
+        }
+        for (ItemStack stack : stacks) {
+            if (stack == null || stack.isEmpty()) {
+                continue;
+            }
+            total += stack.getCount();
+        }
+        return total;
+    }
+
+    private String normalizeTaskText(String rawPart) {
+        if (rawPart == null) {
+            return "";
+        }
+        String trimmed = rawPart.trim();
+        if (trimmed.isEmpty()) {
+            return "";
+        }
+        String withoutFirst = SEQUENCE_FIRST_PREFIX_PATTERN.matcher(trimmed).replaceFirst("");
+        String withoutNext = SEQUENCE_NEXT_PREFIX_PATTERN.matcher(withoutFirst).replaceFirst("");
+        return withoutNext.trim();
+    }
+
+    private String parseReasonKey(CompanionCommandParser.ParseError error) {
+        return switch (error) {
+            case MISSING_ACTION -> SEQUENCE_PARSE_REASON_ACTION_KEY;
+            case MISSING_RESOURCE -> SEQUENCE_PARSE_REASON_RESOURCE_KEY;
+            case INVALID_AMOUNT -> SEQUENCE_PARSE_REASON_AMOUNT_KEY;
+            case NONE, EMPTY_MESSAGE -> SEQUENCE_PARSE_REASON_GENERIC_KEY;
+        };
     }
 
     private String missingKey(CompanionResourceType type) {

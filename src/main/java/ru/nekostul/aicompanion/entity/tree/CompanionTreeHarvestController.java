@@ -71,7 +71,7 @@ public final class CompanionTreeHarvestController {
     private static final double PATH_DETOUR_MULTIPLIER = 2.0D;
     private static final int TREE_SEARCH_TIMEOUT_TICKS = 500;
     private static final int NEAR_SCAN_RADIUS = 24;
-    private static final int LOG_FROM_LEAVES_RADIUS = 2;
+    private static final int LOG_FROM_LEAVES_RADIUS = 3;
     private static final int LOG_FROM_LEAVES_MAX_DEPTH = 6;
     private static final int TREE_MAX_RADIUS = 9;
     private static final int TREE_MAX_BLOCKS = 1024;
@@ -83,6 +83,8 @@ public final class CompanionTreeHarvestController {
     private static final int STUCK_RETRY_LIMIT = 10;
     private static final double STUCK_MOVE_EPSILON_SQR = 0.0004D;
     private static final int STEP_CLEANUP_INTERVAL_TICKS = 10;
+    private static final int STEP_PLACE_INTERVAL_TICKS = 8;
+    private static final int STEP_TRIM_INTERVAL_TICKS = 10;
     private static final double TREE_MOVE_SPEED_BLOCKS_PER_TICK = 0.35D;
     private static final GameProfile MINING_PROFILE = new GameProfile(
             UUID.fromString("d44fdfd6-11c2-4766-9fd2-9a7f702cc563"), "CompanionLumber");
@@ -113,6 +115,8 @@ public final class CompanionTreeHarvestController {
     private final Deque<PlacedStep> placedSteps = new ArrayDeque<>();
     private boolean stepCleanupActive;
     private long nextStepCleanupTick = -1L;
+    private long nextStepPlaceTick = -1L;
+    private long nextStepTrimTick = -1L;
     private boolean scanSawCandidate;
     private boolean lastScanHadCandidates;
     private long nextScanTick = -1L;
@@ -134,6 +138,7 @@ public final class CompanionTreeHarvestController {
     private long lastMoveAttemptTick = -1L;
     private final Map<Item, Integer> collectedDrops = new HashMap<>();
     private final Map<Item, Integer> treeChopBaseline = new HashMap<>();
+    private final Set<BlockPos> manualTreeLogs = new HashSet<>();
     private ScanState scanState;
     private PathCheckState pathCheckState;
     private ScanState nearScanState;
@@ -162,9 +167,13 @@ public final class CompanionTreeHarvestController {
             requestAmount = request.getAmount();
             requestPlayerId = request.getPlayerId();
             if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
-                treesRemaining = requestAmount;
                 if (isTreeChopActive()) {
+                    treesRemaining = requestAmount;
                     captureTreeChopBaseline();
+                } else {
+                    logsRequired = requestAmount;
+                    logsCollected = 0;
+                    treesRemaining = 1;
                 }
             } else {
                 logsRequired = requestAmount;
@@ -200,7 +209,7 @@ public final class CompanionTreeHarvestController {
         if (treeMode == CompanionTreeRequestMode.LOG_BLOCKS && isTreeChopActive()) {
             logsCollected = Math.max(0, countLogsInInventory() - logsBaseline);
         }
-        if (treeMode == CompanionTreeRequestMode.TREE_COUNT && treesRemaining <= 0 && targetBlock == null) {
+        if (treeMode == CompanionTreeRequestMode.TREE_COUNT && isTreeCountCompleted() && targetBlock == null) {
             if (isTreeChopActive()) {
                 captureTreeChopDrops();
             }
@@ -255,6 +264,11 @@ public final class CompanionTreeHarvestController {
     public List<ItemStack> takeCollectedDrops() {
         if (collectedDrops.isEmpty()) {
             return List.of();
+        }
+        if (!isTreeChopActive() && treeMode == CompanionTreeRequestMode.TREE_COUNT && requestAmount > 1) {
+            List<ItemStack> limitedLogs = takeCollectedLogs(Math.max(0, requestAmount));
+            collectedDrops.clear();
+            return limitedLogs;
         }
         List<ItemStack> result = new ArrayList<>();
         for (Map.Entry<Item, Integer> entry : collectedDrops.entrySet()) {
@@ -537,16 +551,25 @@ public final class CompanionTreeHarvestController {
             clearTargetState();
             return Result.IN_PROGRESS;
         }
-        Vec3 center = Vec3.atCenterOf(targetBlock);
         if (!miningReach.canMine(targetBlock)) {
-            if (shouldPlaceStepBlock() && tryPlaceStepBlock()) {
+            if (tryTrimUnusedStep(gameTime)) {
                 resetMoveTracking();
                 resetMiningProgress();
                 return Result.IN_PROGRESS;
             }
-            if (shouldIssueMoveTo(targetBlock, gameTime)) {
+            if (shouldPlaceStepBlock() && tryPlaceStepBlock(gameTime)) {
+                resetMoveTracking();
+                resetMiningProgress();
+                return Result.IN_PROGRESS;
+            }
+            BlockPos moveTarget = resolveMiningMoveTarget();
+            if (moveTarget == null) {
+                moveTarget = targetBlock;
+            }
+            Vec3 center = Vec3.atCenterOf(moveTarget);
+            if (shouldIssueMoveTo(moveTarget, gameTime)) {
                 owner.getNavigation().moveTo(center.x, center.y, center.z, speedModifierFor(TREE_MOVE_SPEED_BLOCKS_PER_TICK));
-                rememberMoveTo(targetBlock, gameTime);
+                rememberMoveTo(moveTarget, gameTime);
             }
             resetMiningProgress();
             return Result.IN_PROGRESS;
@@ -622,7 +645,11 @@ public final class CompanionTreeHarvestController {
                         forceTrunkChop = false;
                     }
                     if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
-                        treesRemaining = Math.max(0, treesRemaining - 1);
+                        if (isTreeChopActive()) {
+                            treesRemaining = Math.max(0, treesRemaining - 1);
+                        } else {
+                            treesRemaining = logsCollected >= logsRequired ? 0 : 1;
+                        }
                         failedSearchAttempts = 0;
                         resetScanCache();
                     }
@@ -875,19 +902,30 @@ public final class CompanionTreeHarvestController {
     }
 
     private BlockPos resolveLogFromLeaves(BlockPos leafPos) {
+        BlockPos best = null;
+        double bestScore = Double.MAX_VALUE;
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         for (int dy = 0; dy <= LOG_FROM_LEAVES_MAX_DEPTH; dy++) {
             int y = leafPos.getY() - dy;
             for (int dx = -LOG_FROM_LEAVES_RADIUS; dx <= LOG_FROM_LEAVES_RADIUS; dx++) {
                 for (int dz = -LOG_FROM_LEAVES_RADIUS; dz <= LOG_FROM_LEAVES_RADIUS; dz++) {
                     pos.set(leafPos.getX() + dx, y, leafPos.getZ() + dz);
-                    if (CompanionBlockRegistry.isLog(owner.level().getBlockState(pos))) {
-                        return pos.immutable();
+                    if (!CompanionBlockRegistry.isLog(owner.level().getBlockState(pos))) {
+                        continue;
+                    }
+                    BlockPos candidate = pos.immutable();
+                    if (isPlacedStepPos(candidate)) {
+                        continue;
+                    }
+                    double score = leafPos.distSqr(candidate);
+                    if (score < bestScore) {
+                        bestScore = score;
+                        best = candidate;
                     }
                 }
             }
         }
-        return null;
+        return best;
     }
 
     private BlockPos findNextTrunkLog(BlockPos base, BlockPos current) {
@@ -899,7 +937,86 @@ public final class CompanionTreeHarvestController {
         if (CompanionBlockRegistry.isLog(owner.level().getBlockState(next))) {
             return next;
         }
+        if (!isTreeChopActive()) {
+            return findNextManualTreeLog(base, current);
+        }
         return null;
+    }
+
+    private BlockPos findNextManualTreeLog(BlockPos base, BlockPos current) {
+        if (base == null) {
+            return null;
+        }
+        if (manualTreeLogs.isEmpty()) {
+            captureManualTreeLogPositions(base);
+        }
+        if (manualTreeLogs.isEmpty()) {
+            return null;
+        }
+        manualTreeLogs.removeIf(pos -> !CompanionBlockRegistry.isLog(owner.level().getBlockState(pos)));
+        BlockPos reference = current != null ? current : owner.blockPosition();
+        BlockPos best = null;
+        double bestScore = Double.MAX_VALUE;
+        for (BlockPos pos : manualTreeLogs) {
+            if (current != null && pos.equals(current)) {
+                continue;
+            }
+            if (pos.getY() < base.getY()) {
+                continue;
+            }
+            double score = reference.distSqr(pos);
+            if (score < bestScore) {
+                bestScore = score;
+                best = pos;
+            }
+        }
+        return best != null ? best.immutable() : null;
+    }
+
+    private void captureManualTreeLogPositions(BlockPos base) {
+        manualTreeLogs.clear();
+        if (base == null) {
+            return;
+        }
+        BlockPos seed = CompanionBlockRegistry.isLog(owner.level().getBlockState(base)) ? base : resolveTreeChopLogStart(base);
+        if (seed == null) {
+            return;
+        }
+        Set<BlockPos> visited = new HashSet<>();
+        Deque<BlockPos> queue = new ArrayDeque<>();
+        queue.add(seed);
+        int maxDistanceSqr = TREE_MAX_RADIUS * TREE_MAX_RADIUS;
+        int minY = Math.max(owner.level().getMinBuildHeight(), base.getY() - 1);
+        int maxY = Math.min(owner.level().getMaxBuildHeight() - 1,
+                base.getY() + TREE_MAX_RADIUS * 2 + LOG_FROM_LEAVES_MAX_DEPTH);
+        while (!queue.isEmpty() && visited.size() < TREE_MAX_BLOCKS) {
+            BlockPos pos = queue.poll();
+            if (!visited.add(pos)) {
+                continue;
+            }
+            int dx = pos.getX() - base.getX();
+            int dz = pos.getZ() - base.getZ();
+            if (dx * dx + dz * dz > maxDistanceSqr || pos.getY() < minY || pos.getY() > maxY) {
+                continue;
+            }
+            if (!CompanionBlockRegistry.isLog(owner.level().getBlockState(pos))) {
+                continue;
+            }
+            manualTreeLogs.add(pos.immutable());
+            for (int ox = -1; ox <= 1; ox++) {
+                for (int oy = -1; oy <= 1; oy++) {
+                    for (int oz = -1; oz <= 1; oz++) {
+                        if (ox == 0 && oy == 0 && oz == 0) {
+                            continue;
+                        }
+                        BlockPos nextPos = pos.offset(ox, oy, oz);
+                        if (!visited.contains(nextPos)) {
+                            queue.add(nextPos);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private BlockPos findTreeBase(BlockPos start) {
@@ -1047,6 +1164,50 @@ public final class CompanionTreeHarvestController {
 
     private boolean isTreeChopActive() {
         return CompanionConfig.isFullTreeChopEnabled() && ModList.get().isLoaded("treechop");
+    }
+
+    private boolean isTreeCountCompleted() {
+        if (treeMode != CompanionTreeRequestMode.TREE_COUNT) {
+            return false;
+        }
+        if (isTreeChopActive()) {
+            return treesRemaining <= 0;
+        }
+        return treesRemaining <= 0 && logsCollected >= logsRequired;
+    }
+
+    private List<ItemStack> takeCollectedLogs(int maxLogs) {
+        if (maxLogs <= 0) {
+            return List.of();
+        }
+        int remaining = maxLogs;
+        List<ItemStack> result = new ArrayList<>();
+        for (Map.Entry<Item, Integer> entry : collectedDrops.entrySet()) {
+            if (remaining <= 0) {
+                break;
+            }
+            Item item = entry.getKey();
+            int available = Math.max(0, entry.getValue());
+            if (available <= 0 || !CompanionResourceType.LOG.matchesItem(new ItemStack(item))) {
+                continue;
+            }
+            int toTake = Math.min(available, remaining);
+            List<ItemStack> taken = inventory.takeMatching(stack -> stack.is(item), toTake);
+            for (ItemStack stack : taken) {
+                if (stack.isEmpty()) {
+                    continue;
+                }
+                result.add(stack);
+                remaining -= stack.getCount();
+                if (remaining <= 0) {
+                    break;
+                }
+            }
+        }
+        if (remaining > 0) {
+            result.addAll(inventory.takeMatching(CompanionResourceType.LOG::matchesItem, remaining));
+        }
+        return result;
     }
 
     private void captureTreeChopBaseline() {
@@ -1388,8 +1549,12 @@ public final class CompanionTreeHarvestController {
         }
         if (treeBasePos != null && (previousBase == null || !treeBasePos.equals(previousBase))) {
             trunkLogPos = treeBasePos;
+            if (!isTreeChopActive()) {
+                captureManualTreeLogPositions(treeBasePos);
+            }
         } else if (treeBasePos == null) {
             trunkLogPos = null;
+            manualTreeLogs.clear();
         }
     }
 
@@ -1399,6 +1564,7 @@ public final class CompanionTreeHarvestController {
         pendingSightPos = null;
         treeBasePos = null;
         trunkLogPos = null;
+        manualTreeLogs.clear();
         resetMiningProgress();
         resetMoveTracking();
     }
@@ -1547,26 +1713,43 @@ public final class CompanionTreeHarvestController {
         if (!CompanionBlockRegistry.isLog(owner.level().getBlockState(desired))) {
             return false;
         }
-        if (desired.getX() != treeBasePos.getX() || desired.getZ() != treeBasePos.getZ()) {
-            return false;
-        }
         BlockPos foot = owner.blockPosition();
-        if (foot.getX() != treeBasePos.getX() || foot.getZ() != treeBasePos.getZ()) {
+        int dx = foot.getX() - desired.getX();
+        int dz = foot.getZ() - desired.getZ();
+        if (dx * dx + dz * dz > 2) {
             return false;
         }
         return desired.getY() > foot.getY() + 1;
     }
 
-    private boolean tryPlaceStepBlock() {
+    private boolean tryPlaceStepBlock(long gameTime) {
         if (!(owner.level() instanceof ServerLevel serverLevel)) {
             return false;
         }
-        BlockPos placePos = new BlockPos(treeBasePos.getX(), owner.blockPosition().getY(), treeBasePos.getZ());
-        BlockState placeState = selectStepBlockState();
+        if (nextStepPlaceTick >= 0L && gameTime < nextStepPlaceTick) {
+            return false;
+        }
+        BlockPos foot = owner.blockPosition();
+        BlockPos desired = pendingResourceBlock != null ? pendingResourceBlock : targetBlock;
+        if (desired != null && desired.getY() <= foot.getY() + 1) {
+            return false;
+        }
+        boolean placed = tryPlaceStepBlockAt(serverLevel, foot, true);
+        if (placed) {
+            nextStepPlaceTick = gameTime + STEP_PLACE_INTERVAL_TICKS;
+        }
+        return placed;
+    }
+
+    private boolean tryPlaceStepBlockAt(ServerLevel serverLevel, BlockPos placePos, boolean liftOwner) {
+        if (placePos == null) {
+            return false;
+        }
+        BlockState placeState = selectStepBlockState(placePos);
         if (placeState == null) {
             return false;
         }
-        if (!canPlaceStepAt(placePos, placeState)) {
+        if (!prepareStepPlacement(serverLevel, placePos, placeState)) {
             return false;
         }
         if (!serverLevel.setBlock(placePos, placeState, 3)) {
@@ -1577,49 +1760,130 @@ public final class CompanionTreeHarvestController {
             return false;
         }
         markPlacedStepBlock(placePos, placeState);
-        if (canStandAt(placePos.above()) && canStandAt(placePos.above(2))) {
+        if (liftOwner && placePos.equals(owner.blockPosition())
+                && canStandAt(placePos.above()) && canStandAt(placePos.above(2))) {
             owner.setPos(owner.getX(), owner.getY() + 1.0D, owner.getZ());
         }
         return true;
     }
 
-    private BlockState selectStepBlockState() {
-        int slot = findStepBlockSlot();
-        if (slot < 0) {
-            return null;
+    private boolean prepareStepPlacement(ServerLevel serverLevel, BlockPos placePos, BlockState placeState) {
+        if (!clearStepPlacementPos(serverLevel, placePos)) {
+            return false;
         }
-        ItemStack stack = inventory.getItems().get(slot);
-        if (stack.isEmpty() || !(stack.getItem() instanceof BlockItem blockItem)) {
-            return null;
+        if (!clearStepStandSpace(serverLevel, placePos.above())) {
+            return false;
         }
-        BlockState state = blockItem.getBlock().defaultBlockState();
-        if (state.isAir() || state.is(Blocks.BEDROCK) || state.is(Blocks.BARRIER)) {
-            return null;
+        if (!clearStepStandSpace(serverLevel, placePos.above(2))) {
+            return false;
         }
-        return state;
+        return canPlaceStepAt(placePos, placeState);
     }
 
-    private int findStepBlockSlot() {
-        int fallbackLogSlot = -1;
-        for (int i = 0; i < inventory.getItems().size(); i++) {
-            ItemStack stack = inventory.getItems().get(i);
+    private boolean clearStepPlacementPos(ServerLevel serverLevel, BlockPos pos) {
+        BlockState state = owner.level().getBlockState(pos);
+        if (state.canBeReplaced()) {
+            return true;
+        }
+        return breakStepObstacle(serverLevel, pos, state) && owner.level().getBlockState(pos).canBeReplaced();
+    }
+
+    private boolean clearStepStandSpace(ServerLevel serverLevel, BlockPos pos) {
+        if (canStandAt(pos)) {
+            return true;
+        }
+        BlockState state = owner.level().getBlockState(pos);
+        if (state.isAir() || !state.getFluidState().isEmpty()) {
+            return false;
+        }
+        return breakStepObstacle(serverLevel, pos, state) && canStandAt(pos);
+    }
+
+    private boolean breakStepObstacle(ServerLevel serverLevel, BlockPos pos, BlockState state) {
+        if (!isBreakable(state, pos)) {
+            return false;
+        }
+        if (CompanionBlockRegistry.isLog(state)) {
+            return false;
+        }
+        return serverLevel.destroyBlock(pos, true, owner);
+    }
+
+    private BlockPos findSideStepPlacePos(BlockPos desired, BlockPos foot) {
+        if (desired == null || foot == null) {
+            return null;
+        }
+        if (desired.getX() == foot.getX() && desired.getZ() == foot.getZ()) {
+            return null;
+        }
+        int startY = Math.min(desired.getY() - 1, foot.getY());
+        int minY = owner.level().getMinBuildHeight();
+        if (treeBasePos != null) {
+            minY = Math.max(minY, treeBasePos.getY() - 1);
+        }
+        if (startY < minY) {
+            return null;
+        }
+        BlockPos.MutableBlockPos candidate = new BlockPos.MutableBlockPos(desired.getX(), startY, desired.getZ());
+        for (int y = startY; y >= minY; y--) {
+            candidate.setY(y);
+            if (isPotentialSideStepPlacement(candidate)) {
+                return candidate.immutable();
+            }
+        }
+        return null;
+    }
+
+    private boolean isPotentialSideStepPlacement(BlockPos pos) {
+        BlockState current = owner.level().getBlockState(pos);
+        if (!current.canBeReplaced()) {
+            return false;
+        }
+        BlockPos below = pos.below();
+        if (!isSolidBaseSupport(below, owner.level().getBlockState(below))) {
+            return false;
+        }
+        return canStandAt(pos.above()) && canStandAt(pos.above(2));
+    }
+
+    private BlockState selectStepBlockState(BlockPos placePos) {
+        BlockState fallbackLog = null;
+        for (ItemStack stack : inventory.getItems()) {
             if (stack.isEmpty() || !(stack.getItem() instanceof BlockItem blockItem)) {
                 continue;
             }
             BlockState state = blockItem.getBlock().defaultBlockState();
-            if (state.isAir() || state.is(Blocks.BEDROCK) || state.is(Blocks.BARRIER)) {
+            if (!isUsableStepBlock(state, placePos)) {
                 continue;
             }
             boolean isLog = CompanionBlockRegistry.isLog(state);
             boolean isLeaves = CompanionBlockRegistry.isLeaves(state);
             if (!isLog && !isLeaves) {
-                return i;
+                return state;
             }
-            if (fallbackLogSlot < 0 && isLog) {
-                fallbackLogSlot = i;
+            if (fallbackLog == null && isLog) {
+                fallbackLog = state;
             }
         }
-        return fallbackLogSlot;
+        return fallbackLog;
+    }
+
+    private boolean isUsableStepBlock(BlockState state, BlockPos pos) {
+        if (state == null || state.isAir() || state.is(Blocks.BEDROCK) || state.is(Blocks.BARRIER)) {
+            return false;
+        }
+        if (state.is(BlockTags.SAPLINGS)) {
+            return false;
+        }
+        if (!state.getFluidState().isEmpty()) {
+            return false;
+        }
+        if (pos != null) {
+            return state.canOcclude()
+                    && state.isFaceSturdy(owner.level(), pos, Direction.UP)
+                    && state.isCollisionShapeFullBlock(owner.level(), pos);
+        }
+        return state.canOcclude();
     }
 
     private void markPlacedStepBlock(BlockPos pos, BlockState state) {
@@ -1630,6 +1894,8 @@ public final class CompanionTreeHarvestController {
         placedSteps.clear();
         stepCleanupActive = false;
         nextStepCleanupTick = -1L;
+        nextStepPlaceTick = -1L;
+        nextStepTrimTick = -1L;
     }
 
     private void startStepCleanup(long gameTime) {
@@ -1676,6 +1942,41 @@ public final class CompanionTreeHarvestController {
         return stepCleanupActive;
     }
 
+    private boolean tryTrimUnusedStep(long gameTime) {
+        if (stepCleanupActive || placedSteps.isEmpty() || !owner.onGround()) {
+            return false;
+        }
+        if (nextStepTrimTick >= 0L && gameTime < nextStepTrimTick) {
+            return false;
+        }
+        if (!(owner.level() instanceof ServerLevel serverLevel)) {
+            return false;
+        }
+        BlockPos foot = owner.blockPosition();
+        BlockPos support = foot.below();
+        PlacedStep candidate = null;
+        for (PlacedStep step : placedSteps) {
+            if (step == null) {
+                continue;
+            }
+            if (step.pos.equals(support) || step.pos.equals(foot)) {
+                continue;
+            }
+            candidate = step;
+            break;
+        }
+        if (candidate == null) {
+            return false;
+        }
+        if (!tryBreakPlacedStep(serverLevel, candidate)) {
+            nextStepTrimTick = gameTime + STEP_TRIM_INTERVAL_TICKS;
+            return false;
+        }
+        placedSteps.remove(candidate);
+        nextStepTrimTick = gameTime + STEP_TRIM_INTERVAL_TICKS;
+        return true;
+    }
+
     private boolean tryBreakPlacedStep(ServerLevel serverLevel, PlacedStep step) {
         BlockState state = owner.level().getBlockState(step.pos);
         if (state.isAir()) {
@@ -1703,6 +2004,18 @@ public final class CompanionTreeHarvestController {
         }
         CompanionToolWear.applyToolWear(owner, tool, InteractionHand.MAIN_HAND);
         return true;
+    }
+
+    private boolean isPlacedStepPos(BlockPos pos) {
+        if (pos == null || placedSteps.isEmpty()) {
+            return false;
+        }
+        for (PlacedStep step : placedSteps) {
+            if (step != null && step.pos.equals(pos)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static final class PlacedStep {
@@ -1744,7 +2057,49 @@ public final class CompanionTreeHarvestController {
         if (!placeState.canSurvive(owner.level(), pos)) {
             return false;
         }
+        if (!isUsableStepBlock(placeState, pos)) {
+            return false;
+        }
         return canStandAt(pos.above()) && canStandAt(pos.above(2));
+    }
+
+    private BlockPos resolveMiningMoveTarget() {
+        BlockPos desired = pendingResourceBlock != null ? pendingResourceBlock : targetBlock;
+        if (desired == null) {
+            return null;
+        }
+        if (!CompanionBlockRegistry.isLog(owner.level().getBlockState(desired))) {
+            return targetBlock;
+        }
+        BlockPos foot = owner.blockPosition();
+        if (foot.getX() == desired.getX() && foot.getZ() == desired.getZ()) {
+            return desired;
+        }
+        BlockPos standPos = findStandPosUnderColumn(desired);
+        return standPos != null ? standPos : desired;
+    }
+
+    private BlockPos findStandPosUnderColumn(BlockPos desired) {
+        if (desired == null) {
+            return null;
+        }
+        int maxY = Math.min(desired.getY(), owner.level().getMaxBuildHeight() - 2);
+        int minY = owner.level().getMinBuildHeight() + 1;
+        if (treeBasePos != null) {
+            minY = Math.max(minY, treeBasePos.getY() - 1);
+        }
+        BlockPos.MutableBlockPos standPos = new BlockPos.MutableBlockPos(desired.getX(), minY, desired.getZ());
+        for (int y = minY; y <= maxY; y++) {
+            standPos.setY(y);
+            if (!canStandAt(standPos) || !canStandAt(standPos.above())) {
+                continue;
+            }
+            BlockPos below = standPos.below();
+            if (isSolidBaseSupport(below, owner.level().getBlockState(below))) {
+                return standPos.immutable();
+            }
+        }
+        return null;
     }
 
     private boolean canStandAt(BlockPos pos) {
