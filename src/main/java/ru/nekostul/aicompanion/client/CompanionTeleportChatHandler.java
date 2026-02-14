@@ -20,6 +20,10 @@ import java.util.Set;
 
 @Mod.EventBusSubscriber(modid = AiCompanionMod.MOD_ID, value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class CompanionTeleportChatHandler {
+    private static final String HOME_DEATH_RECOVERY_HP_KEY =
+            "entity.aicompanion.companion.home.death.recovery.hp";
+    private static final String HOME_DEATH_RECOVERY_HP_REMOVE_KEY =
+            "entity.aicompanion.companion.home.death.recovery.hp.remove";
     private static final Set<String> TELEPORT_REQUEST_KEYS = Set.of(
             "entity.aicompanion.companion.teleport.request",
             "entity.aicompanion.companion.teleport.request.alt",
@@ -43,14 +47,22 @@ public final class CompanionTeleportChatHandler {
             return;
         }
         Component message = event.getMessage();
-        if (containsTeleportRequest(message) || containsTeleportIgnore(message)) {
+        boolean teleportRequest = containsTeleportRequest(message);
+        boolean teleportIgnore = containsTeleportIgnore(message);
+        boolean homeRecoveryHp = containsHomeRecoveryHp(message);
+        boolean homeRecoveryHpRemove = containsHomeRecoveryHpRemove(message);
+        if (teleportRequest || teleportIgnore || homeRecoveryHp || homeRecoveryHpRemove) {
             event.setCanceled(true);
             Minecraft minecraft = Minecraft.getInstance();
             if (minecraft == null || minecraft.gui == null) {
                 return;
             }
             ChatComponent chat = minecraft.gui.getChat();
-            replaceTeleportMessage(chat, message, containsTeleportIgnore(message));
+            if (teleportRequest || teleportIgnore) {
+                replaceTeleportMessage(chat, message, teleportIgnore);
+            } else {
+                replaceHomeRecoveryHpMessage(chat, message, homeRecoveryHpRemove);
+            }
         }
     }
 
@@ -86,6 +98,38 @@ public final class CompanionTeleportChatHandler {
         return false;
     }
 
+    private static boolean containsHomeRecoveryHp(Component message) {
+        if (message == null) {
+            return false;
+        }
+        if (message.getContents() instanceof TranslatableContents contents
+                && HOME_DEATH_RECOVERY_HP_KEY.equals(contents.getKey())) {
+            return true;
+        }
+        for (Component sibling : message.getSiblings()) {
+            if (containsHomeRecoveryHp(sibling)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsHomeRecoveryHpRemove(Component message) {
+        if (message == null) {
+            return false;
+        }
+        if (message.getContents() instanceof TranslatableContents contents
+                && HOME_DEATH_RECOVERY_HP_REMOVE_KEY.equals(contents.getKey())) {
+            return true;
+        }
+        for (Component sibling : message.getSiblings()) {
+            if (containsHomeRecoveryHpRemove(sibling)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static void replaceTeleportMessage(ChatComponent chat, Component message, boolean ignore) {
         List<GuiMessage> messages = getChatMessages(chat);
         if (messages != null) {
@@ -102,6 +146,26 @@ public final class CompanionTeleportChatHandler {
             }
         }
         if (!ignore) {
+            chat.addMessage(message);
+        }
+    }
+
+    private static void replaceHomeRecoveryHpMessage(ChatComponent chat, Component message, boolean removeOnly) {
+        List<GuiMessage> messages = getChatMessages(chat);
+        if (messages != null) {
+            boolean removed = false;
+            for (Iterator<GuiMessage> iterator = messages.iterator(); iterator.hasNext(); ) {
+                GuiMessage guiMessage = iterator.next();
+                if (containsHomeRecoveryHp(guiMessage.content())) {
+                    iterator.remove();
+                    removed = true;
+                }
+            }
+            if (removed) {
+                chat.rescaleChat();
+            }
+        }
+        if (!removeOnly) {
             chat.addMessage(message);
         }
     }

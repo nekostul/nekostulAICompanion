@@ -33,8 +33,13 @@ public final class CompanionSingleNpcManager {
             ServerLevel previousLevel = resolveLevel(entity, activeDimension);
             if (previousLevel != null) {
                 Entity previous = previousLevel.getEntity(activeId);
-                if (previous instanceof CompanionEntity companion && companion.isAlive()) {
-                    companion.kill();
+                if (previous instanceof CompanionEntity companion) {
+                    companion.markPermanentDeathOnNextDeath();
+                    if (companion.isAlive()) {
+                        companion.kill();
+                    } else {
+                        companion.discard();
+                    }
                 }
             }
         }
@@ -82,7 +87,35 @@ public final class CompanionSingleNpcManager {
             return null;
         }
         Entity entity = level.getEntity(activeId);
-        if (entity instanceof CompanionEntity companion && companion.isAlive()) {
+        if (entity instanceof CompanionEntity companion) {
+            if (companion.isAlive()) {
+                return companion;
+            }
+            return null;
+        }
+        if (lastKnownPos != null && !level.hasChunkAt(lastKnownPos)) {
+            return null;
+        }
+        activeId = null;
+        activeDimension = null;
+        lastKnownPos = null;
+        return null;
+    }
+
+    public static CompanionEntity getActiveIncludingDead(ServerPlayer player) {
+        if (player == null || player.server == null) {
+            return null;
+        }
+        ensureLoaded(player.server);
+        if (activeId == null || activeDimension == null) {
+            return null;
+        }
+        ServerLevel level = player.server.getLevel(activeDimension);
+        if (level == null) {
+            return null;
+        }
+        Entity entity = level.getEntity(activeId);
+        if (entity instanceof CompanionEntity companion) {
             return companion;
         }
         if (lastKnownPos != null && !level.hasChunkAt(lastKnownPos)) {

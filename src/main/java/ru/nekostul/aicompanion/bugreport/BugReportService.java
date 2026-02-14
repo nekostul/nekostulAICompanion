@@ -3,6 +3,7 @@ package ru.nekostul.aicompanion.bugreport;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.fml.ModList;
 
@@ -35,14 +36,21 @@ public final class BugReportService {
         }
 
         player.sendSystemMessage(Component.translatable(SENDING_KEY));
+        MinecraftServer server = player.getServer();
+        if (server == null) {
+            player.sendSystemMessage(Component.translatable(FAILED_KEY));
+            return;
+        }
 
         CompletableFuture.runAsync(() -> {
             try {
                 send(player, message);
-                BugReportCooldown.markSent(player);
-                player.sendSystemMessage(Component.translatable(SENT_KEY));
+                server.execute(() -> {
+                    BugReportCooldown.markSent(player);
+                    player.sendSystemMessage(Component.translatable(SENT_KEY));
+                });
             } catch (Exception e) {
-                player.sendSystemMessage(Component.translatable(FAILED_KEY));
+                server.execute(() -> player.sendSystemMessage(Component.translatable(FAILED_KEY)));
                 e.printStackTrace();
             }
         });

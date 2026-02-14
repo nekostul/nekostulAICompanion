@@ -4,11 +4,15 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.SimpleMenuProvider;
+import net.minecraft.world.entity.MobSpawnType;
+import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -20,6 +24,7 @@ import ru.nekostul.aicompanion.bugreport.BugReportService;
 import ru.nekostul.aicompanion.client.gui.CompanionEquipmentMenu;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
 import ru.nekostul.aicompanion.entity.CompanionSingleNpcManager;
+import ru.nekostul.aicompanion.registry.ModEntities;
 
 @Mod.EventBusSubscriber(modid = AiCompanionMod.MOD_ID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class CompanionCommands {
@@ -49,8 +54,6 @@ public final class CompanionCommands {
                                         .executes(CompanionCommands::handleBugReport)))
                         .then(Commands.literal("sethome")
                                 .executes(CompanionCommands::handleSetHome))
-                        .then(Commands.literal("delhome")
-                                .executes(CompanionCommands::handleDelHome))
                         .then(Commands.literal("home")
                                 .then(Commands.literal("yes")
                                         .executes(context -> handleHomeConfirm(context, true)))
@@ -61,6 +64,9 @@ public final class CompanionCommands {
                                         .executes(context -> handleTreeChop(context, true)))
                                 .then(Commands.literal("off")
                                         .executes(context -> handleTreeChop(context, false))))
+                        .then(Commands.literal("spawn")
+                                .requires(source -> source.hasPermission(2))
+                                .executes(CompanionCommands::handleSpawn))
         );
     }
 
@@ -104,20 +110,11 @@ public final class CompanionCommands {
 
     private static int handleSetHome(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
         ServerPlayer player = context.getSource().getPlayerOrException();
-        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
+        CompanionEntity companion = CompanionSingleNpcManager.getActiveIncludingDead(player);
         if (companion == null || !companion.canPlayerControl(player)) {
             return 0;
         }
         return companion.handleSetHome(player) ? 1 : 0;
-    }
-
-    private static int handleDelHome(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
-        ServerPlayer player = context.getSource().getPlayerOrException();
-        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
-        if (companion == null || !companion.canPlayerControl(player)) {
-            return 0;
-        }
-        return companion.handleDeleteHome(player) ? 1 : 0;
     }
 
     private static int handleHomeConfirm(CommandContext<CommandSourceStack> context, boolean accepted)
@@ -145,5 +142,43 @@ public final class CompanionCommands {
             context.getSource().sendSuccess(() -> message, false);
         }
         return 1;
+    }
+
+    private static int handleSpawn(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        CompanionEntity companion = spawnCompanionNear(player);
+        return companion != null ? 1 : 0;
+    }
+
+    private static CompanionEntity spawnCompanionNear(ServerPlayer player) {
+        if (player == null) {
+            return null;
+        }
+        BlockPos base = player.blockPosition();
+        Direction facing = player.getDirection();
+        BlockPos[] candidates = new BlockPos[] {
+                base.relative(facing.getOpposite()),
+                base.relative(facing.getClockWise()),
+                base.relative(facing.getCounterClockWise()),
+                base.above(),
+                base
+        };
+        for (BlockPos candidate : candidates) {
+            CompanionEntity spawned = ModEntities.COMPANION.get().spawn(
+                    player.serverLevel(),
+                    (ItemStack) null,
+                    player,
+                    candidate,
+                    MobSpawnType.COMMAND,
+                    true,
+                    false
+            );
+            if (spawned != null) {
+                spawned.setYRot(player.getYRot());
+                spawned.setXRot(player.getXRot());
+                return spawned;
+            }
+        }
+        return null;
     }
 }

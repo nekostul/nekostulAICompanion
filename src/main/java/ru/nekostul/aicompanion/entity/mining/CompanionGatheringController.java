@@ -59,7 +59,7 @@ public final class CompanionGatheringController {
     private static final int RESOURCE_SCAN_COOLDOWN_TICKS = 80;
     private static final float RESOURCE_FOV_DOT = -1.0F;
     private static final float VISIBLE_FOV_DOT = RESOURCE_FOV_DOT;
-    private static final int MAX_SCAN_BLOCKS_PER_TICK = 256;
+    private static final int MAX_SCAN_BLOCKS_PER_TICK = 200000;
     private static final int MAX_STONE_SCAN_COLUMNS_PER_TICK = 64;
     private static final int NEAR_SCAN_RADIUS = 12;
     private static final int NEAR_SCAN_HEIGHT = 8;
@@ -355,7 +355,10 @@ public final class CompanionGatheringController {
             return Result.IN_PROGRESS;
         }
         Player player = owner.getPlayerById(requestPlayerId);
-        if (!toolHandler.ensurePickaxeForBlock(state, targetBlock, player, gameTime)) {
+        // While clearing a blocking block on the way to the real target, do not stop
+        // with "pickaxe required" warnings. Keep moving the task forward.
+        boolean isTransitObstacle = pendingResourceBlock != null;
+        if (!isTransitObstacle && !toolHandler.ensurePickaxeForBlock(state, targetBlock, player, gameTime)) {
             resetMiningProgress();
             return Result.IN_PROGRESS;
         }
