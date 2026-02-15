@@ -32,7 +32,6 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.UUID;
-import java.util.regex.Pattern;
 
 final class CompanionTaskCoordinator {
     private enum TaskState {
@@ -43,55 +42,6 @@ final class CompanionTaskCoordinator {
         GATHERING,
         DELIVERING,
         DELIVERING_ALL
-    }
-
-    private static final class SequenceTask {
-        private final CompanionCommandParser.CommandRequest request;
-        private final String originalText;
-        private final int order;
-
-        private SequenceTask(CompanionCommandParser.CommandRequest request, String originalText, int order) {
-            this.request = request;
-            this.originalText = originalText;
-            this.order = order;
-        }
-    }
-
-    private static final class SequenceParseResult {
-        private final boolean sequenceCommand;
-        private final List<SequenceTask> tasks;
-        private final String failedSegment;
-        private final CompanionCommandParser.ParseError parseError;
-
-        private SequenceParseResult(boolean sequenceCommand,
-                                    List<SequenceTask> tasks,
-                                    String failedSegment,
-                                    CompanionCommandParser.ParseError parseError) {
-            this.sequenceCommand = sequenceCommand;
-            this.tasks = tasks;
-            this.failedSegment = failedSegment;
-            this.parseError = parseError;
-        }
-
-        private static SequenceParseResult notSequence() {
-            return new SequenceParseResult(false, List.of(), "", CompanionCommandParser.ParseError.NONE);
-        }
-
-        private static SequenceParseResult failed(String failedSegment, CompanionCommandParser.ParseError parseError) {
-            return new SequenceParseResult(true, List.of(), failedSegment, parseError);
-        }
-
-        private static SequenceParseResult success(List<SequenceTask> tasks) {
-            return new SequenceParseResult(true, tasks, "", CompanionCommandParser.ParseError.NONE);
-        }
-
-        private boolean isSequenceCommand() {
-            return sequenceCommand;
-        }
-
-        private boolean isValid() {
-            return !tasks.isEmpty();
-        }
     }
 
     private static final Logger LOGGER = LogUtils.getLogger();
@@ -110,6 +60,7 @@ final class CompanionTaskCoordinator {
     private static final int TREE_RETRY_TICKS = 5 * 20;
     private static final String BLOCK_LIMIT_KEY = "entity.aicompanion.companion.gather.limit.blocks";
     private static final String TREE_LIMIT_KEY = "entity.aicompanion.companion.gather.limit.trees";
+    private static final String ORE_LIMIT_KEY = "entity.aicompanion.companion.gather.limit.ore";
     private static final String SEQUENCE_ACCEPTED_KEY = "entity.aicompanion.companion.sequence.accepted";
     private static final String SEQUENCE_DONE_KEY = "entity.aicompanion.companion.sequence.done";
     private static final String SEQUENCE_TASK_FAIL_KEY = "entity.aicompanion.companion.sequence.task.failed";
@@ -122,18 +73,6 @@ final class CompanionTaskCoordinator {
             "entity.aicompanion.companion.sequence.parse.reason.amount";
     private static final String SEQUENCE_PARSE_REASON_GENERIC_KEY =
             "entity.aicompanion.companion.sequence.parse.reason.generic";
-    private static final Pattern SEQUENCE_MARKER_PATTERN = Pattern.compile(
-            "(?iu)(?:^|\\s)(?:\\u043f\\u043e\\u0442\\u043e\\u043c|\\u0437\\u0430\\u0442\\u0435\\u043c|then)(?:\\s|$)");
-    private static final Pattern SEQUENCE_DELIMITER_PATTERN = Pattern.compile(
-            "(?iu)\\s+(?:\\u043f\\u043e\\u0442\\u043e\\u043c|\\u0437\\u0430\\u0442\\u0435\\u043c|then)\\s+");
-    private static final Pattern SEQUENCE_AND_PATTERN = Pattern.compile(
-            "(?iu)(?:^|\\s)(?:\\u0438|and)(?:\\s|$)");
-    private static final Pattern SEQUENCE_AND_DELIMITER_PATTERN = Pattern.compile(
-            "(?iu)\\s+(?:\\u0438|and)\\s+");
-    private static final Pattern SEQUENCE_FIRST_PREFIX_PATTERN = Pattern.compile(
-            "(?iu)^(?:\\u0441\\u043d\\u0430\\u0447\\u0430\\u043b\\u0430|first|firstly)\\s+");
-    private static final Pattern SEQUENCE_NEXT_PREFIX_PATTERN = Pattern.compile(
-            "(?iu)^(?:\\u043f\\u043e\\u0442\\u043e\\u043c|\\u0437\\u0430\\u0442\\u0435\\u043c|then|\\u0438|and)\\s+");
 
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
@@ -144,15 +83,16 @@ final class CompanionTaskCoordinator {
     private final CompanionBucketHandler bucketHandler;
     private final CompanionChestManager chestManager;
     private final CompanionCommandParser commandParser;
+    private final CompanionTaskSequenceParser sequenceParser;
     private final CompanionHelpSystem helpSystem;
     private final CompanionInventoryExchange inventoryExchange;
     private final CompanionTorchHandler torchHandler;
 
     private CompanionResourceRequest activeRequest;
     private TaskState taskState = TaskState.IDLE;
-    private final Deque<SequenceTask> queuedSequenceTasks = new ArrayDeque<>();
+    private final Deque<CompanionTaskSequenceParser.SequenceTask> queuedSequenceTasks = new ArrayDeque<>();
     private UUID sequencePlayerId;
-    private SequenceTask currentSequenceTask;
+    private CompanionTaskSequenceParser.SequenceTask currentSequenceTask;
     private int sequenceTotalTasks;
     private int sequenceCompletedTasks;
     private boolean sequenceDelivering;
@@ -185,6 +125,7 @@ final class CompanionTaskCoordinator {
         this.bucketHandler = bucketHandler;
         this.chestManager = chestManager;
         this.commandParser = commandParser;
+        this.sequenceParser = new CompanionTaskSequenceParser(commandParser);
         this.helpSystem = helpSystem;
         this.inventoryExchange = inventoryExchange;
         this.torchHandler = torchHandler;
@@ -203,20 +144,20 @@ final class CompanionTaskCoordinator {
         if (handleTreeRetryClick(player, message)) {
             return true;
         }
-        SequenceParseResult sequenceResult = parseSequenceMessage(message);
+        CompanionTaskSequenceParser.SequenceParseResult sequenceResult = sequenceParser.parse(message);
         if (sequenceResult.isSequenceCommand()) {
             if (!sequenceResult.isValid()) {
-                Component reason = Component.translatable(parseReasonKey(sequenceResult.parseError));
-                String failedSegment = sequenceResult.failedSegment.isBlank()
-                        ? normalizeTaskText(message)
-                        : sequenceResult.failedSegment;
+                Component reason = Component.translatable(parseReasonKey(sequenceResult.parseError()));
+                String failedSegment = sequenceResult.failedSegment().isBlank()
+                        ? CompanionTaskSequenceParser.normalizeTaskText(message)
+                        : sequenceResult.failedSegment();
                 owner.sendReply(player, Component.translatable(SEQUENCE_PARSE_FAILED_KEY, failedSegment, reason));
                 LOGGER.debug("task-sequence parse failed: npc={} player={} segment='{}' error={}",
-                        owner.getUUID(), player.getUUID(), failedSegment, sequenceResult.parseError);
+                        owner.getUUID(), player.getUUID(), failedSegment, sequenceResult.parseError());
                 return true;
             }
             clearTreeRetryPrompt(player, true);
-            startSequence(player, sequenceResult.tasks);
+            startSequence(player, sequenceResult.tasks());
             return true;
         }
         CompanionCommandParser.CommandRequest parsed = commandParser.parse(message);
@@ -341,6 +282,16 @@ final class CompanionTaskCoordinator {
             }
             return requested;
         }
+        if (isOreRequest(parsed.getResourceType())) {
+            int maxOres = CompanionConfig.getMaxOresPerTask();
+            if (requested > maxOres) {
+                if (player != null) {
+                    owner.sendReply(player, Component.translatable(ORE_LIMIT_KEY, maxOres));
+                }
+                return maxOres;
+            }
+            return requested;
+        }
         if (isRegularBlockRequest(parsed.getResourceType())) {
             int maxBlocks = CompanionConfig.getMaxBlocksPerTask();
             if (requested > maxBlocks) {
@@ -360,7 +311,28 @@ final class CompanionTaskCoordinator {
         if (type.isBucketResource()) {
             return false;
         }
+        if (isOreRequest(type)) {
+            return false;
+        }
         return type != CompanionResourceType.TORCH;
+    }
+
+    private boolean isOreRequest(CompanionResourceType type) {
+        if (type == null) {
+            return false;
+        }
+        return switch (type) {
+            case ORE,
+                 COAL_ORE,
+                 IRON_ORE,
+                 COPPER_ORE,
+                 GOLD_ORE,
+                 REDSTONE_ORE,
+                 LAPIS_ORE,
+                 DIAMOND_ORE,
+                 EMERALD_ORE -> true;
+            default -> false;
+        };
     }
 
     private void tickGathering(Player player, long gameTime) {
@@ -514,7 +486,7 @@ final class CompanionTaskCoordinator {
         }
     }
 
-    private void startSequence(ServerPlayer player, List<SequenceTask> tasks) {
+    private void startSequence(ServerPlayer player, List<CompanionTaskSequenceParser.SequenceTask> tasks) {
         resetActiveTask();
         clearTaskSequence();
         sequencePlayerId = player.getUUID();
@@ -534,21 +506,21 @@ final class CompanionTaskCoordinator {
             clearTaskSequence();
             return false;
         }
-        SequenceTask nextTask = queuedSequenceTasks.pollFirst();
+        CompanionTaskSequenceParser.SequenceTask nextTask = queuedSequenceTasks.pollFirst();
         if (nextTask == null) {
             return false;
         }
         currentSequenceTask = nextTask;
-        CompanionCommandParser.CommandRequest request = nextTask.request;
+        CompanionCommandParser.CommandRequest request = nextTask.request();
         LOGGER.debug("task-sequence step start: npc={} player={} step={}/{} action={} target={} amount={} text='{}'",
                 owner.getUUID(),
                 player.getUUID(),
-                nextTask.order,
+                nextTask.order(),
                 sequenceTotalTasks,
                 request.getTaskAction(),
                 request.getResourceType(),
                 request.getAmount(),
-                nextTask.originalText);
+                nextTask.originalText());
         startRequest(player, request);
         if (activeRequest == null || taskState == TaskState.IDLE) {
             failActiveTask(player, "request_rejected_on_start");
@@ -558,7 +530,7 @@ final class CompanionTaskCoordinator {
     }
 
     private void finishActiveTaskSuccessfully(Player player) {
-        SequenceTask completedTask = currentSequenceTask;
+        CompanionTaskSequenceParser.SequenceTask completedTask = currentSequenceTask;
         resetActiveTask();
         if (sequencePlayerId == null) {
             return;
@@ -570,7 +542,7 @@ final class CompanionTaskCoordinator {
                     player.getUUID(),
                     sequenceCompletedTasks,
                     sequenceTotalTasks,
-                    completedTask.originalText);
+                    completedTask.originalText());
         }
         currentSequenceTask = null;
         if (sequenceDelivering) {
@@ -591,17 +563,17 @@ final class CompanionTaskCoordinator {
     }
 
     private void failActiveTask(Player player, String debugReason) {
-        SequenceTask failedTask = currentSequenceTask;
+        CompanionTaskSequenceParser.SequenceTask failedTask = currentSequenceTask;
         resetActiveTask();
         owner.getNavigation().stop();
         if (sequencePlayerId != null && failedTask != null && player != null) {
-            owner.sendReply(player, Component.translatable(SEQUENCE_TASK_FAIL_KEY, failedTask.originalText));
+            owner.sendReply(player, Component.translatable(SEQUENCE_TASK_FAIL_KEY, failedTask.originalText()));
             LOGGER.debug("task-sequence step failed: npc={} player={} step={}/{} text='{}' reason={}",
                     owner.getUUID(),
                     player.getUUID(),
-                    failedTask.order,
+                    failedTask.order(),
                     sequenceTotalTasks,
-                    failedTask.originalText,
+                    failedTask.originalText(),
                     debugReason);
             clearTaskSequence();
             return;
@@ -744,45 +716,6 @@ final class CompanionTaskCoordinator {
         return (int) ((diff + 19L) / 20L);
     }
 
-    private SequenceParseResult parseSequenceMessage(String message) {
-        if (message == null || message.isBlank()) {
-            return SequenceParseResult.notSequence();
-        }
-        boolean hasThenMarker = SEQUENCE_MARKER_PATTERN.matcher(message).find();
-        boolean hasAndMarker = SEQUENCE_AND_PATTERN.matcher(message).find();
-        if (!hasThenMarker && !hasAndMarker) {
-            return SequenceParseResult.notSequence();
-        }
-        String prepared = message;
-        if (hasThenMarker) {
-            prepared = SEQUENCE_DELIMITER_PATTERN.matcher(prepared).replaceAll(",");
-        }
-        if (hasAndMarker) {
-            prepared = SEQUENCE_AND_DELIMITER_PATTERN.matcher(prepared).replaceAll(",");
-        }
-        String[] rawParts = prepared.split("[,;]");
-        List<SequenceTask> tasks = new ArrayList<>();
-        CompanionCommandParser.TaskAction fallbackAction = null;
-        int order = 1;
-        for (String rawPart : rawParts) {
-            String part = normalizeTaskText(rawPart);
-            if (part.isEmpty()) {
-                continue;
-            }
-            CompanionCommandParser.ParseResult parsed = commandParser.parseDetailed(part, fallbackAction);
-            if (parsed.getRequest() == null) {
-                return SequenceParseResult.failed(part, parsed.getError());
-            }
-            fallbackAction = parsed.getRequest().getTaskAction();
-            tasks.add(new SequenceTask(parsed.getRequest(), part, order));
-            order++;
-        }
-        if (tasks.size() < 2) {
-            return SequenceParseResult.notSequence();
-        }
-        return SequenceParseResult.success(tasks);
-    }
-
     private void finishGatheringStep(Player player, List<ItemStack> extraDrops) {
         if (!isSequenceGatherPhaseActive()) {
             taskState = TaskState.DELIVERING;
@@ -863,19 +796,6 @@ final class CompanionTaskCoordinator {
             total += stack.getCount();
         }
         return total;
-    }
-
-    private String normalizeTaskText(String rawPart) {
-        if (rawPart == null) {
-            return "";
-        }
-        String trimmed = rawPart.trim();
-        if (trimmed.isEmpty()) {
-            return "";
-        }
-        String withoutFirst = SEQUENCE_FIRST_PREFIX_PATTERN.matcher(trimmed).replaceFirst("");
-        String withoutNext = SEQUENCE_NEXT_PREFIX_PATTERN.matcher(withoutFirst).replaceFirst("");
-        return withoutNext.trim();
     }
 
     private String parseReasonKey(CompanionCommandParser.ParseError error) {

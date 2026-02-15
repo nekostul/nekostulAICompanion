@@ -2,6 +2,7 @@ package ru.nekostul.aicompanion.entity.command;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.concurrent.ThreadLocalRandom;
 
 import ru.nekostul.aicompanion.entity.resource.CompanionBlockRegistry;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
@@ -71,9 +72,11 @@ public final class CompanionCommandParser {
     }
 
     private static final Pattern NUMBER_PATTERN = Pattern.compile("(\\d+)");
-    private static final int DEFAULT_BLOCK_AMOUNT = 16;
-    private static final int SMALL_BLOCK_AMOUNT = 8;
     private static final int DEFAULT_BUCKET_AMOUNT = 1;
+    private static final int DEFAULT_ORE_MIN_AMOUNT = 1;
+    private static final int DEFAULT_ORE_MAX_AMOUNT = 5;
+    private static final int DEFAULT_BLOCK_MIN_AMOUNT = 1;
+    private static final int DEFAULT_BLOCK_MAX_AMOUNT = 16;
 
     public CommandRequest parse(String message) {
         return parseDetailed(message).getRequest();
@@ -155,13 +158,35 @@ public final class CompanionCommandParser {
         if (resourceType.isBucketResource()) {
             return DEFAULT_BUCKET_AMOUNT;
         }
-        if (normalized.contains("\u043d\u0435\u043c\u043d\u043e\u0433\u043e")
-                || normalized.contains("\u043d\u0435\u043c\u043d\u043e\u0436\u043a\u043e")
-                || normalized.contains("\u043f\u0430\u0440\u0443")
-                || normalized.contains("\u043d\u0435\u0441\u043a\u043e\u043b\u044c\u043a")) {
-            return SMALL_BLOCK_AMOUNT;
+        if (isOreResource(resourceType)) {
+            return randomInclusive(DEFAULT_ORE_MIN_AMOUNT, DEFAULT_ORE_MAX_AMOUNT);
         }
-        return DEFAULT_BLOCK_AMOUNT;
+        return randomInclusive(DEFAULT_BLOCK_MIN_AMOUNT, DEFAULT_BLOCK_MAX_AMOUNT);
+    }
+
+    private int randomInclusive(int min, int max) {
+        if (max <= min) {
+            return min;
+        }
+        return ThreadLocalRandom.current().nextInt(min, max + 1);
+    }
+
+    private boolean isOreResource(CompanionResourceType type) {
+        if (type == null) {
+            return false;
+        }
+        return switch (type) {
+            case ORE,
+                 COAL_ORE,
+                 IRON_ORE,
+                 COPPER_ORE,
+                 GOLD_ORE,
+                 REDSTONE_ORE,
+                 LAPIS_ORE,
+                 DIAMOND_ORE,
+                 EMERALD_ORE -> true;
+            default -> false;
+        };
     }
 
     private CompanionTreeRequestMode parseTreeMode(String normalized, CompanionResourceType resourceType) {
@@ -181,4 +206,3 @@ public final class CompanionCommandParser {
         return CompanionRussianNormalizer.normalize(message);
     }
 }
-

@@ -67,6 +67,8 @@ import ru.nekostul.aicompanion.entity.inventory.CompanionDropTracker;
 import ru.nekostul.aicompanion.entity.inventory.CompanionEquipment;
 import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
 import ru.nekostul.aicompanion.entity.inventory.CompanionInventoryExchange;
+import ru.nekostul.aicompanion.entity.movement.CompanionMovementSpeed;
+import ru.nekostul.aicompanion.entity.movement.CompanionTeleportPositioning;
 import ru.nekostul.aicompanion.entity.mining.CompanionGatheringController;
 import ru.nekostul.aicompanion.entity.tool.CompanionToolHandler;
 import ru.nekostul.aicompanion.entity.tool.CompanionToolSlot;
@@ -971,11 +973,7 @@ public class CompanionEntity extends PathfinderMob {
     }
 
     private double hostilePlayerNavSpeed(double desiredSpeed) {
-        double baseSpeed = this.getAttributeValue(Attributes.MOVEMENT_SPEED);
-        if (baseSpeed <= 1.0E-4D) {
-            return desiredSpeed;
-        }
-        return desiredSpeed / baseSpeed;
+        return CompanionMovementSpeed.fallbackDesiredByAttribute(this, desiredSpeed);
     }
 
     private boolean performCriticalRetaliationHit(Player target) {
@@ -1495,11 +1493,7 @@ public class CompanionEntity extends PathfinderMob {
     }
 
     private double navSpeed(double desiredSpeed) {
-        double baseSpeed = this.getAttributeValue(Attributes.MOVEMENT_SPEED);
-        if (baseSpeed <= 0.0D) {
-            return desiredSpeed;
-        }
-        return desiredSpeed / baseSpeed;
+        return CompanionMovementSpeed.fallbackDesiredByAttribute(this, desiredSpeed);
     }
 
     private boolean shouldIssueHomeMoveTo(Vec3 target, long gameTime) {
@@ -1852,6 +1846,7 @@ public class CompanionEntity extends PathfinderMob {
             syncHungerFullFlag();
             tickAmbientChat();
             tickBoatRideRequest(gameTime);
+            hideSwordWhileInBoat();
             tickTeleportRequest();
         }
     }
@@ -2418,44 +2413,16 @@ public class CompanionEntity extends PathfinderMob {
     }
 
     private Vec3 resolveTeleportTarget(Player player) {
-        if (player == null) {
-            return this.position();
-        }
-        Vec3 playerPos = player.position();
-        Vec3 forward = player.getLookAngle();
-        forward = new Vec3(forward.x, 0.0D, forward.z);
-        if (forward.lengthSqr() < 1.0E-4D) {
-            float yaw = player.getYRot() * ((float) Math.PI / 180.0F);
-            forward = new Vec3(-Mth.sin(yaw), 0.0D, Mth.cos(yaw));
-        }
-        forward = forward.normalize();
-        Vec3 right = new Vec3(-forward.z, 0.0D, forward.x);
-        Vec3 behind = forward.scale(-TELEPORT_BEHIND_DISTANCE);
-        Vec3[] offsets = new Vec3[]{
-                behind,
-                behind.add(right.scale(TELEPORT_SIDE_DISTANCE)),
-                behind.add(right.scale(-TELEPORT_SIDE_DISTANCE)),
-                right.scale(TELEPORT_SIDE_DISTANCE + 1.0D),
-                right.scale(-(TELEPORT_SIDE_DISTANCE + 1.0D)),
-                behind.scale(1.5D)
-        };
-        Vec3 spot = findTeleportSpot(playerPos, forward, offsets, true);
-        if (spot != null) {
-            return spot;
-        }
-        spot = findTeleportSpot(playerPos, forward, offsets, false);
-        if (spot != null) {
-            return spot;
-        }
-        spot = findNearbySafeSpot(playerPos, forward, TELEPORT_NEARBY_RADIUS, true);
-        if (spot != null) {
-            return spot;
-        }
-        spot = findNearbySafeSpot(playerPos, forward, TELEPORT_NEARBY_RADIUS, false);
-        if (spot != null) {
-            return spot;
-        }
-        return this.position();
+        return CompanionTeleportPositioning.resolveTeleportTarget(
+                this,
+                player,
+                TELEPORT_BEHIND_DISTANCE,
+                TELEPORT_SIDE_DISTANCE,
+                TELEPORT_NEARBY_RADIUS,
+                TELEPORT_FOV_DOT_THRESHOLD,
+                TELEPORT_Y_SEARCH_UP,
+                TELEPORT_Y_SEARCH_DOWN
+        );
     }
 
     private CompanionEntity moveToPlayerDimension(ServerPlayer player) {
@@ -2566,166 +2533,15 @@ public class CompanionEntity extends PathfinderMob {
     }
 
     private static Vec3 resolveInitialDimensionTeleportTarget(ServerPlayer player) {
-        if (player == null) {
-            return Vec3.ZERO;
-        }
-        Vec3 playerPos = player.position();
-        Vec3 forward = player.getLookAngle();
-        forward = new Vec3(forward.x, 0.0D, forward.z);
-        if (forward.lengthSqr() < 1.0E-4D) {
-            float yaw = player.getYRot() * ((float) Math.PI / 180.0F);
-            forward = new Vec3(-Mth.sin(yaw), 0.0D, Mth.cos(yaw));
-        } else {
-            forward = forward.normalize();
-        }
-        return new Vec3(
-                playerPos.x - forward.x * TELEPORT_BEHIND_DISTANCE,
-                playerPos.y,
-                playerPos.z - forward.z * TELEPORT_BEHIND_DISTANCE
-        );
-    }
-
-    private Vec3 findTeleportSpot(Vec3 playerPos, Vec3 forward, Vec3[] offsets, boolean requireOutOfView) {
-        for (Vec3 offset : offsets) {
-            Vec3 candidate = new Vec3(playerPos.x + offset.x, playerPos.y, playerPos.z + offset.z);
-            Vec3 adjusted = adjustTeleportY(candidate);
-            if (adjusted == null) {
-                continue;
-            }
-            if (requireOutOfView && !isOutOfPlayerView(playerPos, forward, adjusted)) {
-                continue;
-            }
-            return adjusted;
-        }
-        return null;
-    }
-
-    private Vec3 findNearbySafeSpot(Vec3 playerPos, Vec3 forward, int radius, boolean requireOutOfView) {
-        Vec3 best = null;
-        double bestDistance = Double.MAX_VALUE;
-        int baseX = Mth.floor(playerPos.x);
-        int baseZ = Mth.floor(playerPos.z);
-        for (int dx = -radius; dx <= radius; dx++) {
-            for (int dz = -radius; dz <= radius; dz++) {
-                if (dx == 0 && dz == 0) {
-                    continue;
-                }
-                Vec3 candidate = new Vec3(baseX + 0.5D + dx, playerPos.y, baseZ + 0.5D + dz);
-                Vec3 adjusted = adjustTeleportY(candidate);
-                if (adjusted == null) {
-                    continue;
-                }
-                if (requireOutOfView && !isOutOfPlayerView(playerPos, forward, adjusted)) {
-                    continue;
-                }
-                double distance = adjusted.distanceToSqr(playerPos);
-                if (distance < bestDistance) {
-                    bestDistance = distance;
-                    best = adjusted;
-                }
-            }
-        }
-        return best;
+        return CompanionTeleportPositioning.resolveInitialDimensionTeleportTarget(player, TELEPORT_BEHIND_DISTANCE);
     }
 
     private boolean isOutOfPlayerView(Vec3 playerPos, Vec3 forward, Vec3 targetPos) {
-        Vec3 toTarget = targetPos.subtract(playerPos);
-        toTarget = new Vec3(toTarget.x, 0.0D, toTarget.z);
-        if (toTarget.lengthSqr() < 1.0E-4D) {
-            return false;
-        }
-        double dot = forward.dot(toTarget.normalize());
-        return dot < TELEPORT_FOV_DOT_THRESHOLD;
+        return CompanionTeleportPositioning.isOutOfPlayerView(playerPos, forward, targetPos, TELEPORT_FOV_DOT_THRESHOLD);
     }
 
     private Vec3 adjustTeleportY(Vec3 basePos) {
-        Level level = this.level();
-        if (level == null) {
-            return basePos;
-        }
-        BlockPos base = BlockPos.containing(basePos);
-        for (int dy = TELEPORT_Y_SEARCH_UP; dy >= -TELEPORT_Y_SEARCH_DOWN; dy--) {
-            BlockPos feetPos = new BlockPos(base.getX(), base.getY() + dy, base.getZ());
-            BlockPos groundPos = feetPos.below();
-            if (!isSafeGround(groundPos)) {
-                continue;
-            }
-            if (!isClearForTeleport(feetPos) || !isClearForTeleport(feetPos.above())) {
-                continue;
-            }
-            Vec3 candidate = new Vec3(basePos.x, feetPos.getY(), basePos.z);
-            if (isSafeTeleportPosition(candidate)) {
-                return candidate;
-            }
-        }
-        return null;
-    }
-
-    private boolean isSafeTeleportPosition(Vec3 pos) {
-        Level level = this.level();
-        if (level == null) {
-            return true;
-        }
-        BlockPos blockPos = BlockPos.containing(pos);
-        BlockPos groundPos = blockPos.below();
-        if (!level.hasChunkAt(blockPos) || !level.hasChunkAt(groundPos)) {
-            return false;
-        }
-        if (!isSafeGround(groundPos)) {
-            return false;
-        }
-        if (!isClearForTeleport(blockPos) || !isClearForTeleport(blockPos.above())) {
-            return false;
-        }
-        AABB box = this.getBoundingBox().move(pos.x - this.getX(), pos.y - this.getY(), pos.z - this.getZ());
-        return level.noCollision(this, box);
-    }
-
-    private boolean isSafeGround(BlockPos groundPos) {
-        Level level = this.level();
-        if (level == null || groundPos == null) {
-            return false;
-        }
-        if (groundPos.getY() < level.getMinBuildHeight()) {
-            return false;
-        }
-        if (!level.hasChunkAt(groundPos)) {
-            return false;
-        }
-        BlockState state = level.getBlockState(groundPos);
-        if (!state.getFluidState().isEmpty()) {
-            return false;
-        }
-        if (!state.isFaceSturdy(level, groundPos, Direction.UP)) {
-            return false;
-        }
-        return !isDamagingBlock(state);
-    }
-
-    private boolean isClearForTeleport(BlockPos pos) {
-        Level level = this.level();
-        if (level == null || pos == null) {
-            return false;
-        }
-        if (!level.hasChunkAt(pos)) {
-            return false;
-        }
-        BlockState state = level.getBlockState(pos);
-        if (!state.getFluidState().isEmpty()) {
-            return false;
-        }
-        return state.getCollisionShape(level, pos).isEmpty();
-    }
-
-    private boolean isDamagingBlock(BlockState state) {
-        return state.is(Blocks.MAGMA_BLOCK)
-                || state.is(Blocks.CAMPFIRE)
-                || state.is(Blocks.SOUL_CAMPFIRE)
-                || state.is(Blocks.CACTUS)
-                || state.is(Blocks.SWEET_BERRY_BUSH)
-                || state.is(Blocks.WITHER_ROSE)
-                || state.is(Blocks.FIRE)
-                || state.is(Blocks.SOUL_FIRE);
+        return CompanionTeleportPositioning.adjustTeleportY(this, basePos, TELEPORT_Y_SEARCH_UP, TELEPORT_Y_SEARCH_DOWN);
     }
 
     private String pickTeleportRequestKey(long gameTime) {
@@ -3426,5 +3242,23 @@ public class CompanionEntity extends PathfinderMob {
         }
         setToolSlot(slot, mainHand);
         setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+    }
+
+    private void hideSwordWhileInBoat() {
+        if (!this.isPassenger() || !(this.getVehicle() instanceof Boat)) {
+            return;
+        }
+        ItemStack mainHand = this.getMainHandItem();
+        if (mainHand.isEmpty() || CompanionToolSlot.fromStack(mainHand) != CompanionToolSlot.SWORD) {
+            return;
+        }
+        if (getToolSlot(CompanionToolSlot.SWORD).isEmpty()) {
+            setToolSlot(CompanionToolSlot.SWORD, mainHand.copy());
+            setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+            return;
+        }
+        if (inventory.add(mainHand.copy())) {
+            setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+        }
     }
 }

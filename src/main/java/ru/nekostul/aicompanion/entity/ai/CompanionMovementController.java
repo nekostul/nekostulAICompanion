@@ -5,6 +5,7 @@ import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
+import ru.nekostul.aicompanion.entity.movement.CompanionMovementSpeed;
 
 final class CompanionMovementController {
     private enum MoveState {
@@ -123,11 +124,7 @@ final class CompanionMovementController {
     }
 
     private double speedModifierFor(double desiredSpeed) {
-        double base = mob.getAttributeValue(Attributes.MOVEMENT_SPEED);
-        if (base <= 0.0D) {
-            return 0.0D;
-        }
-        return desiredSpeed / base;
+        return CompanionMovementSpeed.strictByAttribute(mob, desiredSpeed);
     }
 
     private void tryJump(long gameTime) {

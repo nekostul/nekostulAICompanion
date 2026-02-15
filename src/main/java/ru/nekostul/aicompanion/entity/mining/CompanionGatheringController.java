@@ -9,7 +9,6 @@ import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.EquipmentSlot;
-import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -29,10 +28,12 @@ import net.minecraftforge.common.util.FakePlayerFactory;
 import java.util.List;
 import java.util.UUID;
 
+import ru.nekostul.aicompanion.CompanionConfig;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
 import ru.nekostul.aicompanion.entity.inventory.CompanionEquipment;
 import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
 import ru.nekostul.aicompanion.entity.inventory.CompanionDropTracker;
+import ru.nekostul.aicompanion.entity.movement.CompanionMovementSpeed;
 import ru.nekostul.aicompanion.entity.resource.CompanionBlockRegistry;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
@@ -74,6 +75,7 @@ public final class CompanionGatheringController {
     private static final int STONE_DIG_MAX_DEPTH = 8;
     private static final int STUCK_RETRY_INTERVAL_TICKS = 40;
     private static final int STUCK_RETRY_LIMIT = 10;
+    private static final int MOVE_REPATH_TICKS = 6;
     private static final int ORE_DROP_COLLECT_WINDOW_TICKS = 80;
     private static final double STUCK_MOVE_EPSILON_SQR = 0.0004D;
     private static final double MOVE_SPEED_BLOCKS_PER_TICK = 0.35D;
@@ -94,6 +96,8 @@ public final class CompanionGatheringController {
     private BlockPos targetBlock;
     private BlockPos pendingResourceBlock;
     private BlockPos pendingSightPos;
+    private BlockPos pendingOreResourceRoot;
+    private int pendingOreBrokenBlocks;
     private BlockPos digStonePos;
     private long nextScanTick = -1L;
     private BlockPos cachedTarget;
@@ -296,7 +300,7 @@ public final class CompanionGatheringController {
         if (!owner.getNavigation().isDone()) {
             return false;
         }
-        return lastMoveAttemptTick < 0L || gameTime - lastMoveAttemptTick >= STUCK_RETRY_INTERVAL_TICKS;
+        return lastMoveAttemptTick < 0L || gameTime - lastMoveAttemptTick >= MOVE_REPATH_TICKS;
     }
 
     private void rememberMoveTo(BlockPos moveTarget, long gameTime) {
@@ -326,6 +330,7 @@ public final class CompanionGatheringController {
         if (targetBlock == null) {
             return Result.IN_PROGRESS;
         }
+        refreshPendingTargetIfVisible();
         BlockState state = owner.level().getBlockState(targetBlock);
         boolean diggingForStone = digStonePos != null;
         if (state.isAir()) {
@@ -395,6 +400,9 @@ public final class CompanionGatheringController {
                 clearTargetState();
                 return Result.NEED_CHEST;
             }
+            if (isTransitObstacle) {
+                recordPendingOreObstacleMined();
+            }
             lastMinedBlock = targetBlock;
             if (lastMineUsedOreHarvester) {
                 startOreDropCollection(targetBlock, gameTime);
@@ -415,6 +423,9 @@ public final class CompanionGatheringController {
                 return Result.IN_PROGRESS;
             }
             if (advancePendingTarget()) {
+                if (isPendingOreLimitReached()) {
+                    clearTargetState();
+                }
                 return Result.IN_PROGRESS;
             }
             clearTargetState();
@@ -422,9 +433,26 @@ public final class CompanionGatheringController {
         return Result.IN_PROGRESS;
     }
 
+    private void refreshPendingTargetIfVisible() {
+        if (pendingResourceBlock == null) {
+            return;
+        }
+        // If the real resource is now visible, stop tunneling through old blockers immediately
+        // and move directly to the real target.
+        if (miningReach.canSee(pendingResourceBlock)) {
+            targetBlock = pendingResourceBlock;
+            pendingResourceBlock = null;
+            pendingSightPos = null;
+            clearPendingOrePathState();
+            resetMiningProgress();
+            resetMoveTracking();
+        }
+    }
+
     private TargetSelection findTarget(CompanionResourceType type, long gameTime) {
+        int scanRadius = scanRadiusForType(type);
         if (resourceAnchor != null) {
-            if (owner.blockPosition().distSqr(resourceAnchor) <= (double) (RESOURCE_SCAN_RADIUS * RESOURCE_SCAN_RADIUS)) {
+            if (owner.blockPosition().distSqr(resourceAnchor) <= (double) (scanRadius * scanRadius)) {
                 TargetSelection local = findLocalTarget(type);
                 if (local != null) {
                     return local;
@@ -449,7 +477,7 @@ public final class CompanionGatheringController {
         }
         BlockPos origin = owner.blockPosition();
         if (!isScanCompatible(type, origin)) {
-            startVisibleScan(type, origin);
+            startVisibleScan(type, origin, scanRadius);
         }
         if (scanPhase == ScanPhase.STONE_DIG) {
             TargetSelection selection = stoneDigScanState != null
@@ -667,14 +695,17 @@ public final class CompanionGatheringController {
         if (!isBreakable(hitState, hitPos)) {
             return null;
         }
+        if (isOreRequest(activeType) && exceedsOccludedOreDepth(hitPos, resourcePos)) {
+            return null;
+        }
         return new TargetSelection(hitPos, resourcePos, sightPos, null, resourcePos);
     }
 
-    private void startVisibleScan(CompanionResourceType type, BlockPos origin) {
+    private void startVisibleScan(CompanionResourceType type, BlockPos origin, int scanRadius) {
         scanPhase = ScanPhase.VISIBLE;
         boolean requireLineOfSight = type == CompanionResourceType.LOG;
-        scanState = new ScanState(type, origin, RESOURCE_SCAN_RADIUS, RESOURCE_SCAN_RADIUS, origin,
-                RESOURCE_SCAN_RADIUS, false, requireLineOfSight, VISIBLE_FOV_DOT, true);
+        scanState = new ScanState(type, origin, scanRadius, scanRadius, origin,
+                scanRadius, false, requireLineOfSight, VISIBLE_FOV_DOT, true);
         stoneDigScanState = null;
     }
 
@@ -1020,11 +1051,13 @@ public final class CompanionGatheringController {
         targetBlock = selection.target;
         pendingResourceBlock = selection.pendingResource;
         pendingSightPos = selection.pendingResource != null ? selection.sightPos : null;
+        updatePendingOrePathTarget(selection.pendingResource);
         digStonePos = selection.digStonePos;
         BlockPos anchorCandidate = selection.pendingResource != null ? selection.target : selection.resourcePos;
+        int scanRadius = scanRadiusForType(activeType);
         if (resourceAnchor == null
                 || owner.blockPosition().distSqr(resourceAnchor)
-                > (double) (RESOURCE_SCAN_RADIUS * RESOURCE_SCAN_RADIUS)) {
+                > (double) (scanRadius * scanRadius)) {
             resourceAnchor = anchorCandidate;
         }
     }
@@ -1033,16 +1066,27 @@ public final class CompanionGatheringController {
         if (pendingResourceBlock == null) {
             return false;
         }
+        if (miningReach.canSee(pendingResourceBlock)) {
+            targetBlock = pendingResourceBlock;
+            pendingResourceBlock = null;
+            pendingSightPos = null;
+            clearPendingOrePathState();
+            resetMiningProgress();
+            resetMoveTracking();
+            return true;
+        }
         BlockPos sight = pendingSightPos != null ? pendingSightPos : pendingResourceBlock;
         TargetSelection selection = resolveObstruction(pendingResourceBlock, sight);
         if (selection == null) {
             pendingResourceBlock = null;
             pendingSightPos = null;
+            clearPendingOrePathState();
             return false;
         }
         targetBlock = selection.target;
         pendingResourceBlock = selection.pendingResource;
         pendingSightPos = selection.pendingResource != null ? selection.sightPos : null;
+        updatePendingOrePathTarget(selection.pendingResource);
         resetMiningProgress();
         return true;
     }
@@ -1051,6 +1095,7 @@ public final class CompanionGatheringController {
         targetBlock = null;
         pendingResourceBlock = null;
         pendingSightPos = null;
+        clearPendingOrePathState();
         digStonePos = null;
         resetMiningProgress();
         resetScanState();
@@ -1113,6 +1158,56 @@ public final class CompanionGatheringController {
         resetMoveTracking();
     }
 
+    private void updatePendingOrePathTarget(BlockPos pendingResource) {
+        if (!isOreRequest(activeType) || pendingResource == null) {
+            clearPendingOrePathState();
+            return;
+        }
+        if (pendingOreResourceRoot == null || !pendingOreResourceRoot.equals(pendingResource)) {
+            pendingOreResourceRoot = pendingResource;
+            pendingOreBrokenBlocks = 0;
+        }
+    }
+
+    private void recordPendingOreObstacleMined() {
+        if (!isOreRequest(activeType) || pendingResourceBlock == null) {
+            return;
+        }
+        if (pendingOreResourceRoot == null || !pendingOreResourceRoot.equals(pendingResourceBlock)) {
+            pendingOreResourceRoot = pendingResourceBlock;
+            pendingOreBrokenBlocks = 1;
+            return;
+        }
+        pendingOreBrokenBlocks++;
+    }
+
+    private boolean isPendingOreLimitReached() {
+        return isOreRequest(activeType)
+                && pendingResourceBlock != null
+                && pendingOreBrokenBlocks >= CompanionConfig.getMaxOccludedOreBlocks();
+    }
+
+    private void clearPendingOrePathState() {
+        pendingOreResourceRoot = null;
+        pendingOreBrokenBlocks = 0;
+    }
+
+    private int scanRadiusForType(CompanionResourceType type) {
+        return isOreRequest(type) ? CompanionConfig.getOreScanRadius() : RESOURCE_SCAN_RADIUS;
+    }
+
+    private boolean exceedsOccludedOreDepth(BlockPos blockerPos, BlockPos resourcePos) {
+        if (blockerPos == null || resourcePos == null) {
+            return false;
+        }
+        int maxOccluded = CompanionConfig.getMaxOccludedOreBlocks();
+        int dx = Math.abs(blockerPos.getX() - resourcePos.getX());
+        int dy = Math.abs(blockerPos.getY() - resourcePos.getY());
+        int dz = Math.abs(blockerPos.getZ() - resourcePos.getZ());
+        int depth = Math.max(dx, Math.max(dy, dz));
+        return depth > maxOccluded;
+    }
+
     private static int[] buildOffsets(int radius) {
         int size = radius * 2 + 1;
         int[] offsets = new int[size];
@@ -1126,11 +1221,7 @@ public final class CompanionGatheringController {
     }
 
     private double speedModifierFor(double desiredSpeed) {
-        double base = owner.getAttributeValue(Attributes.MOVEMENT_SPEED);
-        if (base <= 0.0D) {
-            return 0.0D;
-        }
-        return desiredSpeed / base;
+        return CompanionMovementSpeed.strictByAttribute(owner, desiredSpeed);
     }
 
     private static final class ScanState {
@@ -1334,4 +1425,3 @@ public final class CompanionGatheringController {
         }
     }
 }
-

@@ -1,6 +1,5 @@
 package ru.nekostul.aicompanion.entity;
 
-import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Player;
@@ -9,6 +8,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 import ru.nekostul.aicompanion.entity.inventory.CompanionEquipment;
+import ru.nekostul.aicompanion.entity.movement.CompanionMovementSpeed;
 
 final class CompanionCombatController {
     private static final int DEFENSE_RADIUS = 12;
@@ -177,11 +177,7 @@ final class CompanionCombatController {
     }
 
     private double navSpeed(double desiredSpeed) {
-        double baseSpeed = owner.getAttributeValue(Attributes.MOVEMENT_SPEED);
-        if (baseSpeed <= 1.0E-4D) {
-            return desiredSpeed;
-        }
-        return desiredSpeed / baseSpeed;
+        return CompanionMovementSpeed.fallbackDesiredByAttribute(owner, desiredSpeed);
     }
 
     private Monster findThreat(Player player) {

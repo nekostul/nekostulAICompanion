@@ -4,9 +4,9 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
-import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.core.BlockPos;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
+import ru.nekostul.aicompanion.entity.movement.CompanionMovementSpeed;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
 
 import java.util.ArrayList;
@@ -168,11 +168,6 @@ public final class CompanionDeliveryController {
     }
 
     private double speedModifierFor(double desiredSpeed) {
-        double base = owner.getAttributeValue(Attributes.MOVEMENT_SPEED);
-        if (base <= 0.0D) {
-            return 0.0D;
-        }
-        return desiredSpeed / base;
+        return CompanionMovementSpeed.strictByAttribute(owner, desiredSpeed);
     }
 }
-

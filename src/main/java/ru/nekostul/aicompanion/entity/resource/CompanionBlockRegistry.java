@@ -150,7 +150,7 @@ public final class CompanionBlockRegistry {
                     false,
                     state -> state.is(Blocks.SAND) || state.is(Blocks.RED_SAND),
                     stack -> stack.is(Items.SAND) || stack.is(Items.RED_SAND),
-                    new String[]{"песок", "песоч", "sand"}
+                    new String[]{"песок", "песоч", "песк", "sand"}
             ),
             new ResourceEntry(
                     CompanionResourceType.GRAVEL,
@@ -312,5 +312,4 @@ public final class CompanionBlockRegistry {
         }
     }
 }
-
 

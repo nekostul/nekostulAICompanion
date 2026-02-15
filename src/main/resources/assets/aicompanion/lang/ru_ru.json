@@ -196,6 +196,7 @@
   "entity.aicompanion.companion.gather.limit.blocks.one": "Максимум за раз: %s блок",
   "entity.aicompanion.companion.gather.limit.blocks.few": "Максимум за раз: %s блока",
   "entity.aicompanion.companion.gather.limit.blocks.many": "Максимум за раз: %s блоков",
+  "entity.aicompanion.companion.gather.limit.ore": "Максимум %s руды",
   "entity.aicompanion.companion.gather.limit.trees.one": "Максимум за раз: %s полное дерево",
   "entity.aicompanion.companion.gather.limit.trees.few": "Максимум за раз: %s полных дерева",
   "entity.aicompanion.companion.gather.limit.trees.many": "Максимум за раз: %s полных деревьев",

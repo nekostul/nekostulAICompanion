@@ -2,7 +2,6 @@ package ru.nekostul.aicompanion.entity;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
-import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -13,6 +12,7 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
+import ru.nekostul.aicompanion.entity.movement.CompanionMovementSpeed;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
 
@@ -149,11 +149,7 @@ final class CompanionBucketHandler {
     }
 
     private double speedModifierFor(double desiredSpeed) {
-        double base = owner.getAttributeValue(Attributes.MOVEMENT_SPEED);
-        if (base <= 0.0D) {
-            return 0.0D;
-        }
-        return desiredSpeed / base;
+        return CompanionMovementSpeed.strictByAttribute(owner, desiredSpeed);
     }
 
     private BlockPos findFluidSource(CompanionResourceType type, long gameTime) {

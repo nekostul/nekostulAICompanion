@@ -9,7 +9,6 @@ import net.minecraft.tags.ItemTags;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.EquipmentSlot;
-import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BlockItem;
@@ -44,6 +43,7 @@ import ru.nekostul.aicompanion.entity.resource.CompanionBlockRegistry;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
 import ru.nekostul.aicompanion.entity.inventory.CompanionEquipment;
 import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
+import ru.nekostul.aicompanion.entity.movement.CompanionMovementSpeed;
 import ru.nekostul.aicompanion.entity.mining.CompanionMiningAnimator;
 import ru.nekostul.aicompanion.entity.mining.CompanionMiningReach;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
@@ -1530,11 +1530,7 @@ public final class CompanionTreeHarvestController {
     }
 
     private double speedModifierFor(double desiredSpeed) {
-        double base = owner.getAttributeValue(Attributes.MOVEMENT_SPEED);
-        if (base <= 0.0D) {
-            return 0.0D;
-        }
-        return desiredSpeed / base;
+        return CompanionMovementSpeed.strictByAttribute(owner, desiredSpeed);
     }
 
     private void resetMiningProgress() {

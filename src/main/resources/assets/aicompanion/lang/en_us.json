@@ -196,6 +196,7 @@
   "entity.aicompanion.companion.gather.limit.blocks.one": "Maximum per task: %s block",
   "entity.aicompanion.companion.gather.limit.blocks.few": "Maximum per task: %s blocks",
   "entity.aicompanion.companion.gather.limit.blocks.many": "Maximum per task: %s blocks",
+  "entity.aicompanion.companion.gather.limit.ore": "Maximum %s ore",
   "entity.aicompanion.companion.gather.limit.trees.one": "Maximum per task: %s full tree",
   "entity.aicompanion.companion.gather.limit.trees.few": "Maximum per task: %s full trees",
   "entity.aicompanion.companion.gather.limit.trees.many": "Maximum per task: %s full trees",

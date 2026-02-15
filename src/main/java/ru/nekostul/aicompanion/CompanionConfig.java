@@ -32,6 +32,24 @@ public final class CompanionConfig {
                     "If player asks for more, amount is automatically clamped to this limit.")
             .defineInRange("limits.maxTreesPerTask", 5, 1, 256);
 
+    public static final ForgeConfigSpec.IntValue MAX_ORES_PER_TASK = BUILDER
+            .comment("Maximum number of ore items per single task.",
+                    "Default value is intentionally low because ore tunneling is unstable.",
+                    "Increasing this limit above 5 is VERY UNSTABLE and may cause NPC path/mining issues.")
+            .defineInRange("limits.maxOresPerTask", 5, 1, 256);
+
+    public static final ForgeConfigSpec.IntValue ORE_SCAN_RADIUS = BUILDER
+            .comment("Ore scan radius in blocks.",
+                    "Default value is intentionally low because long-range ore search is unstable.",
+                    "Increasing this limit above 20 is VERY UNSTABLE and may cause wrong pathing/target switching.")
+            .defineInRange("limits.oreScanRadius", 20, 1, 128);
+
+    public static final ForgeConfigSpec.IntValue MAX_OCCLUDED_ORE_BLOCKS = BUILDER
+            .comment("Maximum number of blocking blocks between NPC and ore target.",
+                    "NPC can mine through blockers only within this depth.",
+                    "Increasing this limit above 5 is VERY UNSTABLE and may cause tunneling/path issues.")
+            .defineInRange("limits.maxOccludedOreBlocks", 5, 0, 64);
+
     public static final ForgeConfigSpec.BooleanValue OREHARVESTER_INTEGRATION = BUILDER
             .comment("Enable integration with oreharvester mod (modid: oreharvester).",
                     "If enabled and oreharvester is installed, NPC uses oreharvester for full ore mining.",
@@ -57,6 +75,18 @@ public final class CompanionConfig {
 
     public static int getMaxTreesPerTask() {
         return MAX_TREES_PER_TASK.get();
+    }
+
+    public static int getMaxOresPerTask() {
+        return MAX_ORES_PER_TASK.get();
+    }
+
+    public static int getOreScanRadius() {
+        return ORE_SCAN_RADIUS.get();
+    }
+
+    public static int getMaxOccludedOreBlocks() {
+        return MAX_OCCLUDED_ORE_BLOCKS.get();
     }
 
     public static boolean isOreHarvesterIntegrationEnabled() {
@@ -98,6 +128,4 @@ public final class CompanionConfig {
         }
     }
 }
-
-
 
