@@ -32,6 +32,12 @@ public final class CompanionConfig {
                     "If player asks for more, amount is automatically clamped to this limit.")
             .defineInRange("limits.maxTreesPerTask", 5, 1, 256);
 
+    public static final ForgeConfigSpec.BooleanValue OREHARVESTER_INTEGRATION = BUILDER
+            .comment("Enable integration with oreharvester mod (modid: oreharvester).",
+                    "If enabled and oreharvester is installed, NPC uses oreharvester for full ore mining.",
+                    "If disabled or oreharvester is missing, NPC uses default mining logic.")
+            .define("oreharvester_integration", true);
+
     public static final ForgeConfigSpec SPEC = BUILDER.build();
 
     private CompanionConfig() {
@@ -51,6 +57,10 @@ public final class CompanionConfig {
 
     public static int getMaxTreesPerTask() {
         return MAX_TREES_PER_TASK.get();
+    }
+
+    public static boolean isOreHarvesterIntegrationEnabled() {
+        return OREHARVESTER_INTEGRATION.get();
     }
 
     public static void setFullTreeChopEnabled(boolean enabled) {

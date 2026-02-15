@@ -7,6 +7,7 @@ import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.ItemTags;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Player;
@@ -20,6 +21,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.common.util.FakePlayer;
 import net.minecraftforge.common.util.FakePlayerFactory;
@@ -30,6 +32,7 @@ import java.util.UUID;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
 import ru.nekostul.aicompanion.entity.inventory.CompanionEquipment;
 import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
+import ru.nekostul.aicompanion.entity.inventory.CompanionDropTracker;
 import ru.nekostul.aicompanion.entity.resource.CompanionBlockRegistry;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceRequest;
 import ru.nekostul.aicompanion.entity.resource.CompanionResourceType;
@@ -71,6 +74,7 @@ public final class CompanionGatheringController {
     private static final int STONE_DIG_MAX_DEPTH = 8;
     private static final int STUCK_RETRY_INTERVAL_TICKS = 40;
     private static final int STUCK_RETRY_LIMIT = 10;
+    private static final int ORE_DROP_COLLECT_WINDOW_TICKS = 80;
     private static final double STUCK_MOVE_EPSILON_SQR = 0.0004D;
     private static final double MOVE_SPEED_BLOCKS_PER_TICK = 0.35D;
     private static final GameProfile MINING_PROFILE = new GameProfile(
@@ -100,6 +104,9 @@ public final class CompanionGatheringController {
     private int miningProgressStage = -1;
     private BlockPos resourceAnchor;
     private BlockPos lastMinedBlock;
+    private BlockPos oreDropCollectCenter;
+    private long oreDropCollectUntilTick = -1L;
+    private boolean lastMineUsedOreHarvester;
     private long lastProgressTick = -1L;
     private long lastRestartTick = -1L;
     private int stuckRetryCount;
@@ -140,6 +147,7 @@ public final class CompanionGatheringController {
             clearTargetState();
             return finalizeResult(Result.NEED_CHEST, gameTime);
         }
+        tickOreDropCollection(gameTime);
         if (inventory.countMatching(activeType::matchesItem) >= activeAmount) {
             resetRequestState();
             return finalizeResult(Result.DONE, gameTime);
@@ -193,7 +201,6 @@ public final class CompanionGatheringController {
             lastProgressHash = computeProgressHash();
             lastProgressMining = miningProgress;
             lastProgressPos = owner.position();
-            stuckRetryCount = 0;
             return;
         }
         Vec3 currentPos = owner.position();
@@ -210,12 +217,12 @@ public final class CompanionGatheringController {
         int progressHash = computeProgressHash();
         boolean stateChanged = progressHash != lastProgressHash;
         if (stateChanged || movementProgress || miningAdvanced) {
-            lastProgressTick = gameTime;
             lastProgressHash = progressHash;
             if (stateChanged || movementProgress) {
                 lastProgressPos = currentPos;
             }
-            if (stateChanged || movementProgress || miningAdvanced) {
+            if (movementProgress || miningAdvanced) {
+                lastProgressTick = gameTime;
                 stuckRetryCount = 0;
             }
         }
@@ -263,12 +270,11 @@ public final class CompanionGatheringController {
         if (miningProgress > 0.0F) {
             return null;
         }
-        if (stuckRetryCount >= STUCK_RETRY_LIMIT) {
-            restartStuckSearch(gameTime);
-            return Result.FAILED;
-        }
         stuckRetryCount++;
         restartStuckSearch(gameTime);
+        if (stuckRetryCount >= STUCK_RETRY_LIMIT) {
+            return Result.FAILED;
+        }
         return Result.IN_PROGRESS;
     }
 
@@ -390,6 +396,9 @@ public final class CompanionGatheringController {
                 return Result.NEED_CHEST;
             }
             lastMinedBlock = targetBlock;
+            if (lastMineUsedOreHarvester) {
+                startOreDropCollection(targetBlock, gameTime);
+            }
             if (diggingForStone) {
                 if (targetBlock.equals(digStonePos)) {
                     digStonePos = null;
@@ -760,13 +769,155 @@ public final class CompanionGatheringController {
         return state.getDestroySpeed(owner.level(), pos) >= 0.0F;
     }
 
+    private boolean isOreRequest(CompanionResourceType type) {
+        if (type == null) {
+            return false;
+        }
+        return switch (type) {
+            case ORE, COAL_ORE, IRON_ORE, COPPER_ORE, GOLD_ORE, REDSTONE_ORE, LAPIS_ORE, DIAMOND_ORE, EMERALD_ORE -> true;
+            default -> false;
+        };
+    }
+
+    private boolean tryMineWithOreHarvester(BlockPos pos, BlockState state) {
+        if (!(owner.level() instanceof ServerLevel serverLevel)) {
+            return false;
+        }
+        if (!isOreRequest(activeType) || pendingResourceBlock != null) {
+            return false;
+        }
+        if (state == null || state.isAir()) {
+            return false;
+        }
+        FakePlayer fakePlayer = FakePlayerFactory.get(serverLevel, MINING_PROFILE);
+        fakePlayer.setPos(owner.getX(), owner.getY(), owner.getZ());
+        fakePlayer.setPose(owner.getPose());
+        fakePlayer.setOnGround(owner.onGround());
+        fakePlayer.setXRot(owner.getXRot());
+        fakePlayer.setYRot(owner.getYRot());
+        fakePlayer.getInventory().selected = 0;
+        prepareFakePlayerInventory(fakePlayer, owner.getMainHandItem().copy());
+        fakePlayer.getAbilities().instabuild = false;
+        fakePlayer.getAbilities().flying = false;
+        fakePlayer.getAbilities().mayfly = false;
+        fakePlayer.getAbilities().invulnerable = false;
+        fakePlayer.onUpdateAbilities();
+        int beforeCount = inventory.countMatching(activeType::matchesItem);
+        if (!CompanionOreHarvesterIntegration.tryHarvest(
+                serverLevel,
+                fakePlayer,
+                pos,
+                state,
+                owner.level().getBlockEntity(pos))) {
+            return false;
+        }
+        owner.setItemInHand(InteractionHand.MAIN_HAND, fakePlayer.getMainHandItem().copy());
+        int collectedFromFakeInventory = collectFakePlayerOreDrops(fakePlayer);
+        collectNearbyRequestDrops(pos);
+        int afterCount = inventory.countMatching(activeType::matchesItem);
+        if (afterCount > beforeCount || collectedFromFakeInventory > 0) {
+            return true;
+        }
+        BlockState currentState = owner.level().getBlockState(pos);
+        return !currentState.is(state.getBlock());
+    }
+
+    private void collectNearbyRequestDrops(BlockPos center) {
+        if (center == null || inventory.isFull()) {
+            return;
+        }
+        AABB area = new AABB(center).inflate(12.0D, 8.0D, 12.0D);
+        List<ItemEntity> drops = owner.level().getEntitiesOfClass(ItemEntity.class, area);
+        for (ItemEntity entity : drops) {
+            if (!entity.isAlive()) {
+                continue;
+            }
+            // During active mining task we only skip confirmed player block drops.
+            // Other owner/thrower metadata can be set by oreharvester for NPC-mined ore too.
+            if (CompanionDropTracker.isPlayerBlockDrop(entity)) {
+                continue;
+            }
+            ItemStack stack = entity.getItem();
+            if (stack.isEmpty() || !activeType.matchesItem(stack)) {
+                continue;
+            }
+            int before = stack.getCount();
+            inventory.add(stack);
+            int picked = before - stack.getCount();
+            if (picked <= 0) {
+                continue;
+            }
+            if (stack.isEmpty()) {
+                entity.discard();
+            } else {
+                entity.setItem(stack);
+            }
+            if (inventory.isFull()) {
+                return;
+            }
+        }
+    }
+
+    private void prepareFakePlayerInventory(FakePlayer fakePlayer, ItemStack toolStack) {
+        if (fakePlayer == null) {
+            return;
+        }
+        net.minecraft.world.entity.player.Inventory fakeInventory = fakePlayer.getInventory();
+        int selectedSlot = fakeInventory.selected;
+        for (int slot = 0; slot < fakeInventory.getContainerSize(); slot++) {
+            fakeInventory.setItem(slot, ItemStack.EMPTY);
+        }
+        ItemStack equipped = toolStack == null ? ItemStack.EMPTY : toolStack.copy();
+        fakeInventory.setItem(selectedSlot, equipped.copy());
+        fakePlayer.setItemInHand(InteractionHand.MAIN_HAND, equipped.copy());
+        fakePlayer.setItemSlot(EquipmentSlot.MAINHAND, equipped.copy());
+    }
+
+    private int collectFakePlayerOreDrops(FakePlayer fakePlayer) {
+        if (fakePlayer == null || activeType == null) {
+            return 0;
+        }
+        net.minecraft.world.entity.player.Inventory fakeInventory = fakePlayer.getInventory();
+        int selectedSlot = fakeInventory.selected;
+        int collected = 0;
+        boolean canStore = !inventory.isFull();
+        for (int slot = 0; slot < fakeInventory.getContainerSize(); slot++) {
+            if (slot == selectedSlot) {
+                continue;
+            }
+            ItemStack stack = fakeInventory.getItem(slot);
+            if (stack.isEmpty()) {
+                continue;
+            }
+            if (canStore && activeType.matchesItem(stack)) {
+                int before = stack.getCount();
+                inventory.add(stack);
+                int picked = before - stack.getCount();
+                if (picked > 0) {
+                    collected += picked;
+                }
+                canStore = !inventory.isFull();
+            }
+            if (!stack.isEmpty()) {
+                owner.spawnAtLocation(stack.copy());
+            }
+            fakeInventory.setItem(slot, ItemStack.EMPTY);
+        }
+        return collected;
+    }
+
     private boolean mineBlock(BlockPos pos) {
         if (!(owner.level() instanceof ServerLevel serverLevel)) {
             return false;
         }
+        lastMineUsedOreHarvester = false;
         BlockState state = owner.level().getBlockState(pos);
         if (state.isAir()) {
             return false;
+        }
+        if (tryMineWithOreHarvester(pos, state)) {
+            lastMineUsedOreHarvester = true;
+            return true;
         }
         ItemStack tool = owner.getMainHandItem();
         List<ItemStack> drops = Block.getDrops(state, serverLevel, pos, owner.level().getBlockEntity(pos),
@@ -910,8 +1061,32 @@ public final class CompanionGatheringController {
         clearTargetState();
         resourceAnchor = null;
         lastMinedBlock = null;
+        oreDropCollectCenter = null;
+        oreDropCollectUntilTick = -1L;
+        lastMineUsedOreHarvester = false;
         requestPlayerId = null;
         resetStuckTracking();
+    }
+
+    private void startOreDropCollection(BlockPos center, long gameTime) {
+        if (center == null) {
+            return;
+        }
+        oreDropCollectCenter = center.immutable();
+        oreDropCollectUntilTick = gameTime + ORE_DROP_COLLECT_WINDOW_TICKS;
+        collectNearbyRequestDrops(oreDropCollectCenter);
+    }
+
+    private void tickOreDropCollection(long gameTime) {
+        if (oreDropCollectCenter == null) {
+            return;
+        }
+        if (gameTime > oreDropCollectUntilTick) {
+            oreDropCollectCenter = null;
+            oreDropCollectUntilTick = -1L;
+            return;
+        }
+        collectNearbyRequestDrops(oreDropCollectCenter);
     }
 
     private void resetScanState() {

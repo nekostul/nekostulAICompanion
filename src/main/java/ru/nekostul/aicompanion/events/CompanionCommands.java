@@ -59,6 +59,11 @@ public final class CompanionCommands {
                                         .executes(context -> handleHomeConfirm(context, true)))
                                 .then(Commands.literal("no")
                                         .executes(context -> handleHomeConfirm(context, false))))
+                        .then(Commands.literal("boat")
+                                .then(Commands.literal("yes")
+                                        .executes(context -> handleBoatConfirm(context, true)))
+                                .then(Commands.literal("no")
+                                        .executes(context -> handleBoatConfirm(context, false))))
                         .then(Commands.literal("treechop")
                                 .then(Commands.literal("on")
                                         .executes(context -> handleTreeChop(context, true)))
@@ -73,10 +78,20 @@ public final class CompanionCommands {
     private static int handleTeleport(CommandContext<CommandSourceStack> context, boolean accepted)
             throws CommandSyntaxException {
         ServerPlayer player = context.getSource().getPlayerOrException();
-        if (!CompanionEntity.handleTeleportResponse(player, accepted)) {
+        try {
+            if (CompanionEntity.handleTeleportResponse(player, accepted)) {
+                return 1;
+            }
+        } catch (RuntimeException ignored) {
+            if (accepted && CompanionEntity.forceHandlePendingDimensionTeleport(player)) {
+                return 1;
+            }
             return 0;
         }
-        return 1;
+        if (accepted && CompanionEntity.forceHandlePendingDimensionTeleport(player)) {
+            return 1;
+        }
+        return 0;
     }
 
     private static int handleMessage(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
@@ -142,6 +157,16 @@ public final class CompanionCommands {
             context.getSource().sendSuccess(() -> message, false);
         }
         return 1;
+    }
+
+    private static int handleBoatConfirm(CommandContext<CommandSourceStack> context, boolean accepted)
+            throws CommandSyntaxException {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
+        if (companion == null || !companion.canPlayerControl(player)) {
+            return 0;
+        }
+        return companion.handleBoatRideConfirmation(player, accepted) ? 1 : 0;
     }
 
     private static int handleSpawn(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {

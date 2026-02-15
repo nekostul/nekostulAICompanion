@@ -1,6 +1,5 @@
 package ru.nekostul.aicompanion.entity.food;
 
-import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.animal.Animal;
 import net.minecraft.world.entity.animal.Chicken;
 import net.minecraft.world.entity.animal.Cow;
@@ -160,8 +159,7 @@ public final class CompanionFoodHuntController {
         owner.getNavigation().stop();
         owner.getLookControl().setLookAt(target, 30.0F, 30.0F);
         if (gameTime >= nextAttackTick) {
-            owner.swing(InteractionHand.MAIN_HAND, true);
-            owner.doHurtTarget(target);
+            owner.performCriticalMobHit(target);
             nextAttackTick = gameTime + ATTACK_COOLDOWN_TICKS;
         }
     }

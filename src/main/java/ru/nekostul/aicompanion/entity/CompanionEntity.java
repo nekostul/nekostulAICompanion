@@ -21,6 +21,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.damagesource.DamageTypes;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
@@ -34,7 +35,9 @@ import net.minecraft.world.entity.ai.goal.OpenDoorGoal;
 import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
 import net.minecraft.world.entity.ai.goal.WaterAvoidingRandomStrollGoal;
 import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.vehicle.Boat;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.ItemStack;
@@ -45,10 +48,12 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.ChunkStatus;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.portal.PortalInfo;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.common.util.ITeleporter;
 
 import ru.nekostul.aicompanion.entity.ai.FollowNearestPlayerGoal;
 import ru.nekostul.aicompanion.entity.ai.HoldPositionGoal;
@@ -70,10 +75,12 @@ import ru.nekostul.aicompanion.entity.tree.CompanionTreeHarvestController;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 public class CompanionEntity extends PathfinderMob {
     public enum CompanionMode {
@@ -148,9 +155,19 @@ public class CompanionEntity extends PathfinderMob {
     private static final String HOME_DEATH_RECOVERY_HP_REMOVE_KEY = "entity.aicompanion.companion.home.death.recovery.hp.remove";
     private static final String WHERE_STATUS_KEY = "entity.aicompanion.companion.where.status";
     private static final String WHERE_TELEPORT_BUTTON_KEY = "entity.aicompanion.companion.where.button";
+    private static final String OWNER_DEATH_COORDS_KEY = "entity.aicompanion.companion.owner.death.coords";
     private static final String TELEPORT_IGNORE_HOME_KEY = "entity.aicompanion.companion.teleport.ignore.home";
     private static final String TELEPORT_IGNORE_WHERE_KEY = "entity.aicompanion.companion.teleport.ignore.where";
     private static final String TELEPORT_IGNORE_FOLLOW_KEY = "entity.aicompanion.companion.teleport.ignore.follow";
+    private static final String TELEPORT_IGNORE_BOAT_KEY = "entity.aicompanion.companion.teleport.ignore.boat";
+    private static final String TELEPORT_IGNORE_DIMENSION_KEY =
+            "entity.aicompanion.companion.teleport.ignore.dimension";
+    private static final String BOAT_REQUEST_KEY = "entity.aicompanion.companion.boat.request";
+    private static final String BOAT_REQUEST_BUTTON_KEY = "entity.aicompanion.companion.boat.button";
+    private static final String DIMENSION_TELEPORT_REQUEST_KEY =
+            "entity.aicompanion.companion.dimension.request";
+    private static final String DIMENSION_TELEPORT_BUTTON_KEY =
+            "entity.aicompanion.companion.dimension.button";
     private static final int REACTION_COOLDOWN_TICKS = 60;
     private static final double REACTION_RANGE = 24.0D;
     private static final double FOLLOW_SEARCH_DISTANCE = 48.0D;
@@ -177,8 +194,14 @@ public class CompanionEntity extends PathfinderMob {
     private static final int HOME_CONFIRM_TICKS = 15 * 20;
     private static final int HOME_FOLLOW_TICKS = 5 * 20;
     private static final int WHERE_TELEPORT_TICKS = 5 * 20;
+    private static final int BOAT_REQUEST_TICKS = 5 * 20;
+    private static final int BOAT_REQUEST_COOLDOWN_TICKS = 5 * 20;
+    private static final int BOAT_MAX_PASSENGERS = 2;
+    private static final int DIMENSION_TELEPORT_TICKS = 10 * 20;
     private static final int WHERE_MIN_DISTANCE = 100;
     private static final int WHERE_COOLDOWN_TICKS = 5 * 60 * 20;
+    private static final double BOAT_REQUEST_DISTANCE = 12.0D;
+    private static final double BOAT_REQUEST_DISTANCE_SQR = BOAT_REQUEST_DISTANCE * BOAT_REQUEST_DISTANCE;
     private static final int HOME_INTERACT_COOLDOWN_TICKS = 1200;
     private static final int HOME_DEATH_INTERACT_COOLDOWN_TICKS = 5 * 20;
     private static final int HOME_REGEN_TICKS = 20;
@@ -212,6 +235,7 @@ public class CompanionEntity extends PathfinderMob {
     private static final Map<UUID, PendingTeleportRequest> PENDING_TELEPORT_REQUESTS = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> TELEPORT_IGNORED_TICKS = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> WHERE_FALLBACK_COOLDOWNS = new ConcurrentHashMap<>();
+    private static final Set<UUID> APPROVED_DIMENSION_TELEPORTS = ConcurrentHashMap.newKeySet();
 
     private static final class PendingTeleportRequest {
         private final UUID companionId;
@@ -232,6 +256,30 @@ public class CompanionEntity extends PathfinderMob {
             this.untilTick = untilTick;
             this.messageKey = messageKey;
             this.lastSeconds = lastSeconds;
+        }
+    }
+
+    private static final class CompanionDirectTeleporter implements ITeleporter {
+        private final Vec3 destination;
+        private final float yRot;
+        private final float xRot;
+
+        private CompanionDirectTeleporter(Vec3 destination, float yRot, float xRot) {
+            this.destination = destination;
+            this.yRot = yRot;
+            this.xRot = xRot;
+        }
+
+        @Override
+        public Entity placeEntity(Entity entity, ServerLevel currentWorld, ServerLevel destWorld, float yaw,
+                                  Function<Boolean, Entity> repositionEntity) {
+            return repositionEntity.apply(false);
+        }
+
+        @Override
+        public PortalInfo getPortalInfo(Entity entity, ServerLevel destWorld,
+                                        Function<ServerLevel, PortalInfo> defaultPortalInfo) {
+            return new PortalInfo(destination, Vec3.ZERO, yRot, xRot);
         }
     }
 
@@ -303,6 +351,10 @@ public class CompanionEntity extends PathfinderMob {
     private UUID pendingFollowPlayerId;
     private long pendingFollowUntilTick = -1L;
     private int pendingFollowLastSeconds = -1;
+    private UUID pendingBoatPlayerId;
+    private long pendingBoatUntilTick = -1L;
+    private int pendingBoatLastSeconds = -1;
+    private long nextBoatRequestTick = -1L;
     private final Map<UUID, Long> whereCooldowns = new HashMap<>();
     private long lastHomeRegenTick = -1L;
     private long lastHomeDeathInteractTick = -10000L;
@@ -449,6 +501,32 @@ public class CompanionEntity extends PathfinderMob {
         sendDirectMessage(player, message);
     }
 
+    public boolean isOwnedBy(Player player) {
+        return isOwnerPlayer(player);
+    }
+
+    public void onOwnerDeath(ServerPlayer ownerPlayer, BlockPos deathPos) {
+        if (this.level().isClientSide || ownerPlayer == null || deathPos == null || !this.isAlive()) {
+            return;
+        }
+        if (!isOwnerPlayer(ownerPlayer)) {
+            return;
+        }
+        if (recoveringAfterDeathAtHome) {
+            sendReply(ownerPlayer, Component.translatable(
+                    OWNER_DEATH_COORDS_KEY, deathPos.getX(), deathPos.getY(), deathPos.getZ()));
+            return;
+        }
+        if (this.level() != ownerPlayer.level()) {
+            return;
+        }
+        Vec3 targetPos = resolveTeleportTarget(ownerPlayer);
+        this.teleportTo(targetPos.x, targetPos.y, targetPos.z);
+        this.getNavigation().stop();
+        sendReply(ownerPlayer, Component.translatable(
+                OWNER_DEATH_COORDS_KEY, deathPos.getX(), deathPos.getY(), deathPos.getZ()));
+    }
+
     public boolean canPlayerControl(ServerPlayer player) {
         if (player == null) {
             return false;
@@ -592,6 +670,58 @@ public class CompanionEntity extends PathfinderMob {
         clearHomeRequest();
         startHomeReturn(player);
         return true;
+    }
+
+    public boolean handleBoatRideConfirmation(ServerPlayer player, boolean accepted) {
+        if (player == null) {
+            return false;
+        }
+        if (pendingBoatPlayerId == null || !pendingBoatPlayerId.equals(player.getUUID())) {
+            return false;
+        }
+        long gameTime = this.level().getGameTime();
+        if (gameTime >= pendingBoatUntilTick) {
+            clearBoatRideRequest(true);
+            nextBoatRequestTick = gameTime + BOAT_REQUEST_COOLDOWN_TICKS;
+            return false;
+        }
+        clearBoatRideRequest(true);
+        nextBoatRequestTick = gameTime + BOAT_REQUEST_COOLDOWN_TICKS;
+        if (!accepted || player.level() != this.level()) {
+            return true;
+        }
+        if (!(player.getVehicle() instanceof Boat boat)) {
+            return true;
+        }
+        tryBoardBoat(boat);
+        return true;
+    }
+
+    public void requestDimensionTeleport(ServerPlayer player) {
+        if (player == null || player.server == null || !this.isAlive()) {
+            return;
+        }
+        if (!canPlayerControl(player) || recoveringAfterDeathAtHome) {
+            return;
+        }
+        if (player.level().dimension().equals(this.level().dimension())) {
+            return;
+        }
+        PendingTeleportRequest existing = PENDING_TELEPORT_REQUESTS.get(player.getUUID());
+        if (existing != null
+                && this.getUUID().equals(existing.companionId)
+                && DIMENSION_TELEPORT_REQUEST_KEY.equals(existing.messageKey)) {
+            return;
+        }
+        PENDING_TELEPORT_REQUESTS.remove(player.getUUID());
+        PENDING_TELEPORTS.remove(player.getUUID());
+        long gameTime = getServerTick();
+        long untilTick = gameTime + DIMENSION_TELEPORT_TICKS;
+        int secondsLeft = secondsLeftStatic(untilTick, gameTime);
+        if (!registerPendingTeleportRequest(player, DIMENSION_TELEPORT_REQUEST_KEY, untilTick, secondsLeft)) {
+            return;
+        }
+        sendDimensionTeleportMessage(player, secondsLeft);
     }
 
     public boolean handleGoHomeCommand(ServerPlayer player) {
@@ -849,6 +979,10 @@ public class CompanionEntity extends PathfinderMob {
     }
 
     private boolean performCriticalRetaliationHit(Player target) {
+        return performCriticalMobHit(target);
+    }
+
+    public boolean performCriticalMobHit(LivingEntity target) {
         if (target == null) {
             return false;
         }
@@ -934,6 +1068,34 @@ public class CompanionEntity extends PathfinderMob {
         sendReply(player, base.append(Component.literal(" ")).append(button));
     }
 
+    private void requestBoatRide(ServerPlayer player, long gameTime) {
+        clearBoatRideRequest(false);
+        pendingBoatPlayerId = player.getUUID();
+        pendingBoatUntilTick = gameTime + BOAT_REQUEST_TICKS;
+        pendingBoatLastSeconds = -1;
+        int secondsLeft = secondsLeft(pendingBoatUntilTick, gameTime);
+        sendBoatRideMessage(player, secondsLeft);
+        pendingBoatLastSeconds = secondsLeft;
+    }
+
+    private void sendBoatRideMessage(ServerPlayer player, int secondsLeft) {
+        MutableComponent base = Component.translatable(BOAT_REQUEST_KEY, secondsLeft);
+        Component button = Component.translatable(BOAT_REQUEST_BUTTON_KEY)
+                .withStyle(style -> style.withColor(ChatFormatting.AQUA)
+                        .withBold(true)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ainpc boat yes")));
+        sendReply(player, base.append(Component.literal(" ")).append(button));
+    }
+
+    private void clearBoatRideRequest(boolean notifyRemove) {
+        if (pendingBoatPlayerId != null && notifyRemove) {
+            sendTimedMessageRemoval(TELEPORT_IGNORE_BOAT_KEY, pendingBoatPlayerId);
+        }
+        pendingBoatPlayerId = null;
+        pendingBoatUntilTick = -1L;
+        pendingBoatLastSeconds = -1;
+    }
+
     private void clearHomeRequest() {
         pendingHomePlayerId = null;
         pendingHomeUntilTick = -1L;
@@ -970,6 +1132,22 @@ public class CompanionEntity extends PathfinderMob {
         }
         MutableComponent base = Component.translatable(WHERE_STATUS_KEY, pos.getX(), pos.getY(), pos.getZ(), secondsLeft);
         Component button = Component.translatable(WHERE_TELEPORT_BUTTON_KEY)
+                .withStyle(style -> style.withColor(ChatFormatting.AQUA)
+                        .withBold(true)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ainpc tp yes")));
+        sendDirectMessageStatic(player, base.append(Component.literal(" ")).append(button));
+    }
+
+    private void sendDimensionTeleportMessage(ServerPlayer player, int secondsLeft) {
+        sendDimensionTeleportMessageStatic(player, secondsLeft);
+    }
+
+    private static void sendDimensionTeleportMessageStatic(ServerPlayer player, int secondsLeft) {
+        if (player == null) {
+            return;
+        }
+        MutableComponent base = Component.translatable(DIMENSION_TELEPORT_REQUEST_KEY, secondsLeft);
+        Component button = Component.translatable(DIMENSION_TELEPORT_BUTTON_KEY)
                 .withStyle(style -> style.withColor(ChatFormatting.AQUA)
                         .withBold(true)
                         .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ainpc tp yes")));
@@ -1075,6 +1253,121 @@ public class CompanionEntity extends PathfinderMob {
         }
     }
 
+    private void tickBoatRideRequest(long gameTime) {
+        if (this.mode == CompanionMode.STOPPED || returningHome || this.taskCoordinator.isBusy()) {
+            clearBoatRideRequest(false);
+            return;
+        }
+        ServerPlayer ownerPlayer = resolveBoatOwner();
+        if (ownerPlayer == null || ownerPlayer.level() != this.level()) {
+            if (this.isPassenger() && this.getVehicle() instanceof Boat) {
+                this.stopRiding();
+            }
+            clearBoatRideRequest(false);
+            return;
+        }
+        if (!(ownerPlayer.getVehicle() instanceof Boat boat)) {
+            if (this.isPassenger() && this.getVehicle() instanceof Boat) {
+                this.stopRiding();
+            }
+            clearBoatRideRequest(true);
+            return;
+        }
+        if (this.isPassenger() && this.getVehicle() instanceof Boat currentBoat && currentBoat != boat) {
+            this.stopRiding();
+        }
+        if (!canBoardBoat(boat)) {
+            clearBoatRideRequest(true);
+            return;
+        }
+        if (this.isPassenger() && this.getVehicle() == boat) {
+            clearBoatRideRequest(false);
+            return;
+        }
+        if (this.distanceToSqr(boat) > BOAT_REQUEST_DISTANCE_SQR) {
+            clearBoatRideRequest(false);
+            return;
+        }
+        if (pendingBoatPlayerId != null) {
+            tickPendingBoatRideRequest(gameTime);
+            return;
+        }
+        if (nextBoatRequestTick >= 0L && gameTime < nextBoatRequestTick) {
+            return;
+        }
+        requestBoatRide(ownerPlayer, gameTime);
+    }
+
+    private void tickPendingBoatRideRequest(long gameTime) {
+        if (pendingBoatPlayerId == null) {
+            return;
+        }
+        Player player = getPlayerById(pendingBoatPlayerId);
+        if (!(player instanceof ServerPlayer serverPlayer)) {
+            clearBoatRideRequest(false);
+            return;
+        }
+        if (!(serverPlayer.getVehicle() instanceof Boat boat)
+                || serverPlayer.level() != this.level()
+                || !canBoardBoat(boat)) {
+            clearBoatRideRequest(true);
+            return;
+        }
+        if (gameTime >= pendingBoatUntilTick) {
+            clearBoatRideRequest(true);
+            nextBoatRequestTick = gameTime + BOAT_REQUEST_COOLDOWN_TICKS;
+            return;
+        }
+        int secondsLeft = secondsLeft(pendingBoatUntilTick, gameTime);
+        if (secondsLeft != pendingBoatLastSeconds) {
+            pendingBoatLastSeconds = secondsLeft;
+            sendBoatRideMessage(serverPlayer, secondsLeft);
+        }
+    }
+
+    private ServerPlayer resolveBoatOwner() {
+        if (ownerId == null) {
+            return null;
+        }
+        Player ownerPlayer = getPlayerById(ownerId);
+        if (!(ownerPlayer instanceof ServerPlayer serverPlayer) || serverPlayer.isSpectator() || !serverPlayer.isAlive()) {
+            return null;
+        }
+        return serverPlayer;
+    }
+
+    private boolean canBoardBoat(Boat boat) {
+        if (boat == null || !boat.isAlive() || boat.level() != this.level()) {
+            return false;
+        }
+        if (boat.getPassengers().contains(this)) {
+            return true;
+        }
+        return boat.getPassengers().size() < BOAT_MAX_PASSENGERS;
+    }
+
+    private boolean tryBoardBoat(Boat boat) {
+        if (!canBoardBoat(boat)) {
+            return false;
+        }
+        if (this.isPassenger() && this.getVehicle() == boat) {
+            return true;
+        }
+        if (this.isPassenger()) {
+            this.stopRiding();
+        }
+        this.getNavigation().stop();
+        boolean boarded = this.startRiding(boat, true);
+        if (!boarded) {
+            this.teleportTo(boat.getX(), boat.getY(), boat.getZ());
+            boarded = this.startRiding(boat, true);
+        }
+        if (boarded) {
+            this.getNavigation().stop();
+        }
+        return boarded;
+    }
+
     private void tickStopHomeReturn(long gameTime) {
         if (returningHome || isAtHome()) {
             return;
@@ -1134,6 +1427,15 @@ public class CompanionEntity extends PathfinderMob {
             return;
         }
         Player player = homeReturnPlayerId != null ? getPlayerById(homeReturnPlayerId) : null;
+        if (isAtHome()) {
+            this.getNavigation().stop();
+            returningHome = false;
+            homeLeaveTarget = null;
+            homeReturnPlayerId = null;
+            homeDirectReturn = false;
+            resetHomeMoveTracking();
+            return;
+        }
         if (homeLeaveTarget == null && player != null && !homeDirectReturn) {
             homeLeaveTarget = resolveHomeLeaveTarget(player);
         }
@@ -1141,39 +1443,37 @@ public class CompanionEntity extends PathfinderMob {
             this.getNavigation().moveTo(homeLeaveTarget.x, homeLeaveTarget.y, homeLeaveTarget.z, navSpeed(HOME_LEAVE_SPEED));
             rememberHomeMoveTo(homeLeaveTarget, gameTime);
         }
-        if (homeDirectReturn) {
-            BlockPos feetGround = this.blockPosition().below();
-            if (feetGround.distManhattan(homePos) <= 1) {
-                teleportHome();
-                this.getNavigation().stop();
-                returningHome = false;
-                homeLeaveTarget = null;
-                homeReturnPlayerId = null;
-                homeDirectReturn = false;
-                resetHomeMoveTracking();
-                return;
-            }
-            if (isAtHome()) {
-                this.getNavigation().stop();
-                returningHome = false;
-                homeLeaveTarget = null;
-                homeReturnPlayerId = null;
-                homeDirectReturn = false;
-                resetHomeMoveTracking();
-            }
+        if (!(player instanceof ServerPlayer serverPlayer) || serverPlayer.isSpectator() || !serverPlayer.isAlive()) {
+            teleportHome();
+            this.getNavigation().stop();
+            returningHome = false;
+            homeLeaveTarget = null;
+            homeReturnPlayerId = null;
+            homeDirectReturn = false;
+            resetHomeMoveTracking();
             return;
         }
-        boolean farEnough = player == null
-                || this.distanceToSqr(player) >= (double) HOME_LEAVE_DISTANCE * HOME_LEAVE_DISTANCE;
-        if (!farEnough) {
-            return;
+        Vec3 playerForward = serverPlayer.getLookAngle();
+        playerForward = new Vec3(playerForward.x, 0.0D, playerForward.z);
+        if (playerForward.lengthSqr() < 1.0E-4D) {
+            float yaw = serverPlayer.getYRot() * ((float) Math.PI / 180.0F);
+            playerForward = new Vec3(-Mth.sin(yaw), 0.0D, Mth.cos(yaw));
         }
-        teleportHome();
-        returningHome = false;
-        homeLeaveTarget = null;
-        homeReturnPlayerId = null;
-        homeDirectReturn = false;
-        resetHomeMoveTracking();
+        playerForward = playerForward.normalize();
+        if (isOutOfPlayerView(serverPlayer.position(), playerForward, this.position())) {
+            Vec3 homeCenter = new Vec3(homePos.getX() + 0.5D, homePos.getY() + 1.0D, homePos.getZ() + 0.5D);
+            double distanceToHomeBeforeTeleport = this.position().distanceToSqr(homeCenter);
+            teleportHome();
+            this.getNavigation().stop();
+            returningHome = false;
+            homeLeaveTarget = null;
+            homeReturnPlayerId = null;
+            homeDirectReturn = false;
+            resetHomeMoveTracking();
+            if (distanceToHomeBeforeTeleport > 4.0D) {
+                sendReply(serverPlayer, Component.translatable(HOME_INTERACT_KEY));
+            }
+        }
     }
 
     private Vec3 resolveHomeLeaveTarget(Player player) {
@@ -1539,7 +1839,10 @@ public class CompanionEntity extends PathfinderMob {
             tickItemPickup();
             inventoryExchange.tickToolDropNotice(gameTime);
             tickHomeRequests(gameTime);
-            if (returningHome) {
+            boolean urgentOwnerDefense = tryUrgentOwnerDefense(gameTime);
+            if (urgentOwnerDefense) {
+                // Urgent owner protection has priority over any current activity.
+            } else if (returningHome) {
                 tickHomeReturn(gameTime);
             } else {
                 tickAutonomousBehavior();
@@ -1548,6 +1851,7 @@ public class CompanionEntity extends PathfinderMob {
             tickHomeRegen(gameTime);
             syncHungerFullFlag();
             tickAmbientChat();
+            tickBoatRideRequest(gameTime);
             tickTeleportRequest();
         }
     }
@@ -1651,6 +1955,9 @@ public class CompanionEntity extends PathfinderMob {
 
     @Override
     public boolean hurt(DamageSource source, float amount) {
+        if (source != null && source.is(DamageTypes.IN_WALL)) {
+            return false;
+        }
         if (!this.level().isClientSide) {
             ServerPlayer attackingPlayer = resolveAttackingPlayer(source);
             if (attackingPlayer != null && isOwnerPlayer(attackingPlayer)) {
@@ -1687,6 +1994,7 @@ public class CompanionEntity extends PathfinderMob {
         clearHomeRequest();
         clearWhereRequest();
         clearFollowRequest(false);
+        clearBoatRideRequest(true);
         super.die(source);
     }
 
@@ -1746,6 +2054,7 @@ public class CompanionEntity extends PathfinderMob {
             clearHomeRequest();
             clearWhereRequest();
             clearFollowRequest(false);
+            clearBoatRideRequest(true);
         }
         CompanionSingleNpcManager.unregister(this);
         super.remove(reason);
@@ -1850,6 +2159,20 @@ public class CompanionEntity extends PathfinderMob {
             if (CompanionDropTracker.isDroppedBy(itemEntity, this.getUUID())) {
                 continue;
             }
+            UUID playerDropper = CompanionDropTracker.getPlayerDropper(itemEntity);
+            if (playerDropper != null) {
+                if (CompanionDropTracker.isPlayerBlockDrop(itemEntity)) {
+                    continue;
+                }
+                if (ownerId == null || !ownerId.equals(playerDropper)) {
+                    continue;
+                }
+            } else {
+                UUID vanillaDropper = CompanionDropTracker.getVanillaDropper(itemEntity);
+                if (vanillaDropper != null && getPlayerById(vanillaDropper) != null) {
+                    continue;
+                }
+            }
             if (CompanionDropTracker.isMobDrop(itemEntity)
                     && !CompanionDropTracker.isMobDropFrom(itemEntity, this.getUUID())) {
                 continue;
@@ -1928,6 +2251,7 @@ public class CompanionEntity extends PathfinderMob {
     private void tickAutonomousBehavior() {
         long gameTime = this.level().getGameTime();
         Player nearest = this.level().getNearestPlayer(this, FOLLOW_SEARCH_DISTANCE);
+        Player combatPlayer = resolveCombatPlayer(nearest);
         this.toolHandler.resetToolRequest();
         if (tickHostilePlayerRetaliation(gameTime)) {
             return;
@@ -1939,7 +2263,7 @@ public class CompanionEntity extends PathfinderMob {
             }
             return;
         }
-        if (combatController.tick(nearest, gameTime)) {
+        if (combatController.tick(combatPlayer, gameTime)) {
             return;
         }
         if (foodHuntController.tick(nearest, gameTime, taskCoordinator.isBusy())) {
@@ -1949,6 +2273,30 @@ public class CompanionEntity extends PathfinderMob {
         if (!this.toolHandler.wasToolRequested()) {
             this.equipment.equipIdleHand();
         }
+    }
+
+    private Player resolveCombatPlayer(Player nearest) {
+        if (ownerId != null) {
+            Player ownerPlayer = getPlayerById(ownerId);
+            if (ownerPlayer != null && ownerPlayer.isAlive() && !ownerPlayer.isSpectator()) {
+                return ownerPlayer;
+            }
+        }
+        return nearest;
+    }
+
+    private boolean tryUrgentOwnerDefense(long gameTime) {
+        if (this.level().isClientSide || ownerId == null || this.getHealth() <= 4.0F) {
+            return false;
+        }
+        Player ownerPlayer = getPlayerById(ownerId);
+        if (ownerPlayer == null || ownerPlayer.isSpectator() || !ownerPlayer.isAlive()) {
+            return false;
+        }
+        if (this.mode == CompanionMode.STOPPED) {
+            setMode(CompanionMode.AUTONOMOUS);
+        }
+        return combatController.tickUrgentDefense(ownerPlayer, gameTime);
     }
 
     private void tickHomeRegen(long gameTime) {
@@ -2108,6 +2456,133 @@ public class CompanionEntity extends PathfinderMob {
             return spot;
         }
         return this.position();
+    }
+
+    private CompanionEntity moveToPlayerDimension(ServerPlayer player) {
+        if (player == null || !this.isAlive()) {
+            return this;
+        }
+        if (!(player.level() instanceof ServerLevel targetLevel)) {
+            return this;
+        }
+        if (this.isPassenger()) {
+            this.stopRiding();
+        }
+        CompanionEntity movedCompanion = this;
+        if (this.level() != targetLevel) {
+            Vec3 initialTargetPos = resolveInitialDimensionTeleportTarget(player);
+            boolean moved = this.teleportTo(
+                    targetLevel,
+                    initialTargetPos.x,
+                    initialTargetPos.y,
+                    initialTargetPos.z,
+                    Collections.emptySet(),
+                    this.getYRot(),
+                    this.getXRot()
+            );
+            if (moved) {
+                Entity movedEntity = targetLevel.getEntity(this.getUUID());
+                if (movedEntity instanceof CompanionEntity teleportedCompanion) {
+                    movedCompanion = teleportedCompanion;
+                }
+            }
+            if (!moved || movedCompanion.level() != targetLevel) {
+                Entity changed = this.changeDimension(targetLevel);
+                if (changed instanceof CompanionEntity changedCompanion) {
+                    movedCompanion = changedCompanion;
+                } else {
+                    Entity fromTarget = targetLevel.getEntity(this.getUUID());
+                    if (fromTarget instanceof CompanionEntity fallbackCompanion) {
+                        movedCompanion = fallbackCompanion;
+                    } else {
+                        return this;
+                    }
+                }
+            }
+        }
+        if (movedCompanion.isPassenger()) {
+            movedCompanion.stopRiding();
+        }
+        if (movedCompanion.level() != player.level()) {
+            return movedCompanion;
+        }
+        Vec3 targetPos = movedCompanion.resolveTeleportTarget(player);
+        movedCompanion.teleportTo(targetPos.x, targetPos.y, targetPos.z);
+        movedCompanion.getNavigation().stop();
+        return movedCompanion;
+    }
+
+    private static boolean forceTeleportToPlayerDimension(CompanionEntity companion, ServerPlayer player) {
+        if (companion == null || player == null || !companion.isAlive()) {
+            return false;
+        }
+        if (!(player.level() instanceof ServerLevel targetLevel)) {
+            return false;
+        }
+        if (companion.isPassenger()) {
+            companion.stopRiding();
+        }
+        CompanionEntity movedCompanion = companion;
+        if (companion.level() != player.level()) {
+            Vec3 initialTargetPos = resolveInitialDimensionTeleportTarget(player);
+            boolean moved = companion.teleportTo(
+                    targetLevel,
+                    initialTargetPos.x,
+                    initialTargetPos.y,
+                    initialTargetPos.z,
+                    Collections.emptySet(),
+                    companion.getYRot(),
+                    companion.getXRot()
+            );
+            if (!moved) {
+                Entity changed = companion.changeDimension(targetLevel);
+                if (changed instanceof CompanionEntity changedCompanion) {
+                    movedCompanion = changedCompanion;
+                } else {
+                    Entity fromTarget = targetLevel.getEntity(companion.getUUID());
+                    if (fromTarget instanceof CompanionEntity fallbackCompanion) {
+                        movedCompanion = fallbackCompanion;
+                    } else {
+                        return false;
+                    }
+                }
+            } else {
+                Entity movedEntity = targetLevel.getEntity(companion.getUUID());
+                if (movedEntity instanceof CompanionEntity teleportedCompanion) {
+                    movedCompanion = teleportedCompanion;
+                }
+            }
+        }
+        if (movedCompanion.level() != player.level()) {
+            return false;
+        }
+        if (movedCompanion.isPassenger()) {
+            movedCompanion.stopRiding();
+        }
+        Vec3 targetPos = movedCompanion.resolveTeleportTarget(player);
+        movedCompanion.teleportTo(targetPos.x, targetPos.y, targetPos.z);
+        movedCompanion.getNavigation().stop();
+        return true;
+    }
+
+    private static Vec3 resolveInitialDimensionTeleportTarget(ServerPlayer player) {
+        if (player == null) {
+            return Vec3.ZERO;
+        }
+        Vec3 playerPos = player.position();
+        Vec3 forward = player.getLookAngle();
+        forward = new Vec3(forward.x, 0.0D, forward.z);
+        if (forward.lengthSqr() < 1.0E-4D) {
+            float yaw = player.getYRot() * ((float) Math.PI / 180.0F);
+            forward = new Vec3(-Mth.sin(yaw), 0.0D, Mth.cos(yaw));
+        } else {
+            forward = forward.normalize();
+        }
+        return new Vec3(
+                playerPos.x - forward.x * TELEPORT_BEHIND_DISTANCE,
+                playerPos.y,
+                playerPos.z - forward.z * TELEPORT_BEHIND_DISTANCE
+        );
     }
 
     private Vec3 findTeleportSpot(Vec3 playerPos, Vec3 forward, Vec3[] offsets, boolean requireOutOfView) {
@@ -2405,10 +2880,12 @@ public class CompanionEntity extends PathfinderMob {
         if (level == null) {
             return null;
         }
-        CompanionEntity companion = (CompanionEntity) level.getEntity(request.companionId);
-        if (companion == null) {
+        Entity entity = level.getEntity(request.companionId);
+        CompanionEntity companion = entity instanceof CompanionEntity found ? found : null;
+        if (companion == null && request.chunkPos != null) {
             level.getChunkSource().getChunk(request.chunkPos.x, request.chunkPos.z, ChunkStatus.FULL, true);
-            companion = (CompanionEntity) level.getEntity(request.companionId);
+            entity = level.getEntity(request.companionId);
+            companion = entity instanceof CompanionEntity foundAfterLoad ? foundAfterLoad : null;
         }
         if (companion == null || companion.isRemoved()) {
             return null;
@@ -2442,45 +2919,38 @@ public class CompanionEntity extends PathfinderMob {
         if (request == null) {
             return false;
         }
+        if (!accepted && DIMENSION_TELEPORT_REQUEST_KEY.equals(request.messageKey)) {
+            APPROVED_DIMENSION_TELEPORTS.remove(player.getUUID());
+        }
         MinecraftServer server = player.getServer();
         if (server == null) {
             return false;
         }
         ServerLevel level = server.getLevel(request.levelKey);
         long gameTime = level != null ? level.getGameTime() : player.level().getGameTime();
-        if (WHERE_STATUS_KEY.equals(request.messageKey) && player.getServer() != null) {
+        if (usesServerTickClock(request.messageKey) && player.getServer() != null) {
             gameTime = player.getServer().getTickCount();
         }
         if (gameTime >= request.untilTick) {
-            if (WHERE_STATUS_KEY.equals(request.messageKey)) {
-                sendTeleportIgnore(player, TELEPORT_IGNORE_WHERE_KEY);
+            String removeKey = getTimedMessageRemovalKey(request.messageKey);
+            if (removeKey != null) {
+                sendTeleportIgnore(player, removeKey);
             }
             PENDING_TELEPORT_REQUESTS.remove(player.getUUID(), request);
             PENDING_TELEPORTS.remove(player.getUUID());
+            APPROVED_DIMENSION_TELEPORTS.remove(player.getUUID());
             return false;
         }
-        CompanionEntity companion = null;
-        if (level != null) {
-            companion = (CompanionEntity) level.getEntity(request.companionId);
-            if (companion == null) {
-                level.getChunkSource().getChunk(request.chunkPos.x, request.chunkPos.z, ChunkStatus.FULL, true);
-                companion = (CompanionEntity) level.getEntity(request.companionId);
-            }
-        }
+        CompanionEntity companion = getCompanionFromPendingMap(player, request);
         if (companion == null) {
-            ResourceKey<Level> homeLevelKey = CompanionSingleNpcManager.getLastHomeDimension();
-            BlockPos homePos = CompanionSingleNpcManager.getLastHomePos();
-            if (homeLevelKey != null && homePos != null && server != null) {
-                ServerLevel homeLevel = server.getLevel(homeLevelKey);
-                if (homeLevel != null) {
-                    homeLevel.getChunkSource().getChunk(homePos.getX() >> 4, homePos.getZ() >> 4,
-                            ChunkStatus.FULL, true);
-                    Entity homeEntity = homeLevel.getEntity(request.companionId);
-                    if (homeEntity instanceof CompanionEntity homeCompanion && homeCompanion.isAlive()) {
-                        companion = homeCompanion;
-                    }
-                }
-            }
+            companion = resolveCompanionForTeleport(server, request, level);
+        }
+        if (accepted
+                && DIMENSION_TELEPORT_REQUEST_KEY.equals(request.messageKey)
+                && (companion == null || !companion.isAlive())) {
+            APPROVED_DIMENSION_TELEPORTS.add(player.getUUID());
+            sendTeleportIgnore(player, TELEPORT_IGNORE_DIMENSION_KEY);
+            return true;
         }
         if (WHERE_STATUS_KEY.equals(request.messageKey)) {
             if (companion != null) {
@@ -2502,9 +2972,33 @@ public class CompanionEntity extends PathfinderMob {
                 companion.sendReply(player, Component.translatable(HOME_DEATH_RECOVERY_HP_REMOVE_KEY));
                 companion.sendReply(player, Component.translatable(HOME_DEATH_RECOVERY_HP_KEY, currentHp, maxHp));
             } else {
-                Vec3 targetPos = companion.resolveTeleportTarget(player);
-                companion.teleportTo(targetPos.x, targetPos.y, targetPos.z);
-                companion.getNavigation().stop();
+                if (DIMENSION_TELEPORT_REQUEST_KEY.equals(request.messageKey)) {
+                    try {
+                        companion = companion.moveToPlayerDimension(player);
+                    } catch (RuntimeException ignored) {
+                        if (player.level() instanceof ServerLevel targetLevel) {
+                            Vec3 initialTargetPos = resolveInitialDimensionTeleportTarget(player);
+                            companion.teleportTo(
+                                    targetLevel,
+                                    initialTargetPos.x,
+                                    initialTargetPos.y,
+                                    initialTargetPos.z,
+                                    Collections.emptySet(),
+                                    companion.getYRot(),
+                                    companion.getXRot()
+                            );
+                            if (companion.level() == player.level()) {
+                                Vec3 targetPos = companion.resolveTeleportTarget(player);
+                                companion.teleportTo(targetPos.x, targetPos.y, targetPos.z);
+                                companion.getNavigation().stop();
+                            }
+                        }
+                    }
+                } else {
+                    Vec3 targetPos = companion.resolveTeleportTarget(player);
+                    companion.teleportTo(targetPos.x, targetPos.y, targetPos.z);
+                    companion.getNavigation().stop();
+                }
                 if (shouldFollowAfterTeleport) {
                     companion.setMode(CompanionMode.AUTONOMOUS);
                 }
@@ -2512,11 +3006,121 @@ public class CompanionEntity extends PathfinderMob {
         }
         PENDING_TELEPORT_REQUESTS.remove(player.getUUID(), request);
         PENDING_TELEPORTS.remove(player.getUUID());
+        APPROVED_DIMENSION_TELEPORTS.remove(player.getUUID());
         if (companion != null) {
             companion.clearTeleportRequestState();
             companion.clearTeleportReminder();
         }
+        String removeKey = getTimedMessageRemovalKey(request.messageKey);
+        if (removeKey != null && !WHERE_STATUS_KEY.equals(request.messageKey)) {
+            sendTeleportIgnore(player, removeKey);
+        }
         return true;
+    }
+
+    public static boolean forceHandlePendingDimensionTeleport(ServerPlayer player) {
+        if (player == null || !player.isAlive()) {
+            return false;
+        }
+        PendingTeleportRequest request = PENDING_TELEPORT_REQUESTS.get(player.getUUID());
+        if (request == null || !DIMENSION_TELEPORT_REQUEST_KEY.equals(request.messageKey)) {
+            return false;
+        }
+        MinecraftServer server = player.getServer();
+        if (server == null) {
+            PENDING_TELEPORT_REQUESTS.remove(player.getUUID(), request);
+            PENDING_TELEPORTS.remove(player.getUUID());
+            APPROVED_DIMENSION_TELEPORTS.remove(player.getUUID());
+            return false;
+        }
+        ServerLevel requestLevel = server.getLevel(request.levelKey);
+        CompanionEntity companion = getCompanionFromPendingMap(player, request);
+        if (companion == null) {
+            companion = resolveCompanionForTeleport(server, request, requestLevel);
+        }
+        boolean moved = forceTeleportToPlayerDimension(companion, player);
+        PENDING_TELEPORT_REQUESTS.remove(player.getUUID(), request);
+        PENDING_TELEPORTS.remove(player.getUUID());
+        APPROVED_DIMENSION_TELEPORTS.remove(player.getUUID());
+        if (companion != null) {
+            companion.clearTeleportRequestState();
+            companion.clearTeleportReminder();
+        }
+        sendTeleportIgnore(player, TELEPORT_IGNORE_DIMENSION_KEY);
+        return moved;
+    }
+
+    private static CompanionEntity getCompanionFromPendingMap(ServerPlayer player, PendingTeleportRequest request) {
+        if (player == null || request == null) {
+            return null;
+        }
+        CompanionEntity pending = PENDING_TELEPORTS.get(player.getUUID());
+        if (pending == null) {
+            return null;
+        }
+        if (pending.isRemoved() || !pending.isAlive() || !request.companionId.equals(pending.getUUID())) {
+            PENDING_TELEPORTS.remove(player.getUUID(), pending);
+            return null;
+        }
+        return pending;
+    }
+
+    private static CompanionEntity resolveCompanionForTeleport(MinecraftServer server,
+                                                               PendingTeleportRequest request,
+                                                               ServerLevel requestLevel) {
+        if (server == null || request == null) {
+            return null;
+        }
+        CompanionEntity companion = findCompanionInLevel(requestLevel, request.companionId, request.chunkPos);
+        if (companion != null && companion.isAlive()) {
+            return companion;
+        }
+        CompanionSingleNpcManager.ensureLoaded(server);
+        UUID activeId = CompanionSingleNpcManager.getActiveId();
+        ResourceKey<Level> activeLevelKey = CompanionSingleNpcManager.getActiveDimension();
+        BlockPos lastKnownPos = CompanionSingleNpcManager.getLastKnownPos();
+        if (activeId != null && activeId.equals(request.companionId) && activeLevelKey != null) {
+            ServerLevel activeLevel = server.getLevel(activeLevelKey);
+            ChunkPos activeChunk = lastKnownPos != null ? new ChunkPos(lastKnownPos) : null;
+            companion = findCompanionInLevel(activeLevel, activeId, activeChunk);
+            if (companion != null && companion.isAlive()) {
+                return companion;
+            }
+        }
+        ResourceKey<Level> homeLevelKey = CompanionSingleNpcManager.getLastHomeDimension();
+        BlockPos homePos = CompanionSingleNpcManager.getLastHomePos();
+        if (homeLevelKey != null && homePos != null) {
+            ServerLevel homeLevel = server.getLevel(homeLevelKey);
+            companion = findCompanionInLevel(homeLevel, request.companionId, new ChunkPos(homePos));
+            if (companion != null && companion.isAlive()) {
+                return companion;
+            }
+        }
+        for (ServerLevel anyLevel : server.getAllLevels()) {
+            Entity entity = anyLevel.getEntity(request.companionId);
+            if (entity instanceof CompanionEntity anyCompanion && anyCompanion.isAlive()) {
+                return anyCompanion;
+            }
+        }
+        return null;
+    }
+
+    private static CompanionEntity findCompanionInLevel(ServerLevel level, UUID companionId, ChunkPos chunkPos) {
+        if (level == null || companionId == null) {
+            return null;
+        }
+        Entity entity = level.getEntity(companionId);
+        if (entity instanceof CompanionEntity companion && companion.isAlive()) {
+            return companion;
+        }
+        if (chunkPos != null) {
+            level.getChunkSource().getChunk(chunkPos.x, chunkPos.z, ChunkStatus.FULL, true);
+            entity = level.getEntity(companionId);
+            if (entity instanceof CompanionEntity chunkCompanion && chunkCompanion.isAlive()) {
+                return chunkCompanion;
+            }
+        }
+        return null;
     }
 
     private static void sendTeleportIgnore(ServerPlayer player, String key) {
@@ -2526,6 +3130,23 @@ public class CompanionEntity extends PathfinderMob {
         player.sendSystemMessage(Component.translatable(key));
     }
 
+    private static boolean usesServerTickClock(String messageKey) {
+        return WHERE_STATUS_KEY.equals(messageKey) || DIMENSION_TELEPORT_REQUEST_KEY.equals(messageKey);
+    }
+
+    private static String getTimedMessageRemovalKey(String messageKey) {
+        if (messageKey == null) {
+            return null;
+        }
+        if (WHERE_STATUS_KEY.equals(messageKey)) {
+            return TELEPORT_IGNORE_WHERE_KEY;
+        }
+        if (DIMENSION_TELEPORT_REQUEST_KEY.equals(messageKey)) {
+            return TELEPORT_IGNORE_DIMENSION_KEY;
+        }
+        return null;
+    }
+
     private static void removeExpiredPendingRequest(MinecraftServer server, UUID playerId,
                                                     PendingTeleportRequest request) {
         if (playerId == null || request == null) {
@@ -2533,7 +3154,9 @@ public class CompanionEntity extends PathfinderMob {
         }
         PENDING_TELEPORT_REQUESTS.remove(playerId, request);
         PENDING_TELEPORTS.remove(playerId);
-        if (!WHERE_STATUS_KEY.equals(request.messageKey)) {
+        APPROVED_DIMENSION_TELEPORTS.remove(playerId);
+        String removeKey = getTimedMessageRemovalKey(request.messageKey);
+        if (removeKey == null) {
             return;
         }
         if (server == null) {
@@ -2541,7 +3164,7 @@ public class CompanionEntity extends PathfinderMob {
         }
         ServerPlayer player = server.getPlayerList().getPlayer(playerId);
         if (player != null) {
-            sendTeleportIgnore(player, TELEPORT_IGNORE_WHERE_KEY);
+            sendTeleportIgnore(player, removeKey);
         }
     }
 
@@ -2565,11 +3188,44 @@ public class CompanionEntity extends PathfinderMob {
                 continue;
             }
             long gameTime = level.getGameTime();
-            if (WHERE_STATUS_KEY.equals(request.messageKey)) {
+            if (usesServerTickClock(request.messageKey)) {
                 gameTime = server.getTickCount();
             }
             if (gameTime >= request.untilTick) {
                 removeExpiredPendingRequest(server, entry.getKey(), request);
+                continue;
+            }
+            if (DIMENSION_TELEPORT_REQUEST_KEY.equals(request.messageKey)) {
+                ServerPlayer player = server.getPlayerList().getPlayer(entry.getKey());
+                if (player == null || player.isSpectator() || !player.isAlive()) {
+                    continue;
+                }
+                if (player.level().dimension().equals(request.levelKey)) {
+                    removeExpiredPendingRequest(server, entry.getKey(), request);
+                    continue;
+                }
+                if (APPROVED_DIMENSION_TELEPORTS.contains(entry.getKey())) {
+                    CompanionEntity companion = getCompanionFromPendingMap(player, request);
+                    if (companion == null) {
+                        companion = resolveCompanionForTeleport(server, request, level);
+                    }
+                    if (forceTeleportToPlayerDimension(companion, player)) {
+                        PENDING_TELEPORT_REQUESTS.remove(entry.getKey(), request);
+                        PENDING_TELEPORTS.remove(entry.getKey());
+                        APPROVED_DIMENSION_TELEPORTS.remove(entry.getKey());
+                        if (companion != null) {
+                            companion.clearTeleportRequestState();
+                            companion.clearTeleportReminder();
+                        }
+                        sendTeleportIgnore(player, TELEPORT_IGNORE_DIMENSION_KEY);
+                    }
+                    continue;
+                }
+                int secondsLeft = secondsLeftStatic(request.untilTick, gameTime);
+                if (secondsLeft != request.lastSeconds) {
+                    request.lastSeconds = secondsLeft;
+                    sendDimensionTeleportMessageStatic(player, secondsLeft);
+                }
                 continue;
             }
             if (WHERE_STATUS_KEY.equals(request.messageKey) && request.originPos != null) {
@@ -2618,10 +3274,12 @@ public class CompanionEntity extends PathfinderMob {
                 <= TELEPORT_REQUEST_DISTANCE_SQR) {
             return;
         }
-        CompanionEntity companion = (CompanionEntity) level.getEntity(companionId);
+        Entity first = level.getEntity(companionId);
+        CompanionEntity companion = first instanceof CompanionEntity loaded ? loaded : null;
         if (companion == null) {
             level.getChunkSource().getChunk(lastPos.getX() >> 4, lastPos.getZ() >> 4, ChunkStatus.FULL, true);
-            companion = (CompanionEntity) level.getEntity(companionId);
+            Entity loadedAfterChunk = level.getEntity(companionId);
+            companion = loadedAfterChunk instanceof CompanionEntity loadedCompanion ? loadedCompanion : null;
         }
         if (companion == null || companion.isRemoved() || !companion.isAlive()) {
             return;

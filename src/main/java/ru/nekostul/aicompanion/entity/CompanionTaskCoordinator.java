@@ -1,8 +1,11 @@
 package ru.nekostul.aicompanion.entity;
 
 import com.mojang.logging.LogUtils;
+import net.minecraft.ChatFormatting;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -98,8 +101,13 @@ final class CompanionTaskCoordinator {
             ResourceLocation.fromNamespaceAndPath("minecraft", "village"));
     private static final String TREE_FAIL_KEY = "entity.aicompanion.companion.tree.harvest.failed";
     private static final String TREE_NOT_FOUND_KEY = "entity.aicompanion.companion.tree.harvest.not_found";
+    private static final String TREE_RETRY_OFFER_KEY = "entity.aicompanion.companion.tree.retry.offer";
+    private static final String TREE_RETRY_BUTTON_KEY = "entity.aicompanion.companion.tree.retry.button";
+    private static final String TREE_RETRY_REMOVE_KEY = "entity.aicompanion.companion.tree.retry.remove";
     private static final String TREE_VILLAGE_BLOCK_KEY = "entity.aicompanion.companion.tree.harvest.village_block";
     private static final String GATHER_FAIL_KEY = "entity.aicompanion.companion.gather.failed";
+    private static final String TREE_RETRY_CLICK_TOKEN = "__TREE_RETRY__";
+    private static final int TREE_RETRY_TICKS = 5 * 20;
     private static final String BLOCK_LIMIT_KEY = "entity.aicompanion.companion.gather.limit.blocks";
     private static final String TREE_LIMIT_KEY = "entity.aicompanion.companion.gather.limit.trees";
     private static final String SEQUENCE_ACCEPTED_KEY = "entity.aicompanion.companion.sequence.accepted";
@@ -149,6 +157,12 @@ final class CompanionTaskCoordinator {
     private int sequenceCompletedTasks;
     private boolean sequenceDelivering;
     private final List<ItemStack> sequencePendingDrops = new ArrayList<>();
+    private UUID pendingTreeRetryPlayerId;
+    private long pendingTreeRetryUntilTick = -1L;
+    private int pendingTreeRetryLastSeconds = -1;
+    private CompanionResourceType pendingTreeRetryType;
+    private int pendingTreeRetryAmount;
+    private CompanionTreeRequestMode pendingTreeRetryTreeMode = CompanionTreeRequestMode.NONE;
 
     CompanionTaskCoordinator(CompanionEntity owner,
                              CompanionInventory inventory,
@@ -186,6 +200,9 @@ final class CompanionTaskCoordinator {
         if (inventoryExchange.handleMessage(player, message)) {
             return true;
         }
+        if (handleTreeRetryClick(player, message)) {
+            return true;
+        }
         SequenceParseResult sequenceResult = parseSequenceMessage(message);
         if (sequenceResult.isSequenceCommand()) {
             if (!sequenceResult.isValid()) {
@@ -198,6 +215,7 @@ final class CompanionTaskCoordinator {
                         owner.getUUID(), player.getUUID(), failedSegment, sequenceResult.parseError);
                 return true;
             }
+            clearTreeRetryPrompt(player, true);
             startSequence(player, sequenceResult.tasks);
             return true;
         }
@@ -209,12 +227,14 @@ final class CompanionTaskCoordinator {
                 && parsed.getResourceType() == CompanionResourceType.TORCH) {
             return true;
         }
+        clearTreeRetryPrompt(player, true);
         clearTaskSequence();
         startRequest(player, parsed);
         return true;
     }
 
     void tick(CompanionEntity.CompanionMode mode, long gameTime) {
+        tickTreeRetryPrompt(gameTime);
         if (activeRequest == null) {
             return;
         }
@@ -406,9 +426,17 @@ final class CompanionTaskCoordinator {
                 return;
             }
             if (treeResult == CompanionTreeHarvestController.Result.FAILED) {
-                owner.sendReply(player, Component.translatable(TREE_FAIL_KEY));
+                CompanionResourceRequest failedTreeRequest = activeRequest;
                 treeHarvest.resetAfterRequest();
                 failActiveTask(player, "tree_failed");
+                owner.setMode(CompanionEntity.CompanionMode.FOLLOW);
+                boolean offeredRetry = false;
+                if (player instanceof ServerPlayer serverPlayer && sequencePlayerId == null) {
+                    offeredRetry = offerTreeRetry(serverPlayer, failedTreeRequest, gameTime);
+                }
+                if (!offeredRetry) {
+                    owner.sendReply(player, Component.translatable(TREE_FAIL_KEY));
+                }
                 return;
             }
             if (treeResult == CompanionTreeHarvestController.Result.NOT_FOUND) {
@@ -441,8 +469,15 @@ final class CompanionTaskCoordinator {
             return;
         }
         if (result == CompanionGatheringController.Result.FAILED) {
-            owner.sendReply(player, Component.translatable(GATHER_FAIL_KEY));
+            CompanionResourceRequest failedGatherRequest = activeRequest;
             failActiveTask(player, "gather_failed");
+            boolean offeredRetry = false;
+            if (player instanceof ServerPlayer serverPlayer && sequencePlayerId == null) {
+                offeredRetry = offerTreeRetry(serverPlayer, failedGatherRequest, gameTime);
+            }
+            if (!offeredRetry) {
+                owner.sendReply(player, Component.translatable(GATHER_FAIL_KEY));
+            }
             return;
         }
         if (result == CompanionGatheringController.Result.NOT_FOUND) {
@@ -587,6 +622,126 @@ final class CompanionTaskCoordinator {
     private void resetActiveTask() {
         activeRequest = null;
         taskState = TaskState.IDLE;
+    }
+
+    private boolean handleTreeRetryClick(ServerPlayer player, String message) {
+        if (player == null || message == null || !TREE_RETRY_CLICK_TOKEN.equalsIgnoreCase(message.trim())) {
+            return false;
+        }
+        if (pendingTreeRetryPlayerId == null || !pendingTreeRetryPlayerId.equals(player.getUUID())) {
+            return true;
+        }
+        long gameTime = owner.level().getGameTime();
+        if (gameTime >= pendingTreeRetryUntilTick || !hasPendingTreeRetryRequest()) {
+            clearTreeRetryPrompt(player, true);
+            return true;
+        }
+        if (activeRequest != null) {
+            clearTreeRetryPrompt(player, true);
+            return true;
+        }
+        if (pendingTreeRetryTreeMode != CompanionTreeRequestMode.NONE && isPlayerInVillage(player)) {
+            clearTreeRetryPrompt(player, true);
+            owner.sendReply(player, Component.translatable(TREE_VILLAGE_BLOCK_KEY));
+            return true;
+        }
+        CompanionResourceType retryType = pendingTreeRetryType;
+        int retryAmount = pendingTreeRetryAmount;
+        CompanionTreeRequestMode retryMode = pendingTreeRetryTreeMode;
+        if (retryType == null || retryAmount <= 0 || retryMode == null) {
+            clearTreeRetryPrompt(player, true);
+            return true;
+        }
+        clearTreeRetryPrompt(player, true);
+        clearTaskSequence();
+        activeRequest = new CompanionResourceRequest(
+                player.getUUID(),
+                retryType,
+                retryAmount,
+                retryMode
+        );
+        taskState = TaskState.GATHERING;
+        if (!activeRequest.isTreeCountRequest()) {
+            delivery.startDelivery();
+        }
+        return true;
+    }
+
+    private boolean offerTreeRetry(ServerPlayer player, CompanionResourceRequest failedRequest, long gameTime) {
+        if (player == null || failedRequest == null) {
+            return false;
+        }
+        pendingTreeRetryPlayerId = player.getUUID();
+        pendingTreeRetryType = failedRequest.getResourceType();
+        pendingTreeRetryAmount = failedRequest.getAmount();
+        pendingTreeRetryTreeMode = failedRequest.getTreeMode();
+        pendingTreeRetryUntilTick = gameTime + TREE_RETRY_TICKS;
+        pendingTreeRetryLastSeconds = -1;
+        int secondsLeft = secondsLeft(pendingTreeRetryUntilTick, gameTime);
+        sendTreeRetryMessage(player, secondsLeft);
+        pendingTreeRetryLastSeconds = secondsLeft;
+        return true;
+    }
+
+    private void tickTreeRetryPrompt(long gameTime) {
+        if (pendingTreeRetryPlayerId == null) {
+            return;
+        }
+        Player player = owner.getPlayerById(pendingTreeRetryPlayerId);
+        if (!(player instanceof ServerPlayer serverPlayer)) {
+            clearTreeRetryState();
+            return;
+        }
+        if (gameTime >= pendingTreeRetryUntilTick || !hasPendingTreeRetryRequest()) {
+            clearTreeRetryPrompt(serverPlayer, true);
+            return;
+        }
+        int secondsLeft = secondsLeft(pendingTreeRetryUntilTick, gameTime);
+        if (secondsLeft != pendingTreeRetryLastSeconds) {
+            pendingTreeRetryLastSeconds = secondsLeft;
+            sendTreeRetryMessage(serverPlayer, secondsLeft);
+        }
+    }
+
+    private boolean hasPendingTreeRetryRequest() {
+        return pendingTreeRetryType != null
+                && pendingTreeRetryAmount > 0
+                && pendingTreeRetryTreeMode != null;
+    }
+
+    private void clearTreeRetryPrompt(ServerPlayer player, boolean notifyRemove) {
+        if (notifyRemove && player != null) {
+            owner.sendReply(player, Component.translatable(TREE_RETRY_REMOVE_KEY));
+        }
+        clearTreeRetryState();
+    }
+
+    private void clearTreeRetryState() {
+        pendingTreeRetryPlayerId = null;
+        pendingTreeRetryUntilTick = -1L;
+        pendingTreeRetryLastSeconds = -1;
+        pendingTreeRetryType = null;
+        pendingTreeRetryAmount = 0;
+        pendingTreeRetryTreeMode = CompanionTreeRequestMode.NONE;
+    }
+
+    private void sendTreeRetryMessage(ServerPlayer player, int secondsLeft) {
+        if (player == null) {
+            return;
+        }
+        owner.sendReply(player, Component.translatable(TREE_RETRY_REMOVE_KEY));
+        MutableComponent base = Component.translatable(TREE_RETRY_OFFER_KEY, secondsLeft);
+        Component button = Component.translatable(TREE_RETRY_BUTTON_KEY)
+                .withStyle(style -> style.withColor(ChatFormatting.AQUA)
+                        .withBold(true)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND,
+                                "/ainpc msg " + TREE_RETRY_CLICK_TOKEN)));
+        owner.sendReply(player, base.append(Component.literal(" ")).append(button));
+    }
+
+    private int secondsLeft(long untilTick, long gameTime) {
+        long diff = Math.max(0L, untilTick - gameTime);
+        return (int) ((diff + 19L) / 20L);
     }
 
     private SequenceParseResult parseSequenceMessage(String message) {

@@ -24,10 +24,16 @@ public final class CompanionTeleportChatHandler {
             "entity.aicompanion.companion.home.death.recovery.hp";
     private static final String HOME_DEATH_RECOVERY_HP_REMOVE_KEY =
             "entity.aicompanion.companion.home.death.recovery.hp.remove";
+    private static final String TREE_RETRY_OFFER_KEY =
+            "entity.aicompanion.companion.tree.retry.offer";
+    private static final String TREE_RETRY_REMOVE_KEY =
+            "entity.aicompanion.companion.tree.retry.remove";
     private static final Set<String> TELEPORT_REQUEST_KEYS = Set.of(
             "entity.aicompanion.companion.teleport.request",
             "entity.aicompanion.companion.teleport.request.alt",
             "entity.aicompanion.companion.teleport.request.repeat",
+            "entity.aicompanion.companion.boat.request",
+            "entity.aicompanion.companion.dimension.request",
             "entity.aicompanion.companion.home.confirm",
             "entity.aicompanion.companion.where.status",
             "entity.aicompanion.companion.home.follow",
@@ -51,7 +57,9 @@ public final class CompanionTeleportChatHandler {
         boolean teleportIgnore = containsTeleportIgnore(message);
         boolean homeRecoveryHp = containsHomeRecoveryHp(message);
         boolean homeRecoveryHpRemove = containsHomeRecoveryHpRemove(message);
-        if (teleportRequest || teleportIgnore || homeRecoveryHp || homeRecoveryHpRemove) {
+        boolean treeRetryOffer = containsTreeRetryOffer(message);
+        boolean treeRetryRemove = containsTreeRetryRemove(message);
+        if (teleportRequest || teleportIgnore || homeRecoveryHp || homeRecoveryHpRemove || treeRetryOffer || treeRetryRemove) {
             event.setCanceled(true);
             Minecraft minecraft = Minecraft.getInstance();
             if (minecraft == null || minecraft.gui == null) {
@@ -60,8 +68,10 @@ public final class CompanionTeleportChatHandler {
             ChatComponent chat = minecraft.gui.getChat();
             if (teleportRequest || teleportIgnore) {
                 replaceTeleportMessage(chat, message, teleportIgnore);
-            } else {
+            } else if (homeRecoveryHp || homeRecoveryHpRemove) {
                 replaceHomeRecoveryHpMessage(chat, message, homeRecoveryHpRemove);
+            } else {
+                replaceTreeRetryMessage(chat, message, treeRetryRemove);
             }
         }
     }
@@ -130,6 +140,38 @@ public final class CompanionTeleportChatHandler {
         return false;
     }
 
+    private static boolean containsTreeRetryOffer(Component message) {
+        if (message == null) {
+            return false;
+        }
+        if (message.getContents() instanceof TranslatableContents contents
+                && TREE_RETRY_OFFER_KEY.equals(contents.getKey())) {
+            return true;
+        }
+        for (Component sibling : message.getSiblings()) {
+            if (containsTreeRetryOffer(sibling)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsTreeRetryRemove(Component message) {
+        if (message == null) {
+            return false;
+        }
+        if (message.getContents() instanceof TranslatableContents contents
+                && TREE_RETRY_REMOVE_KEY.equals(contents.getKey())) {
+            return true;
+        }
+        for (Component sibling : message.getSiblings()) {
+            if (containsTreeRetryRemove(sibling)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static void replaceTeleportMessage(ChatComponent chat, Component message, boolean ignore) {
         List<GuiMessage> messages = getChatMessages(chat);
         if (messages != null) {
@@ -157,6 +199,26 @@ public final class CompanionTeleportChatHandler {
             for (Iterator<GuiMessage> iterator = messages.iterator(); iterator.hasNext(); ) {
                 GuiMessage guiMessage = iterator.next();
                 if (containsHomeRecoveryHp(guiMessage.content())) {
+                    iterator.remove();
+                    removed = true;
+                }
+            }
+            if (removed) {
+                chat.rescaleChat();
+            }
+        }
+        if (!removeOnly) {
+            chat.addMessage(message);
+        }
+    }
+
+    private static void replaceTreeRetryMessage(ChatComponent chat, Component message, boolean removeOnly) {
+        List<GuiMessage> messages = getChatMessages(chat);
+        if (messages != null) {
+            boolean removed = false;
+            for (Iterator<GuiMessage> iterator = messages.iterator(); iterator.hasNext(); ) {
+                GuiMessage guiMessage = iterator.next();
+                if (containsTreeRetryOffer(guiMessage.content())) {
                     iterator.remove();
                     removed = true;
                 }

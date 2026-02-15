@@ -70,6 +70,7 @@ public final class CompanionTreeHarvestController {
     private static final int MAX_PATH_CHECKS_PER_TICK = 2;
     private static final double PATH_DETOUR_MULTIPLIER = 2.0D;
     private static final int TREE_SEARCH_TIMEOUT_TICKS = 500;
+    private static final int TREE_CHOP_WAIT_TIMEOUT_TICKS = 3 * 20;
     private static final int NEAR_SCAN_RADIUS = 24;
     private static final int LOG_FROM_LEAVES_RADIUS = 3;
     private static final int LOG_FROM_LEAVES_MAX_DEPTH = 6;
@@ -110,6 +111,8 @@ public final class CompanionTreeHarvestController {
     private BlockPos trunkLogPos;
     private BlockPos treeChopWaitPos;
     private BlockPos treeChopLockedBase;
+    private long treeChopWaitStartTick = -1L;
+    private int treeChopWaitLogCount = -1;
     private final Set<BlockPos> treeChopTrackedLogs = new HashSet<>();
     private boolean forceTrunkChop;
     private final Deque<PlacedStep> placedSteps = new ArrayDeque<>();
@@ -187,13 +190,28 @@ public final class CompanionTreeHarvestController {
             clearTargetState();
             return finalizeResult(Result.NEED_CHEST, gameTime);
         }
+        updateTreeChopLogProgress(gameTime);
         if (stepCleanupActive && tickStepCleanup(gameTime)) {
             return finalizeResult(Result.IN_PROGRESS, gameTime);
         }
         if (isTreeChopActive() && treeChopWaitPos != null) {
             if (!isTreeChopComplete(treeChopWaitPos)) {
+                if (treeChopWaitStartTick >= 0L
+                        && gameTime - treeChopWaitStartTick >= TREE_CHOP_WAIT_TIMEOUT_TICKS) {
+                    clearTargetState();
+                    treeChopWaitPos = null;
+                    treeChopLockedBase = null;
+                    treeChopTrackedLogs.clear();
+                    forceTrunkChop = false;
+                    treeChopWaitStartTick = -1L;
+                    treeChopWaitLogCount = -1;
+                    resetScanCache();
+                    return finalizeResult(Result.FAILED, gameTime);
+                }
                 return finalizeResult(Result.IN_PROGRESS, gameTime);
             }
+            treeChopWaitStartTick = -1L;
+            treeChopWaitLogCount = -1;
             collectTreeChopDrops(treeChopWaitPos);
             startStepCleanup(gameTime);
             treeChopWaitPos = null;
@@ -411,6 +429,8 @@ public final class CompanionTreeHarvestController {
             clearTargetState();
             treeChopWaitPos = null;
             treeChopLockedBase = null;
+            treeChopWaitStartTick = -1L;
+            treeChopWaitLogCount = -1;
             treeChopTrackedLogs.clear();
             forceTrunkChop = false;
             resetScanCache();
@@ -524,6 +544,8 @@ public final class CompanionTreeHarvestController {
         clearTargetState();
         treeChopWaitPos = null;
         treeChopLockedBase = null;
+        treeChopWaitStartTick = -1L;
+        treeChopWaitLogCount = -1;
         treeChopTrackedLogs.clear();
         forceTrunkChop = false;
         failedSearchAttempts = 0;
@@ -642,6 +664,8 @@ public final class CompanionTreeHarvestController {
                         treeChopLockedBase = null;
                         treeChopTrackedLogs.clear();
                         treeChopWaitPos = null;
+                        treeChopWaitStartTick = -1L;
+                        treeChopWaitLogCount = -1;
                         forceTrunkChop = false;
                     }
                     if (treeMode == CompanionTreeRequestMode.TREE_COUNT) {
@@ -1580,6 +1604,8 @@ public final class CompanionTreeHarvestController {
         requestPlayerId = null;
         treeChopWaitPos = null;
         treeChopLockedBase = null;
+        treeChopWaitStartTick = -1L;
+        treeChopWaitLogCount = -1;
         treeChopTrackedLogs.clear();
         forceTrunkChop = false;
         failedSearchAttempts = 0;
@@ -1588,6 +1614,24 @@ public final class CompanionTreeHarvestController {
         resetScanCache();
         resetStuckTracking();
         clearPlacedStepBlock();
+    }
+
+    private void updateTreeChopLogProgress(long gameTime) {
+        if (!isTreeChopActive()) {
+            treeChopWaitStartTick = -1L;
+            treeChopWaitLogCount = -1;
+            return;
+        }
+        int currentLogs = countLogsInInventory();
+        if (treeChopWaitLogCount < 0) {
+            treeChopWaitLogCount = currentLogs;
+            treeChopWaitStartTick = gameTime;
+            return;
+        }
+        if (currentLogs > treeChopWaitLogCount) {
+            treeChopWaitLogCount = currentLogs;
+            treeChopWaitStartTick = gameTime;
+        }
     }
 
     private void resetScanCache() {
