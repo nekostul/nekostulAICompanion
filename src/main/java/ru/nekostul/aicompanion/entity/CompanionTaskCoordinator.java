@@ -17,6 +17,7 @@ import net.minecraft.world.item.ItemStack;
 import org.slf4j.Logger;
 import ru.nekostul.aicompanion.CompanionConfig;
 import ru.nekostul.aicompanion.entity.command.CompanionCommandParser;
+import ru.nekostul.aicompanion.entity.home.CompanionHomeAssessmentController;
 import ru.nekostul.aicompanion.entity.inventory.CompanionDeliveryController;
 import ru.nekostul.aicompanion.entity.inventory.CompanionEquipment;
 import ru.nekostul.aicompanion.entity.inventory.CompanionInventory;
@@ -41,7 +42,8 @@ final class CompanionTaskCoordinator {
         WAITING_CHEST,
         GATHERING,
         DELIVERING,
-        DELIVERING_ALL
+        DELIVERING_ALL,
+        HOME_ASSESSING
     }
 
     private static final Logger LOGGER = LogUtils.getLogger();
@@ -84,6 +86,7 @@ final class CompanionTaskCoordinator {
     private final CompanionChestManager chestManager;
     private final CompanionCommandParser commandParser;
     private final CompanionTaskSequenceParser sequenceParser;
+    private final CompanionHomeAssessmentController homeAssessment;
     private final CompanionHelpSystem helpSystem;
     private final CompanionInventoryExchange inventoryExchange;
     private final CompanionTorchHandler torchHandler;
@@ -126,6 +129,7 @@ final class CompanionTaskCoordinator {
         this.chestManager = chestManager;
         this.commandParser = commandParser;
         this.sequenceParser = new CompanionTaskSequenceParser(commandParser);
+        this.homeAssessment = new CompanionHomeAssessmentController(owner);
         this.helpSystem = helpSystem;
         this.inventoryExchange = inventoryExchange;
         this.torchHandler = torchHandler;
@@ -142,6 +146,15 @@ final class CompanionTaskCoordinator {
             return true;
         }
         if (handleTreeRetryClick(player, message)) {
+            return true;
+        }
+        if (homeAssessment.isAssessmentCommand(message)) {
+            clearTreeRetryPrompt(player, true);
+            clearTaskSequence();
+            resetActiveTask();
+            if (homeAssessment.start(player, owner.level().getGameTime())) {
+                taskState = TaskState.HOME_ASSESSING;
+            }
             return true;
         }
         CompanionTaskSequenceParser.SequenceParseResult sequenceResult = sequenceParser.parse(message);
@@ -176,6 +189,13 @@ final class CompanionTaskCoordinator {
 
     void tick(CompanionEntity.CompanionMode mode, long gameTime) {
         tickTreeRetryPrompt(gameTime);
+        if (taskState == TaskState.HOME_ASSESSING) {
+            CompanionHomeAssessmentController.Result assessResult = homeAssessment.tick(gameTime);
+            if (assessResult != CompanionHomeAssessmentController.Result.IN_PROGRESS) {
+                taskState = TaskState.IDLE;
+            }
+            return;
+        }
         if (activeRequest == null) {
             return;
         }
@@ -234,6 +254,9 @@ final class CompanionTaskCoordinator {
     }
 
     boolean isBusy() {
+        if (taskState == TaskState.HOME_ASSESSING) {
+            return true;
+        }
         return activeRequest != null && taskState != TaskState.IDLE
                 && taskState != TaskState.WAITING_BUCKETS
                 && taskState != TaskState.WAITING_TORCH_RESOURCES;
@@ -592,6 +615,7 @@ final class CompanionTaskCoordinator {
     }
 
     private void resetActiveTask() {
+        homeAssessment.cancel();
         activeRequest = null;
         taskState = TaskState.IDLE;
     }
