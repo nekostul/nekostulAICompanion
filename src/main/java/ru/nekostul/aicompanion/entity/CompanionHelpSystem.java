@@ -12,6 +12,7 @@ final class CompanionHelpSystem {
     private static final String HELP_HOME_KEY = "entity.aicompanion.companion.help.home";
     private static final String HELP_WHERE_KEY = "entity.aicompanion.companion.help.where";
     private static final String HELP_MINING_KEY = "entity.aicompanion.companion.help.mining";
+    private static final String HELP_AI_KEY = "entity.aicompanion.companion.help.ai";
 
     boolean handleHelp(Player player, String message) {
         if (player == null || message == null) {
@@ -44,6 +45,12 @@ final class CompanionHelpSystem {
         if (normalized.contains("\u043f\u043e\u043c\u043e\u0449\u044c \u0434\u043e\u0431\u044b\u0447")
                 || normalized.contains("help mining")) {
             player.sendSystemMessage(Component.translatable(HELP_MINING_KEY));
+            return true;
+        }
+        if (normalized.contains("\u043f\u043e\u043c\u043e\u0449\u044c \u0438\u0438")
+                || normalized.contains("\u043f\u043e\u043c\u043e\u0449\u044c ai")
+                || normalized.contains("help ai")) {
+            player.sendSystemMessage(Component.translatable(HELP_AI_KEY));
             return true;
         }
         if (normalized.equals("\u043f\u043e\u043c\u043e\u0449\u044c") || normalized.equals("help")

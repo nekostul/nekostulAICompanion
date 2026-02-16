@@ -3,6 +3,9 @@ package ru.nekostul.aicompanion.entity.ai;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.pathfinder.Path;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.util.Mth;
 
@@ -28,6 +31,7 @@ public class FollowNearestPlayerGoal extends Goal {
 
     private static final double FOLLOW_BEHIND_DISTANCE = 2.6D;
     private static final double FOLLOW_SIDE_DISTANCE = 1.2D;
+    private static final double FOLLOW_BEHIND_FAR_DISTANCE = 3.6D;
     private static final double FOLLOW_MIN_DISTANCE_SQR = 2.25D;
     private static final double FOLLOW_MAX_DISTANCE_SQR = 20.25D;
     private static final double PLAYER_MOVE_RECALC_SQR = 1.0D;
@@ -62,7 +66,8 @@ public class FollowNearestPlayerGoal extends Goal {
         if (nearest == null || nearest.isSpectator()) {
             return false;
         }
-        if (this.mob.distanceToSqr(nearest) <= (double) (this.stopDistance * this.stopDistance)) {
+        if (this.mob.distanceToSqr(nearest) <= (double) (this.stopDistance * this.stopDistance)
+                && this.mob.hasLineOfSight(nearest)) {
             return false;
         }
         this.target = nearest;
@@ -78,7 +83,8 @@ public class FollowNearestPlayerGoal extends Goal {
             return false;
         }
         double distanceSqr = this.mob.distanceToSqr(this.target);
-        if (distanceSqr <= (double) (this.stopDistance * this.stopDistance)) {
+        if (distanceSqr <= (double) (this.stopDistance * this.stopDistance)
+                && this.mob.hasLineOfSight(this.target)) {
             return false;
         }
         return distanceSqr <= (double) (this.startDistance * this.startDistance);
@@ -119,7 +125,8 @@ public class FollowNearestPlayerGoal extends Goal {
             return;
         }
         double followDistanceSqr = this.mob.distanceToSqr(this.followPos);
-        if (followDistanceSqr <= (double) (this.stopDistance * this.stopDistance)) {
+        if (followDistanceSqr <= (double) (this.stopDistance * this.stopDistance)
+                && this.mob.hasLineOfSight(this.target)) {
             this.mob.getNavigation().stop();
             return;
         }
@@ -193,11 +200,49 @@ public class FollowNearestPlayerGoal extends Goal {
         double sideDistance = distanceSqr <= FOLLOW_MAX_DISTANCE_SQR ? FOLLOW_SIDE_DISTANCE : 0.0D;
         Vec3 right = new Vec3(-forward.z, 0.0D, forward.x).scale(sideDistance * sideSign);
         Vec3 behind = forward.scale(-FOLLOW_BEHIND_DISTANCE);
-        Vec3 follow = new Vec3(playerPos.x + behind.x + right.x, playerPos.y, playerPos.z + behind.z + right.z);
-        if (follow.distanceToSqr(playerPos) < FOLLOW_MIN_DISTANCE_SQR) {
-            Vec3 farther = forward.scale(-(FOLLOW_BEHIND_DISTANCE + 1.0D));
-            follow = new Vec3(playerPos.x + farther.x, playerPos.y, playerPos.z + farther.z);
+        Vec3 preferred = new Vec3(playerPos.x + behind.x + right.x, playerPos.y, playerPos.z + behind.z + right.z);
+        if (preferred.distanceToSqr(playerPos) < FOLLOW_MIN_DISTANCE_SQR) {
+            Vec3 farther = forward.scale(-FOLLOW_BEHIND_FAR_DISTANCE);
+            preferred = new Vec3(playerPos.x + farther.x, playerPos.y, playerPos.z + farther.z);
         }
-        return follow;
+        Vec3 behindOnly = new Vec3(playerPos.x + behind.x, playerPos.y, playerPos.z + behind.z);
+        Vec3 direct = new Vec3(playerPos.x, playerPos.y, playerPos.z);
+        return chooseReachableFollowPos(playerPos, preferred, behindOnly, direct);
+    }
+
+    private Vec3 chooseReachableFollowPos(Vec3 playerPos, Vec3 preferred, Vec3 behindOnly, Vec3 direct) {
+        if (isGoodFollowCandidate(playerPos, preferred)) {
+            return preferred;
+        }
+        if (isGoodFollowCandidate(playerPos, behindOnly)) {
+            return behindOnly;
+        }
+        return direct;
+    }
+
+    private boolean isGoodFollowCandidate(Vec3 playerPos, Vec3 candidate) {
+        if (playerPos == null || candidate == null) {
+            return false;
+        }
+        if (!hasClearPlayerLine(playerPos, candidate)) {
+            return false;
+        }
+        return canReach(candidate);
+    }
+
+    private boolean hasClearPlayerLine(Vec3 playerPos, Vec3 candidate) {
+        Vec3 from = new Vec3(playerPos.x, playerPos.y + this.target.getEyeHeight(), playerPos.z);
+        Vec3 to = new Vec3(candidate.x, candidate.y + Math.max(0.2D, this.mob.getBbHeight() * 0.5D), candidate.z);
+        HitResult hit = this.mob.level().clip(new ClipContext(from, to,
+                ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, this.target));
+        return hit.getType() == HitResult.Type.MISS;
+    }
+
+    private boolean canReach(Vec3 targetPos) {
+        if (targetPos == null || this.mob.getNavigation() == null) {
+            return false;
+        }
+        Path path = this.mob.getNavigation().createPath(targetPos.x, targetPos.y, targetPos.z, 0);
+        return path != null && path.canReach();
     }
 }

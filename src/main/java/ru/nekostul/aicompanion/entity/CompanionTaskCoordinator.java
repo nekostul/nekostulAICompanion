@@ -16,6 +16,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import org.slf4j.Logger;
 import ru.nekostul.aicompanion.CompanionConfig;
+import ru.nekostul.aicompanion.aiproviders.yandexgpt.YandexGptClient;
 import ru.nekostul.aicompanion.entity.command.CompanionCommandParser;
 import ru.nekostul.aicompanion.entity.home.CompanionHomeAssessmentController;
 import ru.nekostul.aicompanion.entity.inventory.CompanionDeliveryController;
@@ -32,7 +33,11 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 final class CompanionTaskCoordinator {
     private enum TaskState {
@@ -75,6 +80,18 @@ final class CompanionTaskCoordinator {
             "entity.aicompanion.companion.sequence.parse.reason.amount";
     private static final String SEQUENCE_PARSE_REASON_GENERIC_KEY =
             "entity.aicompanion.companion.sequence.parse.reason.generic";
+    private static final String AI_WAIT_KEY = "entity.aicompanion.companion.ai.wait";
+    private static final String AI_DISABLED_KEY = "entity.aicompanion.companion.ai.disabled";
+    private static final String AI_NOT_CONFIGURED_KEY = "entity.aicompanion.companion.ai.not_configured";
+    private static final String AI_DAILY_LIMIT_KEY = "entity.aicompanion.companion.ai.daily_limit";
+    private static final String AI_FAILED_KEY = "entity.aicompanion.companion.ai.failed";
+    private static final String AI_COMMAND_UNRECOGNIZED_KEY =
+            "entity.aicompanion.companion.ai.command.unrecognized";
+    private static final String AI_NO_COMMAND_TOKEN = "__NO_COMMAND__";
+    private static final String AI_HOME_REVIEW_IN_PROGRESS_KEY =
+            "entity.aicompanion.companion.ai.home_review.in_progress";
+    private static final String AI_HOME_REVIEW_FAILED_KEY =
+            "entity.aicompanion.companion.ai.home_review.failed";
 
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
@@ -88,6 +105,7 @@ final class CompanionTaskCoordinator {
     private final CompanionTaskSequenceParser sequenceParser;
     private final CompanionHomeAssessmentController homeAssessment;
     private final CompanionHelpSystem helpSystem;
+    private final CompanionAiChatController aiChatController;
     private final CompanionInventoryExchange inventoryExchange;
     private final CompanionTorchHandler torchHandler;
 
@@ -106,6 +124,9 @@ final class CompanionTaskCoordinator {
     private CompanionResourceType pendingTreeRetryType;
     private int pendingTreeRetryAmount;
     private CompanionTreeRequestMode pendingTreeRetryTreeMode = CompanionTreeRequestMode.NONE;
+    private final Set<UUID> aiCommandInFlightByPlayer = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> aiHomeReviewInFlightByPlayer = ConcurrentHashMap.newKeySet();
+    private String lastAiHomeReviewPayload = "";
 
     CompanionTaskCoordinator(CompanionEntity owner,
                              CompanionInventory inventory,
@@ -131,6 +152,7 @@ final class CompanionTaskCoordinator {
         this.sequenceParser = new CompanionTaskSequenceParser(commandParser);
         this.homeAssessment = new CompanionHomeAssessmentController(owner);
         this.helpSystem = helpSystem;
+        this.aiChatController = new CompanionAiChatController(owner);
         this.inventoryExchange = inventoryExchange;
         this.torchHandler = torchHandler;
     }
@@ -148,8 +170,12 @@ final class CompanionTaskCoordinator {
         if (handleTreeRetryClick(player, message)) {
             return true;
         }
+        String payloadBeforeFollowUp = homeAssessment.getLastAssessmentPayload();
         if (homeAssessment.handleFollowUpMessage(player, message, owner.level().getGameTime())) {
             taskState = homeAssessment.isSessionActive() ? TaskState.HOME_ASSESSING : TaskState.IDLE;
+            if (!homeAssessment.isSessionActive()) {
+                requestAiHomeReviewIfNeeded(player, payloadBeforeFollowUp);
+            }
             return true;
         }
         if (homeAssessment.isAssessmentCommand(message)) {
@@ -161,34 +187,27 @@ final class CompanionTaskCoordinator {
             }
             return true;
         }
+        if (aiChatController.handleMessage(player, message)) {
+            return true;
+        }
         CompanionTaskSequenceParser.SequenceParseResult sequenceResult = sequenceParser.parse(message);
         if (sequenceResult.isSequenceCommand()) {
             if (!sequenceResult.isValid()) {
-                Component reason = Component.translatable(parseReasonKey(sequenceResult.parseError()));
-                String failedSegment = sequenceResult.failedSegment().isBlank()
-                        ? CompanionTaskSequenceParser.normalizeTaskText(message)
-                        : sequenceResult.failedSegment();
-                owner.sendReply(player, Component.translatable(SEQUENCE_PARSE_FAILED_KEY, failedSegment, reason));
-                LOGGER.debug("task-sequence parse failed: npc={} player={} segment='{}' error={}",
-                        owner.getUUID(), player.getUUID(), failedSegment, sequenceResult.parseError());
-                return true;
+                CompanionCommandParser.CommandRequest directParsed = commandParser.parse(message);
+                if (directParsed != null) {
+                    return handleParsedCommandRequest(player, directParsed);
+                }
+                if (tryInterpretCommandWithAi(player, message)) {
+                    return true;
+                }
             }
-            clearTreeRetryPrompt(player, true);
-            startSequence(player, sequenceResult.tasks());
-            return true;
+            return handleParsedSequenceCommand(player, message, sequenceResult);
         }
         CompanionCommandParser.CommandRequest parsed = commandParser.parse(message);
-        if (parsed == null) {
-            return false;
+        if (parsed != null) {
+            return handleParsedCommandRequest(player, parsed);
         }
-        if (taskState == TaskState.WAITING_TORCH_RESOURCES
-                && parsed.getResourceType() == CompanionResourceType.TORCH) {
-            return true;
-        }
-        clearTreeRetryPrompt(player, true);
-        clearTaskSequence();
-        startRequest(player, parsed);
-        return true;
+        return tryInterpretCommandWithAi(player, message);
     }
 
     void tick(CompanionEntity.CompanionMode mode, long gameTime) {
@@ -268,6 +287,281 @@ final class CompanionTaskCoordinator {
 
     void onInventoryUpdated() {
         equipment.equipBestArmor();
+    }
+
+    private boolean handleParsedSequenceCommand(ServerPlayer player,
+                                                String originalMessage,
+                                                CompanionTaskSequenceParser.SequenceParseResult sequenceResult) {
+        if (player == null || sequenceResult == null) {
+            return false;
+        }
+        if (!sequenceResult.isValid()) {
+            Component reason = Component.translatable(parseReasonKey(sequenceResult.parseError()));
+            String failedSegment = sequenceResult.failedSegment().isBlank()
+                    ? CompanionTaskSequenceParser.normalizeTaskText(originalMessage)
+                    : sequenceResult.failedSegment();
+            owner.sendReply(player, Component.translatable(SEQUENCE_PARSE_FAILED_KEY, failedSegment, reason));
+            LOGGER.debug("task-sequence parse failed: npc={} player={} segment='{}' error={}",
+                    owner.getUUID(), player.getUUID(), failedSegment, sequenceResult.parseError());
+            return true;
+        }
+        clearTreeRetryPrompt(player, true);
+        startSequence(player, sequenceResult.tasks());
+        return true;
+    }
+
+    private boolean handleParsedCommandRequest(ServerPlayer player, CompanionCommandParser.CommandRequest parsed) {
+        if (player == null || parsed == null) {
+            return false;
+        }
+        if (taskState == TaskState.WAITING_TORCH_RESOURCES
+                && parsed.getResourceType() == CompanionResourceType.TORCH) {
+            return true;
+        }
+        clearTreeRetryPrompt(player, true);
+        clearTaskSequence();
+        startRequest(player, parsed);
+        return true;
+    }
+
+    private boolean tryInterpretCommandWithAi(ServerPlayer player, String rawMessage) {
+        if (player == null || rawMessage == null || !looksLikeTaskIntent(rawMessage)) {
+            return false;
+        }
+        UUID playerId = player.getUUID();
+        if (!aiCommandInFlightByPlayer.add(playerId)) {
+            owner.sendReply(player, Component.translatable(AI_WAIT_KEY));
+            return true;
+        }
+        CompletableFuture
+                .supplyAsync(() -> YandexGptClient.interpretCommand(player, rawMessage))
+                .thenAccept(result -> completeAiCommandInterpretationOnServerThread(playerId, rawMessage, result))
+                .exceptionally(error -> {
+                    completeAiCommandInterpretationOnServerThread(playerId, rawMessage, null);
+                    return null;
+                });
+        return true;
+    }
+
+    private boolean looksLikeTaskIntent(String message) {
+        if (message == null) {
+            return false;
+        }
+        String normalized = message.trim()
+                .toLowerCase(Locale.ROOT)
+                .replace('\u0451', '\u0435');
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        boolean hasActionCue = normalized.contains("добуд")
+                || normalized.contains("добы")
+                || normalized.contains("принес")
+                || normalized.contains("притащ")
+                || normalized.contains("достан")
+                || normalized.contains("собер")
+                || normalized.contains("наруб")
+                || normalized.contains("накоп")
+                || normalized.contains("gather")
+                || normalized.contains("mine")
+                || normalized.contains("bring")
+                || normalized.contains("collect")
+                || normalized.contains("fetch");
+        boolean hasResourceCue = normalized.contains("земл")
+                || normalized.contains("дерев")
+                || normalized.contains("камн")
+                || normalized.contains("пес")
+                || normalized.contains("грав")
+                || normalized.contains("глин")
+                || normalized.contains("руд")
+                || normalized.contains("угол")
+                || normalized.contains("желез")
+                || normalized.contains("мед")
+                || normalized.contains("золот")
+                || normalized.contains("редстоун")
+                || normalized.contains("лазур")
+                || normalized.contains("алмаз")
+                || normalized.contains("изумруд")
+                || normalized.contains("вод")
+                || normalized.contains("лав")
+                || normalized.contains("факел")
+                || normalized.contains("dirt")
+                || normalized.contains("wood")
+                || normalized.contains("stone")
+                || normalized.contains("sand")
+                || normalized.contains("gravel")
+                || normalized.contains("clay")
+                || normalized.contains("ore")
+                || normalized.contains("water")
+                || normalized.contains("lava")
+                || normalized.contains("torch");
+        boolean hasSequenceCue = normalized.contains("сначала")
+                || normalized.contains("потом")
+                || normalized.contains("затем")
+                || normalized.contains("then");
+        boolean hasDigits = normalized.chars().anyMatch(Character::isDigit);
+        if (hasActionCue) {
+            return true;
+        }
+        if (hasResourceCue && (hasDigits || hasSequenceCue)) {
+            return true;
+        }
+        return normalized.contains("ведро воды") || normalized.contains("ведро лавы");
+    }
+
+    private void completeAiCommandInterpretationOnServerThread(UUID playerId,
+                                                               String originalMessage,
+                                                               YandexGptClient.Result result) {
+        if (owner.getServer() == null) {
+            aiCommandInFlightByPlayer.remove(playerId);
+            return;
+        }
+        owner.getServer().execute(() -> {
+            try {
+                Player player = owner.getPlayerById(playerId);
+                if (!(player instanceof ServerPlayer serverPlayer) || serverPlayer.isSpectator()) {
+                    return;
+                }
+                if (result == null) {
+                    owner.sendReply(serverPlayer, Component.translatable(AI_FAILED_KEY));
+                    return;
+                }
+                if (result.status() != YandexGptClient.Status.SUCCESS) {
+                    sendAiStatusReply(serverPlayer, result, AI_FAILED_KEY);
+                    return;
+                }
+                String interpreted = normalizeInterpretedCommand(result.text());
+                if (interpreted.isBlank() || interpreted.equalsIgnoreCase(AI_NO_COMMAND_TOKEN)) {
+                    owner.sendReply(serverPlayer, Component.translatable(AI_COMMAND_UNRECOGNIZED_KEY));
+                    return;
+                }
+                if (!handleInterpretedCommand(serverPlayer, interpreted)) {
+                    owner.sendReply(serverPlayer, Component.translatable(AI_COMMAND_UNRECOGNIZED_KEY));
+                    LOGGER.debug("ai command interpretation rejected by parser: npc={} player={} raw='{}' interpreted='{}'",
+                            owner.getUUID(),
+                            playerId,
+                            originalMessage,
+                            interpreted);
+                }
+            } finally {
+                aiCommandInFlightByPlayer.remove(playerId);
+            }
+        });
+    }
+
+    private boolean handleInterpretedCommand(ServerPlayer player, String interpretedMessage) {
+        if (player == null || interpretedMessage == null || interpretedMessage.isBlank()) {
+            return false;
+        }
+        CompanionTaskSequenceParser.SequenceParseResult sequenceResult = sequenceParser.parse(interpretedMessage);
+        if (sequenceResult.isSequenceCommand()) {
+            if (!sequenceResult.isValid()) {
+                return false;
+            }
+            clearTreeRetryPrompt(player, true);
+            startSequence(player, sequenceResult.tasks());
+            return true;
+        }
+        CompanionCommandParser.CommandRequest parsed = commandParser.parse(interpretedMessage);
+        return handleParsedCommandRequest(player, parsed);
+    }
+
+    private String normalizeInterpretedCommand(String rawText) {
+        if (rawText == null) {
+            return "";
+        }
+        String cleaned = rawText
+                .replace('\r', ' ')
+                .replace('\n', ' ')
+                .trim();
+        if (cleaned.startsWith("```") && cleaned.endsWith("```") && cleaned.length() > 6) {
+            cleaned = cleaned.substring(3, cleaned.length() - 3).trim();
+        }
+        if (cleaned.startsWith("`") && cleaned.endsWith("`") && cleaned.length() > 2) {
+            cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
+        }
+        if (cleaned.startsWith("\"") && cleaned.endsWith("\"") && cleaned.length() > 2) {
+            cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
+        }
+        if (cleaned.regionMatches(true, 0, "command:", 0, "command:".length())) {
+            cleaned = cleaned.substring("command:".length()).trim();
+        }
+        return cleaned;
+    }
+
+    private void requestAiHomeReviewIfNeeded(ServerPlayer player, String payloadBeforeFollowUp) {
+        if (player == null) {
+            return;
+        }
+        String payloadAfterFollowUp = homeAssessment.getLastAssessmentPayload();
+        if (payloadAfterFollowUp == null || payloadAfterFollowUp.isBlank()) {
+            return;
+        }
+        if (payloadAfterFollowUp.equals(payloadBeforeFollowUp)
+                || payloadAfterFollowUp.equals(lastAiHomeReviewPayload)) {
+            return;
+        }
+        UUID playerId = player.getUUID();
+        if (!aiHomeReviewInFlightByPlayer.add(playerId)) {
+            owner.sendReply(player, Component.translatable(AI_HOME_REVIEW_IN_PROGRESS_KEY));
+            return;
+        }
+        CompletableFuture
+                .supplyAsync(() -> YandexGptClient.reviewHomeAssessment(player, payloadAfterFollowUp))
+                .thenAccept(result -> completeAiHomeReviewOnServerThread(playerId, payloadAfterFollowUp, result))
+                .exceptionally(error -> {
+                    completeAiHomeReviewOnServerThread(playerId, payloadAfterFollowUp, null);
+                    return null;
+                });
+    }
+
+    private void completeAiHomeReviewOnServerThread(UUID playerId, String payload, YandexGptClient.Result result) {
+        if (owner.getServer() == null) {
+            aiHomeReviewInFlightByPlayer.remove(playerId);
+            return;
+        }
+        owner.getServer().execute(() -> {
+            try {
+                Player player = owner.getPlayerById(playerId);
+                if (!(player instanceof ServerPlayer serverPlayer) || serverPlayer.isSpectator()) {
+                    return;
+                }
+                if (result == null) {
+                    owner.sendReply(serverPlayer, Component.translatable(AI_HOME_REVIEW_FAILED_KEY));
+                    return;
+                }
+                if (result.status() != YandexGptClient.Status.SUCCESS) {
+                    sendAiStatusReply(serverPlayer, result, AI_HOME_REVIEW_FAILED_KEY);
+                    return;
+                }
+                String review = result.text();
+                if (review == null || review.isBlank()) {
+                    owner.sendReply(serverPlayer, Component.translatable(AI_HOME_REVIEW_FAILED_KEY));
+                    return;
+                }
+                owner.sendReply(serverPlayer, Component.literal(review));
+                lastAiHomeReviewPayload = payload;
+            } finally {
+                aiHomeReviewInFlightByPlayer.remove(playerId);
+            }
+        });
+    }
+
+    private void sendAiStatusReply(ServerPlayer player, YandexGptClient.Result result, String fallbackErrorKey) {
+        if (player == null) {
+            return;
+        }
+        if (result == null) {
+            owner.sendReply(player, Component.translatable(fallbackErrorKey));
+            return;
+        }
+        switch (result.status()) {
+            case DISABLED -> owner.sendReply(player, Component.translatable(AI_DISABLED_KEY));
+            case NOT_CONFIGURED -> owner.sendReply(player, Component.translatable(AI_NOT_CONFIGURED_KEY));
+            case DAILY_LIMIT -> owner.sendReply(player, Component.translatable(AI_DAILY_LIMIT_KEY, result.remainingLimit()));
+            case ERROR -> owner.sendReply(player, Component.translatable(fallbackErrorKey));
+            case SUCCESS -> {
+            }
+        }
     }
 
     private void startRequest(Player player, CompanionCommandParser.CommandRequest parsed) {

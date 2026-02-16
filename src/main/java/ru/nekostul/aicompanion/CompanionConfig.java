@@ -56,6 +56,43 @@ public final class CompanionConfig {
                     "If disabled or oreharvester is missing, NPC uses default mining logic.")
             .define("oreharvester_integration", true);
 
+    public static final ForgeConfigSpec.BooleanValue YANDEX_GPT_ENABLED = BUILDER
+            .comment("Enable YandexGPT chat for NPC.")
+            .define("ai.yandexgpt.enabled", true);
+
+    public static final ForgeConfigSpec.ConfigValue<String> YANDEX_GPT_API_KEY = BUILDER
+            .comment("Yandex Cloud API key for YandexGPT.")
+            .define("ai.yandexgpt.apiKey", "");
+
+    public static final ForgeConfigSpec.ConfigValue<String> YANDEX_GPT_FOLDER_ID = BUILDER
+            .comment("Yandex Cloud folder_id.")
+            .define("ai.yandexgpt.folderId", "");
+
+    public static final ForgeConfigSpec.ConfigValue<String> YANDEX_GPT_MODEL = BUILDER
+            .comment("YandexGPT model id, for example: yandexgpt/latest or yandexgpt-lite/latest.")
+            .define("ai.yandexgpt.model", "yandexgpt/latest");
+
+    public static final ForgeConfigSpec.IntValue YANDEX_GPT_DAILY_LIMIT = BUILDER
+            .comment("How many LLM requests per player are allowed per day.",
+                    "0 = unlimited.")
+            .defineInRange("ai.yandexgpt.dailyLimit", 15, 0, 5000);
+
+    public static final ForgeConfigSpec.DoubleValue YANDEX_GPT_TEMPERATURE = BUILDER
+            .comment("Sampling temperature for YandexGPT.")
+            .defineInRange("ai.yandexgpt.temperature", 0.4D, 0.0D, 1.0D);
+
+    public static final ForgeConfigSpec.IntValue YANDEX_GPT_MAX_TOKENS = BUILDER
+            .comment("Maximum number of output tokens per answer.")
+            .defineInRange("ai.yandexgpt.maxTokens", 256, 16, 2048);
+
+    public static final ForgeConfigSpec.IntValue YANDEX_GPT_CONNECT_TIMEOUT_MS = BUILDER
+            .comment("HTTP connect timeout for YandexGPT requests (ms).")
+            .defineInRange("ai.yandexgpt.connectTimeoutMs", 5000, 500, 60000);
+
+    public static final ForgeConfigSpec.IntValue YANDEX_GPT_READ_TIMEOUT_MS = BUILDER
+            .comment("HTTP read timeout for YandexGPT requests (ms).")
+            .defineInRange("ai.yandexgpt.readTimeoutMs", 10000, 500, 120000);
+
     public static final ForgeConfigSpec SPEC = BUILDER.build();
 
     private CompanionConfig() {
@@ -91,6 +128,42 @@ public final class CompanionConfig {
 
     public static boolean isOreHarvesterIntegrationEnabled() {
         return OREHARVESTER_INTEGRATION.get();
+    }
+
+    public static boolean isYandexGptEnabled() {
+        return YANDEX_GPT_ENABLED.get();
+    }
+
+    public static String getYandexGptApiKey() {
+        return YANDEX_GPT_API_KEY.get();
+    }
+
+    public static String getYandexGptFolderId() {
+        return YANDEX_GPT_FOLDER_ID.get();
+    }
+
+    public static String getYandexGptModel() {
+        return YANDEX_GPT_MODEL.get();
+    }
+
+    public static int getYandexGptDailyLimit() {
+        return YANDEX_GPT_DAILY_LIMIT.get();
+    }
+
+    public static double getYandexGptTemperature() {
+        return YANDEX_GPT_TEMPERATURE.get();
+    }
+
+    public static int getYandexGptMaxTokens() {
+        return YANDEX_GPT_MAX_TOKENS.get();
+    }
+
+    public static int getYandexGptConnectTimeoutMs() {
+        return YANDEX_GPT_CONNECT_TIMEOUT_MS.get();
+    }
+
+    public static int getYandexGptReadTimeoutMs() {
+        return YANDEX_GPT_READ_TIMEOUT_MS.get();
     }
 
     public static void setFullTreeChopEnabled(boolean enabled) {
