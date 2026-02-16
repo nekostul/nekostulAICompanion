@@ -1,9 +1,13 @@
 package ru.nekostul.aicompanion.entity.home;
 
+import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -13,7 +17,11 @@ import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.Items;
+import net.minecraftforge.registries.ForgeRegistries;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
+import ru.nekostul.aicompanion.entity.movement.CompanionMovementSpeed;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -32,6 +40,19 @@ public final class CompanionHomeAssessmentController {
         IDLE,
         IN_PROGRESS,
         DONE
+    }
+
+    private enum AssessmentState {
+        IDLE,
+        LOOKING,
+        WAITING_ROOM_NAME,
+        WAITING_ROOM_CONFIRMATION,
+        WAITING_NEXT_ROOM
+    }
+
+    private enum RoomDecision {
+        NONE,
+        MORE_ROOMS
     }
 
     private static final class LookStep {
@@ -65,9 +86,20 @@ public final class CompanionHomeAssessmentController {
     private static final int MAX_SCAN_HEIGHT = 12;
     private static final int MAX_INTERIOR_CELLS = 6000;
     private static final int MAX_COUNTED_BLOCKS = 12000;
+    private static final int MIN_INTERIOR_CELLS = 12;
+    private static final int MAX_OUTSIDE_LEAK_EDGES = 12;
+    private static final float MAX_OUTSIDE_LEAK_RATIO = 0.25F;
     private static final int ROOF_SEARCH_HEIGHT = 20;
+    private static final int ROOF_SAMPLE_RADIUS = 1;
+    private static final int MIN_ROOF_COVERAGE_SAMPLES = 6;
     private static final int WALL_SEARCH_DISTANCE = 16;
-    private static final int REQUIRED_WALL_DIRECTIONS = 2;
+    private static final int REQUIRED_WALL_DIRECTIONS = 6;
+    private static final int REQUIRED_CARDINAL_WALL_DIRECTIONS = 3;
+    private static final double SAME_ROOM_ORIGIN_DISTANCE_SQR = 16.0D;
+    private static final double NEXT_ROOM_FOLLOW_DISTANCE_SQR = 16.0D;
+    private static final int NEXT_ROOM_REPATH_TICKS = 10;
+    private static final double NEXT_ROOM_FOLLOW_SPEED_BLOCKS_PER_TICK = 0.35D;
+    private static final int MAX_ROOM_NAME_LENGTH = 64;
 
     private static final String START_KEY = "entity.aicompanion.companion.home.assess.start";
     private static final String OUTSIDE_KEY = "entity.aicompanion.companion.home.assess.outside";
@@ -82,12 +114,37 @@ public final class CompanionHomeAssessmentController {
     private static final String MATERIALS_KEY = "entity.aicompanion.companion.home.assess.materials";
     private static final String UNKNOWN_KEY = "entity.aicompanion.companion.home.assess.unknown";
     private static final String TRUNCATED_KEY = "entity.aicompanion.companion.home.assess.truncated";
+    private static final String ROOMS_OFFER_KEY = "entity.aicompanion.companion.home.assess.rooms.offer";
+    private static final String ROOMS_BUTTON_DONE_KEY = "entity.aicompanion.companion.home.assess.rooms.button.done";
+    private static final String ROOMS_BUTTON_MORE_KEY = "entity.aicompanion.companion.home.assess.rooms.button.more";
+    private static final String ROOMS_REMOVE_KEY = "entity.aicompanion.companion.home.assess.rooms.remove";
+    private static final String ROOMS_NEXT_KEY = "entity.aicompanion.companion.home.assess.rooms.next";
+    private static final String ROOMS_ALREADY_KEY = "entity.aicompanion.companion.home.assess.rooms.already";
+    private static final String ROOMS_NAME_ASK_KEY = "entity.aicompanion.companion.home.assess.rooms.name.ask";
+    private static final String ROOMS_NAME_RETRY_KEY = "entity.aicompanion.companion.home.assess.rooms.name.retry";
+    private static final String ROOMS_NAME_DUPLICATE_KEY = "entity.aicompanion.companion.home.assess.rooms.name.duplicate";
+    private static final String ROOMS_IN_PROGRESS_NEXT_KEY =
+            "entity.aicompanion.companion.home.assess.rooms.in_progress_next";
+    private static final String ROOMS_LIST_KEY = "entity.aicompanion.companion.home.assess.rooms.list";
+    private static final String ROOMS_NEXT_COMMAND_RU =
+            "\u0435\u0449\u0435 \u043a\u043e\u043c\u043d\u0430\u0442\u0430";
+    private static final String ROOMS_NEXT_COMMAND_EN = "another room";
+    private static final String ROOMS_BUTTON_DONE_TOKEN = "__HOME_ASSESS_DONE__";
+    private static final String ROOMS_BUTTON_MORE_TOKEN = "__HOME_ASSESS_MORE__";
 
     private final CompanionEntity owner;
     private final RandomSource random;
 
+    private AssessmentState assessmentState = AssessmentState.IDLE;
     private UUID activePlayerId;
     private final List<LookStep> lookSteps = new ArrayList<>();
+    private final List<HomeScanReport> collectedRoomReports = new ArrayList<>();
+    private final List<String> collectedRoomNames = new ArrayList<>();
+    private final List<RoomVisit> visitedRooms = new ArrayList<>();
+    private HomeScanReport pendingRoomReport;
+    private BlockPos pendingRoomOrigin;
+    private RoomDecision pendingRoomDecision = RoomDecision.NONE;
+    private boolean initialRoomChoicePending;
     private int lookStepIndex = -1;
     private long lookStepStartedTick = -1L;
     private int lookStepDurationTicks = 0;
@@ -101,6 +158,9 @@ public final class CompanionHomeAssessmentController {
     private boolean hasLastAssessment;
     private int lastAssessmentSignature;
     private String lastAssessmentPayload = "";
+    private BlockPos lastScanOrigin;
+    private BlockPos nextRoomFollowLastTarget;
+    private long nextRoomFollowLastMoveTick = -1L;
 
     public CompanionHomeAssessmentController(CompanionEntity owner) {
         this.owner = owner;
@@ -122,44 +182,129 @@ public final class CompanionHomeAssessmentController {
     }
 
     public boolean start(ServerPlayer player, long gameTime) {
-        if (player == null) {
+        return beginRoomAssessment(player, gameTime, true);
+    }
+
+    public boolean handleFollowUpMessage(ServerPlayer player, String message, long gameTime) {
+        if (player == null || message == null || activePlayerId == null) {
             return false;
         }
-        HomeScanReport previewReport = scanHome();
-        if (!previewReport.insideBuilding) {
-            owner.sendReply(player, Component.translatable(OUTSIDE_KEY));
-            cancel();
+        if (!activePlayerId.equals(player.getUUID())) {
             return false;
         }
-        int previewSignature = buildReportSignature(previewReport);
-        if (hasLastAssessment && previewSignature == lastAssessmentSignature) {
-            owner.sendReply(player, Component.translatable(UNCHANGED_KEY));
-            cancel();
+        String raw = message.trim();
+        boolean doneToken = ROOMS_BUTTON_DONE_TOKEN.equalsIgnoreCase(raw);
+        boolean moreToken = ROOMS_BUTTON_MORE_TOKEN.equalsIgnoreCase(raw);
+        String normalized = normalize(message);
+        boolean assessmentCommand = isAssessmentCommand(message);
+        if (normalized.isEmpty()) {
             return false;
         }
-        if (nextAssessmentAllowedTick >= 0L && gameTime < nextAssessmentAllowedTick) {
-            int secondsLeft = secondsLeft(nextAssessmentAllowedTick, gameTime);
-            owner.sendReply(player, Component.translatable(COOLDOWN_KEY, secondsLeft / 60, secondsLeft % 60));
-            cancel();
-            return false;
+        if (assessmentState == AssessmentState.WAITING_ROOM_NAME) {
+            if (doneToken
+                    || moreToken
+                    || assessmentCommand
+                    || isWholeHouseAnswer(normalized)
+                    || isMoreRoomsAnswer(normalized)
+                    || isNextRoomCommand(normalized)) {
+                owner.sendReply(player, Component.translatable(ROOMS_NAME_RETRY_KEY));
+                return true;
+            }
+            String roomName = sanitizeRoomName(message);
+            if (roomName.isEmpty()) {
+                owner.sendReply(player, Component.translatable(ROOMS_NAME_RETRY_KEY));
+                return true;
+            }
+            if (isDuplicateRoomName(roomName)) {
+                owner.sendReply(player, Component.translatable(ROOMS_NAME_DUPLICATE_KEY));
+                return true;
+            }
+            commitPendingRoom(roomName);
+            if (pendingRoomDecision == RoomDecision.MORE_ROOMS) {
+                pendingRoomDecision = RoomDecision.NONE;
+                owner.sendReply(player, Component.translatable(ROOMS_NEXT_KEY));
+                assessmentState = AssessmentState.WAITING_NEXT_ROOM;
+                tickNextRoomFollow(player, gameTime);
+                return true;
+            }
+            pendingRoomDecision = RoomDecision.NONE;
+            sendRoomsQuestion(player);
+            assessmentState = AssessmentState.WAITING_ROOM_CONFIRMATION;
+            return true;
         }
-        activePlayerId = player.getUUID();
-        baseYaw = owner.getYRot();
-        basePitch = owner.getXRot();
-        buildLookSteps();
-        if (!startNextLookStep(gameTime)) {
-            cancel();
-            return false;
+        if (assessmentState == AssessmentState.WAITING_ROOM_CONFIRMATION) {
+            if (doneToken || isWholeHouseAnswer(normalized)) {
+                owner.sendReply(player, Component.translatable(ROOMS_REMOVE_KEY));
+                if (initialRoomChoicePending) {
+                    initialRoomChoicePending = false;
+                    commitPendingRoomWithoutName();
+                }
+                finalizeAssessment(player, gameTime);
+                cancel();
+                return true;
+            }
+            if (moreToken || isMoreRoomsAnswer(normalized)) {
+                owner.sendReply(player, Component.translatable(ROOMS_REMOVE_KEY));
+                if (initialRoomChoicePending) {
+                    initialRoomChoicePending = false;
+                    pendingRoomDecision = RoomDecision.MORE_ROOMS;
+                    owner.sendReply(player, Component.translatable(ROOMS_NAME_ASK_KEY));
+                    assessmentState = AssessmentState.WAITING_ROOM_NAME;
+                } else {
+                    owner.sendReply(player, Component.translatable(ROOMS_NEXT_KEY));
+                    assessmentState = AssessmentState.WAITING_NEXT_ROOM;
+                    tickNextRoomFollow(player, gameTime);
+                }
+                return true;
+            }
         }
-        owner.sendReply(player, Component.translatable(START_KEY));
-        return true;
+        if (assessmentState == AssessmentState.WAITING_NEXT_ROOM) {
+            if (assessmentCommand) {
+                owner.sendReply(player, Component.translatable(ROOMS_IN_PROGRESS_NEXT_KEY));
+                return true;
+            }
+            if (doneToken || isWholeHouseAnswer(normalized)) {
+                owner.sendReply(player, Component.translatable(ROOMS_REMOVE_KEY));
+                finalizeAssessment(player, gameTime);
+                cancel();
+                return true;
+            }
+            if (moreToken || isNextRoomCommand(normalized)) {
+                return beginRoomAssessment(player, gameTime, false);
+            }
+        }
+        if (doneToken
+                || moreToken
+                || assessmentCommand
+                || isNextRoomCommand(normalized)) {
+            return true;
+        }
+        return false;
+    }
+
+    public boolean isSessionActive() {
+        return assessmentState != AssessmentState.IDLE;
     }
 
     public Result tick(long gameTime) {
-        if (activePlayerId == null) {
-            return Result.IDLE;
+        if (assessmentState == AssessmentState.IDLE) {
+            return Result.DONE;
         }
         if (!(owner.getPlayerById(activePlayerId) instanceof ServerPlayer player)) {
+            cancel();
+            return Result.DONE;
+        }
+        if (assessmentState == AssessmentState.WAITING_ROOM_NAME
+                || assessmentState == AssessmentState.WAITING_ROOM_CONFIRMATION) {
+            owner.getNavigation().stop();
+            resetNextRoomFollowTracking();
+            return Result.IN_PROGRESS;
+        }
+        if (assessmentState == AssessmentState.WAITING_NEXT_ROOM) {
+            tickNextRoomFollow(player, gameTime);
+            return Result.IN_PROGRESS;
+        }
+        if (assessmentState != AssessmentState.LOOKING) {
             cancel();
             return Result.DONE;
         }
@@ -175,13 +320,35 @@ public final class CompanionHomeAssessmentController {
             return Result.IN_PROGRESS;
         }
         HomeScanReport report = scanHome();
-        finalizeAssessment(player, report, gameTime);
-        cancel();
-        return Result.DONE;
+        if (!report.insideBuilding) {
+            owner.sendReply(player, Component.translatable(OUTSIDE_KEY));
+            owner.sendReply(player, Component.translatable(ROOMS_NEXT_KEY));
+            assessmentState = AssessmentState.WAITING_NEXT_ROOM;
+            tickNextRoomFollow(player, gameTime);
+            return Result.IN_PROGRESS;
+        }
+        queuePendingRoom(report, lastScanOrigin);
+        pendingRoomDecision = RoomDecision.NONE;
+        if (initialRoomChoicePending) {
+            sendRoomsQuestion(player);
+            assessmentState = AssessmentState.WAITING_ROOM_CONFIRMATION;
+        } else {
+            owner.sendReply(player, Component.translatable(ROOMS_NAME_ASK_KEY));
+            assessmentState = AssessmentState.WAITING_ROOM_NAME;
+        }
+        return Result.IN_PROGRESS;
     }
 
     public void cancel() {
+        assessmentState = AssessmentState.IDLE;
         activePlayerId = null;
+        collectedRoomReports.clear();
+        collectedRoomNames.clear();
+        visitedRooms.clear();
+        pendingRoomReport = null;
+        pendingRoomOrigin = null;
+        pendingRoomDecision = RoomDecision.NONE;
+        initialRoomChoicePending = false;
         lookSteps.clear();
         lookStepIndex = -1;
         lookStepStartedTick = -1L;
@@ -190,6 +357,8 @@ public final class CompanionHomeAssessmentController {
         lookStepStartPitch = 0.0F;
         lookStepTargetYaw = 0.0F;
         lookStepTargetPitch = 0.0F;
+        lastScanOrigin = null;
+        resetNextRoomFollowTracking();
     }
 
     private void applyCurrentLookStep(long gameTime) {
@@ -217,6 +386,57 @@ public final class CompanionHomeAssessmentController {
         lookStepStartPitch = owner.getXRot();
         lookStepTargetYaw = baseYaw + step.yawOffset;
         lookStepTargetPitch = Mth.clamp(basePitch + step.pitchOffset, -85.0F, 85.0F);
+        return true;
+    }
+
+    private boolean beginRoomAssessment(ServerPlayer player, long gameTime, boolean initialRequest) {
+        if (player == null) {
+            return false;
+        }
+        if (initialRequest) {
+            if (nextAssessmentAllowedTick >= 0L && gameTime < nextAssessmentAllowedTick) {
+                int secondsLeft = secondsLeft(nextAssessmentAllowedTick, gameTime);
+                owner.sendReply(player, Component.translatable(COOLDOWN_KEY, secondsLeft / 60, secondsLeft % 60));
+                cancel();
+                return false;
+            }
+            HomeScanReport previewReport = scanHome();
+            if (!previewReport.insideBuilding) {
+                owner.sendReply(player, Component.translatable(OUTSIDE_KEY));
+                cancel();
+                return false;
+            }
+            cancel();
+            activePlayerId = player.getUUID();
+            initialRoomChoicePending = true;
+            pendingRoomDecision = RoomDecision.NONE;
+        } else {
+            if (assessmentState != AssessmentState.WAITING_NEXT_ROOM || activePlayerId == null
+                    || !activePlayerId.equals(player.getUUID())) {
+                return false;
+            }
+            HomeScanReport previewReport = scanHome();
+            if (!previewReport.insideBuilding) {
+                owner.sendReply(player, Component.translatable(OUTSIDE_KEY));
+                owner.sendReply(player, Component.translatable(ROOMS_NEXT_KEY));
+                return true;
+            }
+            if (isAlreadyVisitedRoom(previewReport, lastScanOrigin)) {
+                owner.sendReply(player, Component.translatable(ROOMS_ALREADY_KEY));
+                tickNextRoomFollow(player, gameTime);
+                return true;
+            }
+        }
+        assessmentState = AssessmentState.LOOKING;
+        resetNextRoomFollowTracking();
+        baseYaw = owner.getYRot();
+        basePitch = owner.getXRot();
+        buildLookSteps();
+        if (!startNextLookStep(gameTime)) {
+            cancel();
+            return false;
+        }
+        owner.sendReply(player, Component.translatable(START_KEY));
         return true;
     }
 
@@ -295,6 +515,7 @@ public final class CompanionHomeAssessmentController {
 
     private HomeScanReport scanHome() {
         BlockPos origin = pickStartPos();
+        lastScanOrigin = origin != null ? origin.immutable() : null;
         if (!isInsideBuilding(origin)) {
             return HomeScanReport.notInside();
         }
@@ -314,6 +535,7 @@ public final class CompanionHomeAssessmentController {
         int torchCount = 0;
         long lightSum = 0L;
         int lightSamples = 0;
+        int outsideLeakEdges = 0;
         boolean truncated = false;
 
         while (!queue.isEmpty()) {
@@ -340,7 +562,11 @@ public final class CompanionHomeAssessmentController {
                     continue;
                 }
                 BlockState nextState = level.getBlockState(next);
-                if (isInteriorPassable(nextState, next) && !isOutsideCell(next)) {
+                if (isInteriorPassable(nextState, next)) {
+                    if (isOutsideCell(next)) {
+                        outsideLeakEdges++;
+                        continue;
+                    }
                     if (visitedInterior.add(next)) {
                         queue.addLast(next);
                     }
@@ -355,9 +581,13 @@ public final class CompanionHomeAssessmentController {
                 }
             }
         }
+        int interiorCells = visitedInterior.size();
+        if (interiorCells < MIN_INTERIOR_CELLS || isOutsideLeakTooHigh(outsideLeakEdges, interiorCells)) {
+            return HomeScanReport.notInside();
+        }
         float averageLight = lightSamples > 0 ? (float) lightSum / (float) lightSamples : 0.0F;
         return HomeScanReport.of(materialCounts, floorCounts, ceilingCounts,
-                torchCount, visitedInterior.size(), averageLight, truncated);
+                torchCount, interiorCells, averageLight, truncated);
     }
 
     private int countBlock(BlockPos pos,
@@ -427,6 +657,9 @@ public final class CompanionHomeAssessmentController {
             return false;
         }
         BlockPos head = origin.above();
+        if (isOutsideCell(origin) || isOutsideCell(head)) {
+            return false;
+        }
         if (!hasRoof(head)) {
             return false;
         }
@@ -435,29 +668,61 @@ public final class CompanionHomeAssessmentController {
 
     private boolean hasRoof(BlockPos headPos) {
         Level level = owner.level();
-        for (int i = 1; i <= ROOF_SEARCH_HEIGHT; i++) {
-            BlockPos probe = headPos.above(i);
-            if (isStructureBlock(level.getBlockState(probe), probe)) {
-                return true;
+        int roofSamples = 0;
+        for (int dx = -ROOF_SAMPLE_RADIUS; dx <= ROOF_SAMPLE_RADIUS; dx++) {
+            for (int dz = -ROOF_SAMPLE_RADIUS; dz <= ROOF_SAMPLE_RADIUS; dz++) {
+                BlockPos sample = headPos.offset(dx, 0, dz);
+                for (int i = 1; i <= ROOF_SEARCH_HEIGHT; i++) {
+                    BlockPos probe = sample.above(i);
+                    if (isStructureBlock(level.getBlockState(probe), probe)) {
+                        roofSamples++;
+                        break;
+                    }
+                }
             }
         }
-        return false;
+        return roofSamples >= MIN_ROOF_COVERAGE_SAMPLES;
     }
 
     private boolean hasNearbyWalls(BlockPos headPos) {
         Level level = owner.level();
-        int wallDirections = 0;
-        for (Direction direction : Direction.Plane.HORIZONTAL) {
-            if (findWallInDirection(level, headPos, direction, WALL_SEARCH_DISTANCE)) {
-                wallDirections++;
-            }
+        int enclosedDirections = 0;
+        int enclosedCardinalDirections = 0;
+        if (findWallInDirection(level, headPos, 1, 0, WALL_SEARCH_DISTANCE)) {
+            enclosedDirections++;
+            enclosedCardinalDirections++;
         }
-        return wallDirections >= REQUIRED_WALL_DIRECTIONS;
+        if (findWallInDirection(level, headPos, -1, 0, WALL_SEARCH_DISTANCE)) {
+            enclosedDirections++;
+            enclosedCardinalDirections++;
+        }
+        if (findWallInDirection(level, headPos, 0, 1, WALL_SEARCH_DISTANCE)) {
+            enclosedDirections++;
+            enclosedCardinalDirections++;
+        }
+        if (findWallInDirection(level, headPos, 0, -1, WALL_SEARCH_DISTANCE)) {
+            enclosedDirections++;
+            enclosedCardinalDirections++;
+        }
+        if (findWallInDirection(level, headPos, 1, 1, WALL_SEARCH_DISTANCE)) {
+            enclosedDirections++;
+        }
+        if (findWallInDirection(level, headPos, 1, -1, WALL_SEARCH_DISTANCE)) {
+            enclosedDirections++;
+        }
+        if (findWallInDirection(level, headPos, -1, 1, WALL_SEARCH_DISTANCE)) {
+            enclosedDirections++;
+        }
+        if (findWallInDirection(level, headPos, -1, -1, WALL_SEARCH_DISTANCE)) {
+            enclosedDirections++;
+        }
+        return enclosedDirections >= REQUIRED_WALL_DIRECTIONS
+                && enclosedCardinalDirections >= REQUIRED_CARDINAL_WALL_DIRECTIONS;
     }
 
-    private boolean findWallInDirection(Level level, BlockPos start, Direction direction, int maxDistance) {
+    private boolean findWallInDirection(Level level, BlockPos start, int stepX, int stepZ, int maxDistance) {
         for (int i = 1; i <= maxDistance; i++) {
-            BlockPos probe = start.relative(direction, i);
+            BlockPos probe = start.offset(stepX * i, 0, stepZ * i);
             BlockState state = level.getBlockState(probe);
             if (isStructureBlock(state, probe)) {
                 return true;
@@ -492,6 +757,17 @@ public final class CompanionHomeAssessmentController {
         return state.getCollisionShape(owner.level(), pos).isEmpty();
     }
 
+    private boolean isOutsideLeakTooHigh(int outsideLeakEdges, int interiorCells) {
+        if (interiorCells <= 0) {
+            return true;
+        }
+        if (outsideLeakEdges <= MAX_OUTSIDE_LEAK_EDGES) {
+            return false;
+        }
+        float leakRatio = (float) outsideLeakEdges / (float) interiorCells;
+        return leakRatio > MAX_OUTSIDE_LEAK_RATIO;
+    }
+
     private boolean isOutsideCell(BlockPos pos) {
         return owner.level().canSeeSky(pos) || owner.level().canSeeSky(pos.above());
     }
@@ -509,16 +785,340 @@ public final class CompanionHomeAssessmentController {
         return owner.blockPosition().immutable();
     }
 
-    private void finalizeAssessment(ServerPlayer player, HomeScanReport report, long gameTime) {
+    private void sendRoomsQuestion(ServerPlayer player) {
         if (player == null) {
             return;
         }
+        owner.sendReply(player, Component.translatable(ROOMS_REMOVE_KEY));
+        MutableComponent question = Component.translatable(ROOMS_OFFER_KEY)
+                .append(Component.literal(" "));
+        Component wholeHouseButton = Component.translatable(ROOMS_BUTTON_DONE_KEY)
+                .withStyle(style -> style.withColor(ChatFormatting.GREEN)
+                        .withBold(true)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND,
+                                "/ainpc msg " + ROOMS_BUTTON_DONE_TOKEN)));
+        Component moreRoomsButton = Component.translatable(ROOMS_BUTTON_MORE_KEY)
+                .withStyle(style -> style.withColor(ChatFormatting.AQUA)
+                        .withBold(true)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND,
+                                "/ainpc msg " + ROOMS_BUTTON_MORE_TOKEN)));
+        question.append(wholeHouseButton)
+                .append(Component.literal(" "))
+                .append(moreRoomsButton);
+        owner.sendReply(player, question);
+    }
+
+    private boolean isWholeHouseAnswer(String normalized) {
+        if (normalized == null || normalized.isEmpty()) {
+            return false;
+        }
+        return ROOMS_BUTTON_DONE_TOKEN.toLowerCase(Locale.ROOT).equals(normalized)
+                || normalized.contains("\u0432\u0435\u0441\u044c \u0434\u043e\u043c")
+                || normalized.contains("\u044d\u0442\u043e \u0432\u0435\u0441\u044c \u0434\u043e\u043c")
+                || normalized.contains("whole house")
+                || normalized.contains("all house");
+    }
+
+    private boolean isMoreRoomsAnswer(String normalized) {
+        if (normalized == null || normalized.isEmpty()) {
+            return false;
+        }
+        return ROOMS_BUTTON_MORE_TOKEN.toLowerCase(Locale.ROOT).equals(normalized)
+                || normalized.contains("\u0435\u0449\u0435 \u043a\u043e\u043c\u043d\u0430\u0442")
+                || normalized.contains("\u0435\u0441\u0442\u044c \u0435\u0449\u0435 \u043a\u043e\u043c\u043d\u0430\u0442")
+                || normalized.contains("more room")
+                || normalized.contains("more rooms");
+    }
+
+    private boolean isNextRoomCommand(String normalized) {
+        if (normalized == null || normalized.isEmpty()) {
+            return false;
+        }
+        return normalized.equals(ROOMS_NEXT_COMMAND_RU)
+                || normalized.equals(ROOMS_NEXT_COMMAND_EN);
+    }
+
+    private void queuePendingRoom(HomeScanReport report, BlockPos origin) {
+        pendingRoomReport = report;
+        pendingRoomOrigin = origin != null ? origin.immutable() : null;
+    }
+
+    private void commitPendingRoom(String roomName) {
+        if (pendingRoomReport == null || !pendingRoomReport.insideBuilding) {
+            pendingRoomReport = null;
+            pendingRoomOrigin = null;
+            return;
+        }
+        collectedRoomReports.add(pendingRoomReport);
+        rememberVisitedRoom(pendingRoomReport, pendingRoomOrigin);
+        collectedRoomNames.add(roomName);
+        pendingRoomReport = null;
+        pendingRoomOrigin = null;
+    }
+
+    private void commitPendingRoomWithoutName() {
+        if (pendingRoomReport == null || !pendingRoomReport.insideBuilding) {
+            pendingRoomReport = null;
+            pendingRoomOrigin = null;
+            return;
+        }
+        collectedRoomReports.add(pendingRoomReport);
+        rememberVisitedRoom(pendingRoomReport, pendingRoomOrigin);
+        pendingRoomReport = null;
+        pendingRoomOrigin = null;
+    }
+
+    private String sanitizeRoomName(String rawMessage) {
+        if (rawMessage == null) {
+            return "";
+        }
+        String roomName = rawMessage
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (roomName.isEmpty() || roomName.startsWith("/")) {
+            return "";
+        }
+        if (roomName.length() > MAX_ROOM_NAME_LENGTH) {
+            roomName = roomName.substring(0, MAX_ROOM_NAME_LENGTH).trim();
+        }
+        return roomName;
+    }
+
+    private boolean isDuplicateRoomName(String candidateName) {
+        String candidateCanonical = canonicalRoomName(candidateName);
+        if (candidateCanonical.isEmpty()) {
+            return false;
+        }
+        for (String existingName : collectedRoomNames) {
+            String existingCanonical = canonicalRoomName(existingName);
+            if (!existingCanonical.isEmpty() && existingCanonical.equals(candidateCanonical)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String canonicalRoomName(String roomName) {
+        if (roomName == null) {
+            return "";
+        }
+        String normalized = roomName
+                .toLowerCase(Locale.ROOT)
+                .replace('ё', 'е')
+                .replaceAll("[^\\p{L}\\p{N}\\s]+", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (normalized.isEmpty()) {
+            return "";
+        }
+        StringBuilder canonical = new StringBuilder();
+        for (String token : normalized.split(" ")) {
+            if (token.isBlank() || token.equals("комната") || token.equals("room")) {
+                continue;
+            }
+            if (canonical.length() > 0) {
+                canonical.append(' ');
+            }
+            canonical.append(token);
+        }
+        String result = canonical.toString().trim();
+        return result.isEmpty() ? normalized : result;
+    }
+
+    private void rememberVisitedRoom(HomeScanReport report, BlockPos origin) {
+        if (report == null || !report.insideBuilding || origin == null) {
+            return;
+        }
+        for (RoomVisit roomVisit : visitedRooms) {
+            if (isSameRoomOrigin(roomVisit.origin, origin)) {
+                return;
+            }
+        }
+        visitedRooms.add(new RoomVisit(origin.immutable()));
+    }
+
+    private boolean isAlreadyVisitedRoom(HomeScanReport report, BlockPos origin) {
+        if (report == null || !report.insideBuilding || origin == null || visitedRooms.isEmpty()) {
+            return false;
+        }
+        for (RoomVisit roomVisit : visitedRooms) {
+            if (isSameRoomOrigin(roomVisit.origin, origin)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isSameRoomOrigin(BlockPos first, BlockPos second) {
+        if (first == null || second == null) {
+            return false;
+        }
+        long dx = (long) first.getX() - second.getX();
+        long dy = (long) first.getY() - second.getY();
+        long dz = (long) first.getZ() - second.getZ();
+        double distanceSqr = (double) (dx * dx + dy * dy + dz * dz);
+        return distanceSqr <= SAME_ROOM_ORIGIN_DISTANCE_SQR;
+    }
+
+    private void tickNextRoomFollow(ServerPlayer player, long gameTime) {
+        if (player == null) {
+            return;
+        }
+        Vec3 targetPos = player.position();
+        if (owner.distanceToSqr(targetPos) <= NEXT_ROOM_FOLLOW_DISTANCE_SQR) {
+            if (!owner.getNavigation().isDone()) {
+                owner.getNavigation().stop();
+            }
+            resetNextRoomFollowTracking();
+            return;
+        }
+        if (shouldIssueNextRoomFollowMove(targetPos, gameTime)) {
+            owner.getNavigation().moveTo(player, nextRoomFollowSpeed(NEXT_ROOM_FOLLOW_SPEED_BLOCKS_PER_TICK));
+            rememberNextRoomFollowMove(targetPos, gameTime);
+        }
+    }
+
+    private boolean shouldIssueNextRoomFollowMove(Vec3 targetPos, long gameTime) {
+        if (targetPos == null) {
+            return false;
+        }
+        BlockPos targetBlock = BlockPos.containing(targetPos);
+        if (nextRoomFollowLastTarget == null || !nextRoomFollowLastTarget.equals(targetBlock)) {
+            return true;
+        }
+        if (!owner.getNavigation().isDone()) {
+            return false;
+        }
+        return nextRoomFollowLastMoveTick < 0L || gameTime - nextRoomFollowLastMoveTick >= NEXT_ROOM_REPATH_TICKS;
+    }
+
+    private void rememberNextRoomFollowMove(Vec3 targetPos, long gameTime) {
+        nextRoomFollowLastTarget = targetPos != null ? BlockPos.containing(targetPos) : null;
+        nextRoomFollowLastMoveTick = gameTime;
+    }
+
+    private void resetNextRoomFollowTracking() {
+        nextRoomFollowLastTarget = null;
+        nextRoomFollowLastMoveTick = -1L;
+    }
+
+    private double nextRoomFollowSpeed(double desiredSpeed) {
+        return CompanionMovementSpeed.strictByAttribute(owner, desiredSpeed);
+    }
+
+    private void finalizeAssessment(ServerPlayer player, long gameTime) {
+        if (player == null) {
+            return;
+        }
+        HomeScanReport report = mergeCollectedReports();
         if (!report.insideBuilding) {
             owner.sendReply(player, Component.translatable(OUTSIDE_KEY));
             return;
         }
+        int signature = buildReportSignature(report);
+        if (hasLastAssessment && signature == lastAssessmentSignature) {
+            owner.sendReply(player, Component.translatable(UNCHANGED_KEY));
+            return;
+        }
         cacheAssessment(report, gameTime);
         owner.sendReply(player, Component.translatable(UPDATED_KEY));
+    }
+
+    private HomeScanReport mergeCollectedReports() {
+        if (collectedRoomReports.isEmpty()) {
+            return HomeScanReport.notInside();
+        }
+        Map<Block, Integer> materialCounts = new HashMap<>();
+        Map<Block, Integer> floorCounts = new HashMap<>();
+        Map<Block, Integer> ceilingCounts = new HashMap<>();
+        int torchCount = 0;
+        int interiorCells = 0;
+        double weightedLight = 0.0D;
+        boolean truncated = false;
+
+        for (HomeScanReport roomReport : collectedRoomReports) {
+            if (roomReport == null || !roomReport.insideBuilding) {
+                continue;
+            }
+            mergeCounts(materialCounts, roomReport.materialCounts);
+            mergeCounts(floorCounts, roomReport.floorCounts);
+            mergeCounts(ceilingCounts, roomReport.ceilingCounts);
+            torchCount += roomReport.torchCount;
+            int roomCells = Math.max(1, roomReport.interiorCells);
+            interiorCells += roomCells;
+            weightedLight += roomReport.averageLight * roomCells;
+            truncated = truncated || roomReport.truncated;
+        }
+        if (interiorCells <= 0) {
+            return HomeScanReport.notInside();
+        }
+        float averageLight = (float) (weightedLight / interiorCells);
+        return HomeScanReport.of(materialCounts, floorCounts, ceilingCounts,
+                torchCount, interiorCells, averageLight, truncated);
+    }
+
+    private void mergeCounts(Map<Block, Integer> target, Map<Block, Integer> source) {
+        if (target == null || source == null || source.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<Block, Integer> entry : source.entrySet()) {
+            if (entry.getKey() == null || entry.getValue() == null || entry.getValue() <= 0) {
+                continue;
+            }
+            target.merge(entry.getKey(), entry.getValue(), Integer::sum);
+        }
+    }
+
+    private static final class RoomVisit {
+        private final BlockPos origin;
+
+        private RoomVisit(BlockPos origin) {
+            this.origin = origin;
+        }
+    }
+
+    private void sendTemporaryReport(ServerPlayer player, HomeScanReport report) {
+        if (player == null || report == null || !report.insideBuilding) {
+            return;
+        }
+        int roundedLight = Math.max(0, Math.min(15, Math.round(report.averageLight)));
+        Component lightState = Component.translatable(
+                report.averageLight >= LIGHT_BRIGHT_THRESHOLD ? LIGHT_BRIGHT_KEY : LIGHT_DARK_KEY);
+        owner.sendReply(player, Component.translatable(LIGHT_KEY, lightState, roundedLight));
+        owner.sendReply(player, Component.translatable(FLOOR_KEY, summarizeMaterials(report.floorCounts, 6)));
+        owner.sendReply(player, Component.translatable(CEILING_KEY, summarizeMaterials(report.ceilingCounts, 6)));
+        if (!collectedRoomNames.isEmpty()) {
+            owner.sendReply(player, Component.translatable(ROOMS_LIST_KEY, formatCollectedRoomNames()));
+        }
+        owner.sendReply(player, Component.translatable(MATERIALS_KEY));
+        sendMaterialLines(player, report.materialCounts, 10);
+        if (report.truncated) {
+            owner.sendReply(player, Component.translatable(TRUNCATED_KEY));
+        }
+    }
+
+    private void sendMaterialLines(ServerPlayer player, Map<Block, Integer> counts, int maxLines) {
+        if (player == null) {
+            return;
+        }
+        if (counts == null || counts.isEmpty()) {
+            owner.sendReply(player, Component.literal("- ").append(Component.translatable(UNKNOWN_KEY)));
+            return;
+        }
+        List<Map.Entry<Block, Integer>> entries = new ArrayList<>(counts.entrySet());
+        entries.sort(Comparator
+                .<Map.Entry<Block, Integer>>comparingInt(entry -> entry.getValue()).reversed()
+                .thenComparing(entry -> entry.getKey().getDescriptionId()));
+        int limit = Math.max(1, maxLines);
+        for (int i = 0; i < entries.size() && i < limit; i++) {
+            Map.Entry<Block, Integer> entry = entries.get(i);
+            owner.sendReply(player, Component.literal("- ")
+                    .append(readableBlockName(entry.getKey()))
+                    .append(Component.literal(" x" + entry.getValue())));
+        }
+        if (entries.size() > limit) {
+            owner.sendReply(player, Component.literal("- ..."));
+        }
     }
 
     private Component summarizeMaterials(Map<Block, Integer> counts, int maxItems) {
@@ -536,13 +1136,139 @@ public final class CompanionHomeAssessmentController {
             if (i > 0) {
                 line.append(Component.literal(", "));
             }
-            line.append(entry.getKey().getName())
+            line.append(readableBlockName(entry.getKey()))
                     .append(Component.literal(" x" + entry.getValue()));
         }
         if (entries.size() > limit) {
             line.append(Component.literal(", ..."));
         }
         return line;
+    }
+
+    private String formatCollectedRoomNames() {
+        if (collectedRoomNames.isEmpty()) {
+            return Component.translatable(UNKNOWN_KEY).getString();
+        }
+        StringBuilder result = new StringBuilder();
+        for (int i = 0; i < collectedRoomNames.size(); i++) {
+            if (i > 0) {
+                result.append(", ");
+            }
+            result.append(i + 1).append(") ").append(collectedRoomNames.get(i));
+        }
+        return result.toString();
+    }
+
+    private Component readableBlockName(Block block) {
+        if (block == null) {
+            return Component.translatable(UNKNOWN_KEY);
+        }
+        String blockId = blockRegistryId(block);
+        Component translated = block.getName();
+        String translatedText = translated.getString();
+        String descriptionId = block.getDescriptionId();
+        if (translatedText != null
+                && !translatedText.isBlank()
+                && !translatedText.equals(descriptionId)
+                && !isTechnicalName(translatedText)) {
+            return translated;
+        }
+        Item item = block.asItem();
+        if (item != Items.AIR) {
+            String itemName = item.getDescription().getString();
+            String itemDescriptionId = item.getDescriptionId();
+            if (itemName != null
+                    && !itemName.isBlank()
+                    && !itemName.equals(itemDescriptionId)
+                    && !isTechnicalName(itemName)) {
+                return Component.literal(itemName);
+            }
+            String itemId = itemRegistryId(item);
+            String humanizedItem = humanizeRegistryId(itemId);
+            if (!humanizedItem.isBlank()) {
+                return Component.literal(humanizedItem);
+            }
+        }
+        String humanizedBlock = humanizeRegistryId(blockId);
+        if (!humanizedBlock.isBlank()) {
+            return Component.literal(humanizedBlock);
+        }
+        return Component.translatable(UNKNOWN_KEY);
+    }
+
+    private String blockRegistryId(Block block) {
+        if (block == null) {
+            return "unknown";
+        }
+        ResourceLocation key = ForgeRegistries.BLOCKS.getKey(block);
+        if (key == null) {
+            return block.getDescriptionId();
+        }
+        return key.toString();
+    }
+
+    private String itemRegistryId(Item item) {
+        if (item == null) {
+            return "";
+        }
+        ResourceLocation key = ForgeRegistries.ITEMS.getKey(item);
+        if (key == null) {
+            return item.getDescriptionId();
+        }
+        return key.toString();
+    }
+
+    private boolean isTechnicalName(String text) {
+        if (text == null) {
+            return true;
+        }
+        String normalized = text.toLowerCase(Locale.ROOT);
+        return normalized.startsWith("block.")
+                || normalized.startsWith("item.")
+                || normalized.contains(":");
+    }
+
+    private String humanizeRegistryId(String registryId) {
+        if (registryId == null || registryId.isBlank()) {
+            return "";
+        }
+        String path = registryId;
+        int colon = registryId.indexOf(':');
+        if (colon >= 0 && colon + 1 < registryId.length()) {
+            path = registryId.substring(colon + 1);
+        }
+        path = path.replace('/', ' ').replace('_', ' ').replace('-', ' ').trim();
+        if (path.isBlank()) {
+            return "";
+        }
+        StringBuilder result = new StringBuilder(path.length());
+        for (String token : path.split("\\s+")) {
+            if (token.isBlank()) {
+                continue;
+            }
+            if (result.length() > 0) {
+                result.append(' ');
+            }
+            if (token.length() == 1) {
+                result.append(token.toUpperCase(Locale.ROOT));
+            } else {
+                result.append(Character.toUpperCase(token.charAt(0)))
+                        .append(token.substring(1).toLowerCase(Locale.ROOT));
+            }
+        }
+        return result.toString();
+    }
+
+    private String payloadBlockLabel(Block block) {
+        String blockId = blockRegistryId(block);
+        String displayName = readableBlockName(block).getString();
+        if (displayName == null || displayName.isBlank() || displayName.equals(blockId)) {
+            return blockId;
+        }
+        if (displayName.contains("[" + blockId + "]")) {
+            return displayName;
+        }
+        return displayName + " [" + blockId + "]";
     }
 
     private void cacheAssessment(HomeScanReport report, long gameTime) {
@@ -566,6 +1292,7 @@ public final class CompanionHomeAssessmentController {
         hash = 31 * hash + materialMapSignature(report.materialCounts);
         hash = 31 * hash + materialMapSignature(report.floorCounts);
         hash = 31 * hash + materialMapSignature(report.ceilingCounts);
+        hash = 31 * hash + roomNamesSignature();
         return hash;
     }
 
@@ -579,6 +1306,20 @@ public final class CompanionHomeAssessmentController {
         for (Map.Entry<Block, Integer> entry : entries) {
             hash = 31 * hash + entry.getKey().getDescriptionId().hashCode();
             hash = 31 * hash + entry.getValue();
+        }
+        return hash;
+    }
+
+    private int roomNamesSignature() {
+        if (collectedRoomNames.isEmpty()) {
+            return 0;
+        }
+        int hash = 1;
+        for (String roomName : collectedRoomNames) {
+            if (roomName == null) {
+                continue;
+            }
+            hash = 31 * hash + roomName.toLowerCase(Locale.ROOT).hashCode();
         }
         return hash;
     }
@@ -598,6 +1339,8 @@ public final class CompanionHomeAssessmentController {
         payload.append("torches=").append(report.torchCount).append('\n');
         payload.append("light_status=").append(lightStatus).append('\n');
         payload.append("average_light=").append(roundedLight).append("/15").append('\n');
+        payload.append("rooms_count=").append(collectedRoomNames.size()).append('\n');
+        payload.append("rooms_named=").append(formatCollectedRoomNames()).append('\n');
         payload.append("floor_top=").append(summarizeMaterials(report.floorCounts, 6).getString()).append('\n');
         payload.append("ceiling_top=").append(summarizeMaterials(report.ceilingCounts, 6).getString()).append('\n');
         payload.append("materials_overview=Материалы дома (временный отчет): ").append('\n');
@@ -606,7 +1349,7 @@ public final class CompanionHomeAssessmentController {
                 .<Map.Entry<Block, Integer>>comparingInt(entry -> entry.getValue()).reversed()
                 .thenComparing(entry -> entry.getKey().getDescriptionId()));
         for (Map.Entry<Block, Integer> entry : entries) {
-            payload.append("- ").append(entry.getKey().getDescriptionId())
+            payload.append("- ").append(payloadBlockLabel(entry.getKey()))
                     .append(": ").append(entry.getValue()).append('\n');
         }
         payload.append("truncated=").append(report.truncated);

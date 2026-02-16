@@ -148,6 +148,10 @@ final class CompanionTaskCoordinator {
         if (handleTreeRetryClick(player, message)) {
             return true;
         }
+        if (homeAssessment.handleFollowUpMessage(player, message, owner.level().getGameTime())) {
+            taskState = homeAssessment.isSessionActive() ? TaskState.HOME_ASSESSING : TaskState.IDLE;
+            return true;
+        }
         if (homeAssessment.isAssessmentCommand(message)) {
             clearTreeRetryPrompt(player, true);
             clearTaskSequence();
