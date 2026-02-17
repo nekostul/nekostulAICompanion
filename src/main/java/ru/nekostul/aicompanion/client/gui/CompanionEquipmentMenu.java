@@ -55,10 +55,13 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
     };
     private static final int NPC_ARMOR_COUNT = 4;
     private static final int NPC_TOOL_COUNT = 4;
+    private static final int NPC_FOOD_COUNT = 1;
     private static final int NPC_SLOT_Y = 8;
     private static final int NPC_SLOT_SPACING = 18;
     private static final int NPC_ARMOR_X = 8;
     private static final int NPC_TOOL_X = 77;
+    private static final int NPC_FOOD_X = 59;
+    private static final int NPC_FOOD_Y = 62;
     private static final ResourceLocation[] PLAYER_ARMOR_EMPTY = new ResourceLocation[]{
             InventoryMenu.EMPTY_ARMOR_SLOT_BOOTS,
             InventoryMenu.EMPTY_ARMOR_SLOT_LEGGINGS,
@@ -74,10 +77,12 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
     private final Container npcContainer;
     private final Slot[] npcArmorSlots = new Slot[NPC_ARMOR_COUNT];
     private final Slot[] npcToolSlots = new Slot[NPC_TOOL_COUNT];
+    private Slot npcFoodSlot;
     private final boolean npcPanelOpenByDefault;
     private boolean npcPanelVisible;
     private int npcArmorStart;
     private int npcToolStart;
+    private int npcFoodIndex = -1;
     private int npcSlotEnd;
 
     public CompanionEquipmentMenu(int containerId, Inventory playerInventory, CompanionEntity companion,
@@ -169,6 +174,7 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
         addNpcArmorSlots();
         this.npcToolStart = this.slots.size();
         addNpcToolSlots();
+        addNpcFoodSlot();
         this.npcSlotEnd = this.slots.size();
     }
 
@@ -202,6 +208,10 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
         return npcToolSlots[index];
     }
 
+    public Slot getNpcFoodSlot() {
+        return npcFoodSlot;
+    }
+
     public boolean isNpcSlot(Slot slot) {
         if (slot == null) {
             return false;
@@ -216,7 +226,7 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
                 return true;
             }
         }
-        return false;
+        return npcFoodSlot == slot;
     }
 
     @Override
@@ -383,6 +393,13 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
                 toolX, NPC_SLOT_Y + NPC_SLOT_SPACING * 3, CompanionToolSlot.SWORD));
     }
 
+    private void addNpcFoodSlot() {
+        int foodX = -NPC_PANEL_WIDTH + NPC_FOOD_X;
+        this.npcFoodIndex = this.slots.size();
+        this.npcFoodSlot = this.addSlot(new CompanionFoodSlot(npcContainer, NPC_ARMOR_COUNT + NPC_TOOL_COUNT,
+                foodX, NPC_FOOD_Y));
+    }
+
     private boolean tryMoveToNpcSlots(ItemStack stack) {
         if (companion == null || stack.isEmpty()) {
             return false;
@@ -400,6 +417,11 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
             int target = npcToolStart + toolSlotIndex(toolSlot);
             if (target >= npcToolStart && target < npcSlotEnd && !this.slots.get(target).hasItem()) {
                 return this.moveItemStackTo(stack, target, target + 1, false);
+            }
+        }
+        if (stack.isEdible() && npcFoodIndex >= 0) {
+            if (this.moveItemStackTo(stack, npcFoodIndex, npcFoodIndex + 1, false)) {
+                return true;
             }
         }
         return false;
@@ -489,7 +511,7 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
 
         @Override
         public int getContainerSize() {
-            return NPC_ARMOR_COUNT + NPC_TOOL_COUNT;
+            return NPC_ARMOR_COUNT + NPC_TOOL_COUNT + NPC_FOOD_COUNT;
         }
 
         @Override
@@ -516,6 +538,7 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
                 case 1 -> companion.getItemBySlot(EquipmentSlot.CHEST);
                 case 2 -> companion.getItemBySlot(EquipmentSlot.LEGS);
                 case 3 -> companion.getItemBySlot(EquipmentSlot.FEET);
+                case 8 -> companion.getFoodSlot();
                 default -> ItemStack.EMPTY;
             };
         }
@@ -562,6 +585,7 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
                 case 1 -> companion.setItemSlot(EquipmentSlot.CHEST, toStore);
                 case 2 -> companion.setItemSlot(EquipmentSlot.LEGS, toStore);
                 case 3 -> companion.setItemSlot(EquipmentSlot.FEET, toStore);
+                case 8 -> companion.setFoodSlot(toStore);
                 default -> {
                 }
             }
@@ -711,6 +735,22 @@ public final class CompanionEquipmentMenu extends RecipeBookMenu<CraftingContain
         @Override
         public int getMaxStackSize() {
             return 1;
+        }
+
+        @Override
+        public boolean isActive() {
+            return CompanionEquipmentMenu.this.npcPanelVisible;
+        }
+    }
+
+    private class CompanionFoodSlot extends Slot {
+        private CompanionFoodSlot(Container container, int index, int x, int y) {
+            super(container, index, x, y);
+        }
+
+        @Override
+        public boolean mayPlace(ItemStack stack) {
+            return stack.isEmpty() || stack.isEdible();
         }
 
         @Override

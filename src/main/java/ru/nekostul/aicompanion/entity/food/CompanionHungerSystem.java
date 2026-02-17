@@ -51,9 +51,12 @@ public final class CompanionHungerSystem {
         if (gameTime < nextEatTick) {
             return;
         }
-        ItemStack foodStack = findEdible();
+        if (consumeFoodFromDedicatedSlot(gameTime)) {
+            return;
+        }
+        ItemStack foodStack = findEdibleInInventory();
         if (!foodStack.isEmpty()) {
-            consumeFood(foodStack, gameTime);
+            consumeFoodFromInventory(foodStack, gameTime);
             return;
         }
         if (player != null && !player.isSpectator() && gameTime >= nextFoodRequestTick) {
@@ -116,7 +119,7 @@ public final class CompanionHungerSystem {
         return true;
     }
 
-    private ItemStack findEdible() {
+    private ItemStack findEdibleInInventory() {
         for (ItemStack stack : inventory.getItems()) {
             if (stack.isEmpty()) {
                 continue;
@@ -126,6 +129,31 @@ public final class CompanionHungerSystem {
             }
         }
         return ItemStack.EMPTY;
+    }
+
+    private boolean consumeFoodFromDedicatedSlot(long gameTime) {
+        ItemStack foodStack = owner.getFoodSlot();
+        if (foodStack == null || foodStack.isEmpty()) {
+            return false;
+        }
+        if (hunger >= MAX_HUNGER) {
+            return false;
+        }
+        FoodProperties food = foodStack.getFoodProperties(owner);
+        if (food == null) {
+            return false;
+        }
+        ItemStack updated = foodStack.copy();
+        updated.shrink(1);
+        owner.setFoodSlot(updated.isEmpty() ? ItemStack.EMPTY : updated);
+        owner.onInventoryUpdated();
+        hunger = Math.min(MAX_HUNGER, hunger + food.getNutrition());
+        float heal = Math.max(1.0F, food.getNutrition() * 0.5F);
+        owner.heal(heal);
+        owner.swing(InteractionHand.MAIN_HAND);
+        owner.playSound(SoundEvents.GENERIC_EAT, 1.0F, 1.0F);
+        nextEatTick = gameTime + EAT_COOLDOWN_TICKS;
+        return true;
     }
 
     private void warnLowHealth(Player player, long gameTime) {
@@ -141,7 +169,7 @@ public final class CompanionHungerSystem {
         owner.sendReply(player, Component.translatable(FOOD_LOW_HEALTH_KEY));
     }
 
-    private void consumeFood(ItemStack stack, long gameTime) {
+    private void consumeFoodFromInventory(ItemStack stack, long gameTime) {
         if (hunger >= MAX_HUNGER) {
             return;
         }

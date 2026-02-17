@@ -12,6 +12,8 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
 
@@ -174,6 +176,7 @@ public final class CompanionEquipmentScreen extends EffectRenderingInventoryScre
         renderToolIcon(guiGraphics, 1, SHOVEL_ICON_LOCATION);
         renderToolIcon(guiGraphics, 2, AXE_ICON_LOCATION);
         renderToolIcon(guiGraphics, 3, SWORD_ICON_LOCATION);
+        renderFoodIcon(guiGraphics);
     }
 
     private void renderToolIcon(GuiGraphics guiGraphics, int index, ResourceLocation icon) {
@@ -184,6 +187,16 @@ public final class CompanionEquipmentScreen extends EffectRenderingInventoryScre
         int x = this.leftPos + slot.x;
         int y = this.topPos + slot.y;
         guiGraphics.blit(icon, x, y, 0, 0, 16, 16, 16, 16);
+    }
+
+    private void renderFoodIcon(GuiGraphics guiGraphics) {
+        Slot slot = this.menu.getNpcFoodSlot();
+        if (slot == null || slot.hasItem()) {
+            return;
+        }
+        int x = this.leftPos + slot.x;
+        int y = this.topPos + slot.y;
+        guiGraphics.renderItem(new ItemStack(Items.COOKED_BEEF), x, y);
     }
 
     @Override

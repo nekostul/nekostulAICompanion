@@ -75,6 +75,10 @@ public final class CompanionFoodHuntController {
 
     private int countEdible() {
         int total = 0;
+        ItemStack foodSlot = owner.getFoodSlot();
+        if (!foodSlot.isEmpty() && foodSlot.isEdible()) {
+            total += foodSlot.getCount();
+        }
         for (ItemStack stack : inventory.getItems()) {
             if (stack.isEmpty()) {
                 continue;

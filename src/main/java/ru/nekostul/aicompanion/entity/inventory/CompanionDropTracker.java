@@ -11,6 +11,7 @@ public final class CompanionDropTracker {
     private static final String MOB_DROPPER_TAG = "aicompanionMobDropper";
     private static final String PLAYER_DROP_TAG = "aicompanionPlayerDrop";
     private static final String PLAYER_DROPPER_TAG = "aicompanionPlayerDropper";
+    private static final String PLAYER_TOSS_DROP_TAG = "aicompanionPlayerTossDrop";
     private static final String PLAYER_BLOCK_DROP_TAG = "aicompanionPlayerBlockDrop";
     private static Method ownerMethod;
     private static Method throwerMethod;
@@ -72,6 +73,7 @@ public final class CompanionDropTracker {
             return;
         }
         entity.getPersistentData().putBoolean(PLAYER_DROP_TAG, true);
+        entity.getPersistentData().putBoolean(PLAYER_TOSS_DROP_TAG, true);
         entity.getPersistentData().remove(PLAYER_BLOCK_DROP_TAG);
         if (dropperId != null) {
             entity.getPersistentData().putUUID(PLAYER_DROPPER_TAG, dropperId);
@@ -83,6 +85,7 @@ public final class CompanionDropTracker {
             return;
         }
         entity.getPersistentData().putBoolean(PLAYER_DROP_TAG, true);
+        entity.getPersistentData().remove(PLAYER_TOSS_DROP_TAG);
         entity.getPersistentData().putBoolean(PLAYER_BLOCK_DROP_TAG, true);
         if (dropperId != null) {
             entity.getPersistentData().putUUID(PLAYER_DROPPER_TAG, dropperId);
@@ -107,6 +110,13 @@ public final class CompanionDropTracker {
             return false;
         }
         return entity.getPersistentData().getBoolean(PLAYER_BLOCK_DROP_TAG);
+    }
+
+    public static boolean isPlayerTossDrop(ItemEntity entity) {
+        if (entity == null) {
+            return false;
+        }
+        return entity.getPersistentData().getBoolean(PLAYER_TOSS_DROP_TAG);
     }
 
     public static UUID getVanillaDropper(ItemEntity entity) {

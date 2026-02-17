@@ -10,8 +10,10 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 
 import ru.nekostul.aicompanion.entity.CompanionEntity;
+import ru.nekostul.aicompanion.entity.tool.CompanionToolSlot;
 
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.function.Predicate;
 
@@ -52,11 +54,16 @@ public final class CompanionInventory {
         if (stack.isEmpty()) {
             return true;
         }
-        boolean added = addTo(items, stack);
-        if (added) {
+        boolean changed = tryStoreDedicated(stack);
+        if (!stack.isEmpty() && !owner.isDedicatedStorageItem(stack)) {
+            if (addTo(items, stack)) {
+                changed = true;
+            }
+        }
+        if (changed) {
             owner.onInventoryUpdated();
         }
-        return added;
+        return stack.isEmpty();
     }
 
     public boolean addAll(List<ItemStack> stacks) {
@@ -66,7 +73,11 @@ public final class CompanionInventory {
                 continue;
             }
             ItemStack copy = stack.copy();
-            if (addTo(items, copy)) {
+            boolean dedicatedChanged = tryStoreDedicated(copy);
+            if (dedicatedChanged) {
+                changed = true;
+            }
+            if (!copy.isEmpty() && !owner.isDedicatedStorageItem(copy) && addTo(items, copy)) {
                 changed = true;
             }
         }
@@ -81,8 +92,18 @@ public final class CompanionInventory {
         for (int i = 0; i < items.size(); i++) {
             copy.set(i, items.get(i).copy());
         }
+        EnumMap<CompanionToolSlot, ItemStack> toolSlots = new EnumMap<>(CompanionToolSlot.class);
+        for (CompanionToolSlot slot : CompanionToolSlot.values()) {
+            toolSlots.put(slot, owner.getToolSlot(slot).copy());
+        }
+        ItemStack[] foodSlot = new ItemStack[]{owner.getFoodSlot().copy()};
         for (ItemStack drop : drops) {
-            if (!addTo(copy, drop.copy())) {
+            ItemStack working = drop.copy();
+            simulateStoreDedicated(working, toolSlots, foodSlot);
+            if (!working.isEmpty() && owner.isDedicatedStorageItem(working)) {
+                return false;
+            }
+            if (!working.isEmpty() && !addTo(copy, working)) {
                 return false;
             }
         }
@@ -304,6 +325,88 @@ public final class CompanionInventory {
             return true;
         }
         return stack.isEmpty();
+    }
+
+    private boolean tryStoreDedicated(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return false;
+        }
+        int before = stack.getCount();
+        CompanionToolSlot toolSlot = CompanionToolSlot.fromStack(stack);
+        if (toolSlot != null && stack.getCount() > 0) {
+            ItemStack stored = owner.getToolSlot(toolSlot);
+            if (stored.isEmpty()) {
+                ItemStack toStore = stack.copy();
+                toStore.setCount(1);
+                owner.setToolSlot(toolSlot, toStore);
+                stack.shrink(1);
+            }
+        }
+        if (!stack.isEmpty() && stack.isEdible()) {
+            ItemStack food = owner.getFoodSlot();
+            if (food.isEmpty()) {
+                int toMove = Math.min(stack.getCount(), stack.getMaxStackSize());
+                if (toMove > 0) {
+                    ItemStack toStore = stack.copy();
+                    toStore.setCount(toMove);
+                    owner.setFoodSlot(toStore);
+                    stack.shrink(toMove);
+                }
+            } else if (ItemStack.isSameItemSameTags(food, stack) && food.getCount() < food.getMaxStackSize()) {
+                int space = food.getMaxStackSize() - food.getCount();
+                int toMove = Math.min(space, stack.getCount());
+                if (toMove > 0) {
+                    ItemStack merged = food.copy();
+                    merged.grow(toMove);
+                    owner.setFoodSlot(merged);
+                    stack.shrink(toMove);
+                }
+            }
+        }
+        return stack.getCount() != before;
+    }
+
+    private static void simulateStoreDedicated(ItemStack stack,
+                                               EnumMap<CompanionToolSlot, ItemStack> toolSlots,
+                                               ItemStack[] foodSlotHolder) {
+        if (stack == null || stack.isEmpty()) {
+            return;
+        }
+        CompanionToolSlot toolSlot = CompanionToolSlot.fromStack(stack);
+        if (toolSlot != null && stack.getCount() > 0) {
+            ItemStack stored = toolSlots.get(toolSlot);
+            if (stored == null || stored.isEmpty()) {
+                ItemStack simulated = stack.copy();
+                simulated.setCount(1);
+                toolSlots.put(toolSlot, simulated);
+                stack.shrink(1);
+            }
+        }
+        if (!stack.isEmpty() && stack.isEdible()) {
+            ItemStack storedFood = foodSlotHolder != null && foodSlotHolder.length > 0
+                    ? foodSlotHolder[0]
+                    : ItemStack.EMPTY;
+            if (storedFood == null || storedFood.isEmpty()) {
+                int toMove = Math.min(stack.getCount(), stack.getMaxStackSize());
+                if (toMove > 0) {
+                    storedFood = stack.copy();
+                    storedFood.setCount(toMove);
+                    stack.shrink(toMove);
+                }
+            } else if (ItemStack.isSameItemSameTags(storedFood, stack)
+                    && storedFood.getCount() < storedFood.getMaxStackSize()) {
+                int space = storedFood.getMaxStackSize() - storedFood.getCount();
+                int toMove = Math.min(space, stack.getCount());
+                if (toMove > 0) {
+                    storedFood = storedFood.copy();
+                    storedFood.grow(toMove);
+                    stack.shrink(toMove);
+                }
+            }
+            if (foodSlotHolder != null && foodSlotHolder.length > 0) {
+                foodSlotHolder[0] = storedFood == null ? ItemStack.EMPTY : storedFood;
+            }
+        }
     }
 
     private static ItemStack addToContainer(Container container, ItemStack stack) {

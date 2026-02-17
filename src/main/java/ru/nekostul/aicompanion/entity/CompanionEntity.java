@@ -38,8 +38,14 @@ import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.vehicle.Boat;
+import net.minecraft.world.Container;
+import net.minecraft.world.ContainerHelper;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.SimpleMenuProvider;
+import net.minecraft.world.inventory.ChestMenu;
+import net.minecraft.world.inventory.MenuType;
+import net.minecraft.world.item.ArmorItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
@@ -54,6 +60,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.common.util.ITeleporter;
+import net.minecraftforge.network.NetworkHooks;
 
 import ru.nekostul.aicompanion.entity.ai.FollowNearestPlayerGoal;
 import ru.nekostul.aicompanion.entity.ai.HoldPositionGoal;
@@ -105,7 +112,6 @@ public class CompanionEntity extends PathfinderMob {
     private static final String MODE_NBT = "CompanionMode";
     private static final String GREETED_NBT = "CompanionGreeted";
     private static final String INVENTORY_NBT = "CompanionInventory";
-    private static final String CHEST_NBT = "CompanionChest";
     private static final String HUNGER_NBT = "CompanionHunger";
     private static final String CHAT_COOLDOWNS_NBT = "CompanionChatCooldowns";
     private static final String TELEPORT_CYCLE_NBT = "CompanionTeleportCycleTick";
@@ -129,6 +135,7 @@ public class CompanionEntity extends PathfinderMob {
     private static final String TOOL_SLOT_AXE_NBT = "Axe";
     private static final String TOOL_SLOT_SHOVEL_NBT = "Shovel";
     private static final String TOOL_SLOT_SWORD_NBT = "Sword";
+    private static final String TOOL_SLOT_FOOD_NBT = "Food";
     private static final EquipmentSlot[] ARMOR_SLOTS = new EquipmentSlot[]{
             EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET
     };
@@ -155,8 +162,6 @@ public class CompanionEntity extends PathfinderMob {
     private static final String HOME_DEATH_NO_HOME_KEY = "entity.aicompanion.companion.home.death.no_home";
     private static final String HOME_DEATH_RECOVERY_HP_KEY = "entity.aicompanion.companion.home.death.recovery.hp";
     private static final String HOME_DEATH_RECOVERY_HP_REMOVE_KEY = "entity.aicompanion.companion.home.death.recovery.hp.remove";
-    private static final String INVENTORY_FULL_NEED_CHEST_KEY =
-            "entity.aicompanion.companion.inventory.full.need_chest";
     private static final String WHERE_STATUS_KEY = "entity.aicompanion.companion.where.status";
     private static final String WHERE_TELEPORT_BUTTON_KEY = "entity.aicompanion.companion.where.button";
     private static final String OWNER_DEATH_COORDS_KEY = "entity.aicompanion.companion.owner.death.coords";
@@ -189,10 +194,10 @@ public class CompanionEntity extends PathfinderMob {
     private static final int TELEPORT_MESSAGE_COOLDOWN_TICKS = 6000;
     private static final int TELEPORT_ORIGINAL_COOLDOWN_TICKS = 12000;
     private static final int TELEPORT_IGNORE_GRACE_TICKS = TELEPORT_MESSAGE_COOLDOWN_TICKS;
-    private static final int INVENTORY_SIZE = 27;
+    private static final int INVENTORY_SIZE = 36;
     private static final int ITEM_PICKUP_RADIUS = 3;
     private static final int ITEM_PICKUP_COOLDOWN_TICKS = 10;
-    private static final int INVENTORY_FULL_NOTIFY_COOLDOWN_TICKS = 100;
+    private static final int INVENTORY_OPEN_DOUBLE_CLICK_TICKS = 10;
     private static final int HOME_LEAVE_DISTANCE = 96;
     private static final int HOME_AUTO_DISTANCE = 500;
     private static final int HOME_WARN_DISTANCE = 1000;
@@ -232,6 +237,8 @@ public class CompanionEntity extends PathfinderMob {
     private static final EntityDataAccessor<ItemStack> TOOL_SHOVEL =
             SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
     private static final EntityDataAccessor<ItemStack> TOOL_SWORD =
+            SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
+    private static final EntityDataAccessor<ItemStack> FOOD_SLOT =
             SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
     private static final EntityDataAccessor<Boolean> HUNGER_FULL =
             SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.BOOLEAN);
@@ -316,7 +323,6 @@ public class CompanionEntity extends PathfinderMob {
     private final CompanionTreeHarvestController treeHarvestController;
     private final CompanionDeliveryController deliveryController;
     private final CompanionBucketHandler bucketHandler;
-    private final CompanionChestManager chestManager;
     private final CompanionCommandParser commandParser;
     private final CompanionHelpSystem helpSystem;
     private final CompanionGratitudeResponder gratitudeResponder;
@@ -329,7 +335,6 @@ public class CompanionEntity extends PathfinderMob {
     private final EnumMap<ChatGroup, Long> chatGroupCooldowns = new EnumMap<>(ChatGroup.class);
     private long lastReactionTick = -1000L;
     private long nextItemPickupTick = -1L;
-    private long lastInventoryFullNeedChestTick = -10000L;
     private long lastTeleportCycleTick = -10000L;
     private long lastTeleportOriginalTick = -10000L;
     private long pendingTeleportUntilTick = -1L;
@@ -362,6 +367,7 @@ public class CompanionEntity extends PathfinderMob {
     private int pendingBoatLastSeconds = -1;
     private long nextBoatRequestTick = -1L;
     private final Map<UUID, Long> whereCooldowns = new HashMap<>();
+    private final Map<UUID, Long> pendingInventoryOpenClicks = new HashMap<>();
     private long lastHomeRegenTick = -1L;
     private long lastHomeDeathInteractTick = -10000L;
     private boolean wasAtHome;
@@ -393,7 +399,6 @@ public class CompanionEntity extends PathfinderMob {
         this.treeHarvestController = new CompanionTreeHarvestController(this, inventory, equipment, toolHandler);
         this.deliveryController = new CompanionDeliveryController(this, inventory);
         this.bucketHandler = new CompanionBucketHandler(this, inventory);
-        this.chestManager = new CompanionChestManager(this, inventory);
         this.commandParser = new CompanionCommandParser();
         this.helpSystem = new CompanionHelpSystem();
         this.gratitudeResponder = new CompanionGratitudeResponder(this);
@@ -403,7 +408,7 @@ public class CompanionEntity extends PathfinderMob {
         this.combatController = new CompanionCombatController(this, equipment);
         this.torchHandler = new CompanionTorchHandler(this, inventory);
         this.taskCoordinator = new CompanionTaskCoordinator(this, inventory, equipment, gatheringController,
-                treeHarvestController, deliveryController, bucketHandler, chestManager, commandParser, helpSystem,
+                treeHarvestController, deliveryController, bucketHandler, commandParser, helpSystem,
                 inventoryExchange, torchHandler);
         if (this.getNavigation() instanceof GroundPathNavigation navigation) {
             navigation.setCanOpenDoors(true);
@@ -418,6 +423,7 @@ public class CompanionEntity extends PathfinderMob {
         this.entityData.define(TOOL_AXE, ItemStack.EMPTY);
         this.entityData.define(TOOL_SHOVEL, ItemStack.EMPTY);
         this.entityData.define(TOOL_SWORD, ItemStack.EMPTY);
+        this.entityData.define(FOOD_SLOT, ItemStack.EMPTY);
         this.entityData.define(HUNGER_FULL, true);
     }
 
@@ -579,6 +585,141 @@ public class CompanionEntity extends PathfinderMob {
             return true;
         }
         return this.taskCoordinator.handlePlayerMessage(player, message);
+    }
+
+    public boolean openInventoryMenu(ServerPlayer player) {
+        if (player == null) {
+            return false;
+        }
+        if (!canPlayerControl(player)) {
+            return true;
+        }
+        if (recoveringAfterDeathAtHome) {
+            return true;
+        }
+        restoreToolSlotsFromHand();
+        migrateDedicatedItemsFromInventory();
+        Container container = createMainInventoryContainer();
+        NetworkHooks.openScreen(player, new SimpleMenuProvider(
+                (containerId, playerInventory, ignoredPlayer) ->
+                        new ChestMenu(MenuType.GENERIC_9x4, containerId, playerInventory, container, 4),
+                Component.literal(DISPLAY_NAME)));
+        return true;
+    }
+
+    private void handleInventoryOpenDoubleClick(ServerPlayer player, long gameTime) {
+        if (player == null) {
+            return;
+        }
+        UUID playerId = player.getUUID();
+        Long lastClick = pendingInventoryOpenClicks.get(playerId);
+        pendingInventoryOpenClicks.entrySet().removeIf(entry ->
+                gameTime - entry.getValue() > INVENTORY_OPEN_DOUBLE_CLICK_TICKS);
+        if (lastClick != null && gameTime - lastClick <= INVENTORY_OPEN_DOUBLE_CLICK_TICKS) {
+            pendingInventoryOpenClicks.remove(playerId);
+            openInventoryMenu(player);
+            return;
+        }
+        pendingInventoryOpenClicks.put(playerId, gameTime);
+    }
+
+    private Container createMainInventoryContainer() {
+        return new Container() {
+            @Override
+            public int getContainerSize() {
+                return INVENTORY_SIZE;
+            }
+
+            @Override
+            public boolean isEmpty() {
+                for (ItemStack stack : inventory.getItems()) {
+                    if (!stack.isEmpty()) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            @Override
+            public ItemStack getItem(int index) {
+                if (index < 0 || index >= INVENTORY_SIZE) {
+                    return ItemStack.EMPTY;
+                }
+                return inventory.getItems().get(index);
+            }
+
+            @Override
+            public ItemStack removeItem(int index, int count) {
+                if (index < 0 || index >= INVENTORY_SIZE || count <= 0) {
+                    return ItemStack.EMPTY;
+                }
+                ItemStack removed = ContainerHelper.removeItem(inventory.getItems(), index, count);
+                if (!removed.isEmpty()) {
+                    onInventoryUpdated();
+                }
+                return removed;
+            }
+
+            @Override
+            public ItemStack removeItemNoUpdate(int index) {
+                if (index < 0 || index >= INVENTORY_SIZE) {
+                    return ItemStack.EMPTY;
+                }
+                ItemStack removed = ContainerHelper.takeItem(inventory.getItems(), index);
+                if (!removed.isEmpty()) {
+                    onInventoryUpdated();
+                }
+                return removed;
+            }
+
+            @Override
+            public void setItem(int index, ItemStack stack) {
+                if (index < 0 || index >= INVENTORY_SIZE) {
+                    return;
+                }
+                ItemStack toStore = stack == null ? ItemStack.EMPTY : stack;
+                if (!toStore.isEmpty() && (isDedicatedStorageItem(toStore) || toStore.getItem() instanceof ArmorItem)) {
+                    return;
+                }
+                inventory.getItems().set(index, toStore.copy());
+                onInventoryUpdated();
+            }
+
+            @Override
+            public boolean canPlaceItem(int index, ItemStack stack) {
+                if (index < 0 || index >= INVENTORY_SIZE) {
+                    return false;
+                }
+                if (stack == null || stack.isEmpty()) {
+                    return true;
+                }
+                if (stack.getItem() instanceof ArmorItem) {
+                    return false;
+                }
+                return !isDedicatedStorageItem(stack);
+            }
+
+            @Override
+            public void setChanged() {
+                onInventoryUpdated();
+            }
+
+            @Override
+            public boolean stillValid(Player player) {
+                if (!(player instanceof ServerPlayer serverPlayer)) {
+                    return false;
+                }
+                return isAlive() && canPlayerControl(serverPlayer);
+            }
+
+            @Override
+            public void clearContent() {
+                for (int i = 0; i < INVENTORY_SIZE; i++) {
+                    inventory.getItems().set(i, ItemStack.EMPTY);
+                }
+                onInventoryUpdated();
+            }
+        };
     }
 
     public boolean handleBuildPointClick(ServerPlayer player, BlockPos clickedPos) {
@@ -1621,6 +1762,28 @@ public class CompanionEntity extends PathfinderMob {
         return stored;
     }
 
+    public ItemStack getFoodSlot() {
+        return this.entityData.get(FOOD_SLOT);
+    }
+
+    public void setFoodSlot(ItemStack stack) {
+        ItemStack toStore = stack == null ? ItemStack.EMPTY : stack.copy();
+        if (!toStore.isEmpty() && !toStore.isEdible()) {
+            return;
+        }
+        this.entityData.set(FOOD_SLOT, toStore);
+    }
+
+    public boolean isDedicatedStorageItem(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return false;
+        }
+        if (CompanionToolSlot.fromStack(stack) != null) {
+            return true;
+        }
+        return stack.isEdible();
+    }
+
     private EntityDataAccessor<ItemStack> toolAccessor(CompanionToolSlot slot) {
         return switch (slot) {
             case PICKAXE -> TOOL_PICKAXE;
@@ -1641,16 +1804,12 @@ public class CompanionEntity extends PathfinderMob {
         CompoundTag hungerTag = new CompoundTag();
         this.hungerSystem.saveToTag(hungerTag);
         tag.put(HUNGER_NBT, hungerTag);
-        CompoundTag chestTag = new CompoundTag();
-        this.chestManager.saveToTag(chestTag);
-        if (!chestTag.isEmpty()) {
-            tag.put(CHEST_NBT, chestTag);
-        }
         CompoundTag toolSlotsTag = new CompoundTag();
         saveToolSlot(toolSlotsTag, TOOL_SLOT_PICKAXE_NBT, getToolSlot(CompanionToolSlot.PICKAXE));
         saveToolSlot(toolSlotsTag, TOOL_SLOT_AXE_NBT, getToolSlot(CompanionToolSlot.AXE));
         saveToolSlot(toolSlotsTag, TOOL_SLOT_SHOVEL_NBT, getToolSlot(CompanionToolSlot.SHOVEL));
         saveToolSlot(toolSlotsTag, TOOL_SLOT_SWORD_NBT, getToolSlot(CompanionToolSlot.SWORD));
+        saveToolSlot(toolSlotsTag, TOOL_SLOT_FOOD_NBT, getFoodSlot());
         if (!toolSlotsTag.isEmpty()) {
             tag.put(TOOL_SLOTS_NBT, toolSlotsTag);
         }
@@ -1720,16 +1879,13 @@ public class CompanionEntity extends PathfinderMob {
         if (!this.level().isClientSide) {
             syncHungerFullFlag();
         }
-        if (tag.contains(CHEST_NBT)) {
-            CompoundTag chestTag = tag.getCompound(CHEST_NBT);
-            this.chestManager.loadFromTag(chestTag);
-        }
         if (tag.contains(TOOL_SLOTS_NBT)) {
             CompoundTag toolSlotsTag = tag.getCompound(TOOL_SLOTS_NBT);
             setToolSlot(CompanionToolSlot.PICKAXE, loadToolSlot(toolSlotsTag, TOOL_SLOT_PICKAXE_NBT));
             setToolSlot(CompanionToolSlot.AXE, loadToolSlot(toolSlotsTag, TOOL_SLOT_AXE_NBT));
             setToolSlot(CompanionToolSlot.SHOVEL, loadToolSlot(toolSlotsTag, TOOL_SLOT_SHOVEL_NBT));
             setToolSlot(CompanionToolSlot.SWORD, loadToolSlot(toolSlotsTag, TOOL_SLOT_SWORD_NBT));
+            setFoodSlot(loadToolSlot(toolSlotsTag, TOOL_SLOT_FOOD_NBT));
         }
         if (tag.contains(CHAT_COOLDOWNS_NBT)) {
             CompoundTag chatCooldownsTag = tag.getCompound(CHAT_COOLDOWNS_NBT);
@@ -1791,6 +1947,7 @@ public class CompanionEntity extends PathfinderMob {
         }
         if (!this.level().isClientSide) {
             restoreToolSlotsFromHand();
+            migrateDedicatedItemsFromInventory();
         }
     }
 
@@ -1840,9 +1997,10 @@ public class CompanionEntity extends PathfinderMob {
                 return;
             }
             tickGreeting();
-            tickChestStatus();
             tickItemPickup();
+            inventoryExchange.tickPendingDropAll(gameTime);
             inventoryExchange.tickToolDropNotice(gameTime);
+            inventoryExchange.tickDropAllCatchup(gameTime);
             tickHomeRequests(gameTime);
             boolean urgentOwnerDefense = tryUrgentOwnerDefense(gameTime);
             if (urgentOwnerDefense) {
@@ -1921,6 +2079,17 @@ public class CompanionEntity extends PathfinderMob {
     }
 
     public InteractionResult mobInteract(Player player, InteractionHand hand) {
+        if (hand == InteractionHand.MAIN_HAND && player.isShiftKeyDown()) {
+            if (this.level().isClientSide) {
+                return InteractionResult.SUCCESS;
+            }
+            if (player instanceof ServerPlayer serverPlayer && canPlayerControl(serverPlayer)) {
+                long gameTime = this.level().getGameTime();
+                handleInventoryOpenDoubleClick(serverPlayer, gameTime);
+                return InteractionResult.CONSUME;
+            }
+            return InteractionResult.SUCCESS;
+        }
         ItemStack stack = player.getItemInHand(hand);
         if (!stack.isEmpty() && stack.isEdible() && !isNegativeFood(stack)) {
             if (this.level().isClientSide) {
@@ -2154,8 +2323,8 @@ public class CompanionEntity extends PathfinderMob {
         }
         this.nextItemPickupTick = gameTime + ITEM_PICKUP_COOLDOWN_TICKS;
         AABB range = this.getBoundingBox().inflate(ITEM_PICKUP_RADIUS);
-        if (inventory.isFull()) {
-            notifyInventoryFullNeedChest(gameTime, range);
+        boolean inventoryFull = inventory.isFull();
+        if (inventoryFull) {
             return;
         }
         for (net.minecraft.world.entity.item.ItemEntity itemEntity
@@ -2166,6 +2335,11 @@ public class CompanionEntity extends PathfinderMob {
             if (CompanionDropTracker.isDroppedBy(itemEntity, this.getUUID())) {
                 continue;
             }
+            ItemStack stack = itemEntity.getItem();
+            if (stack.isEmpty()) {
+                continue;
+            }
+            boolean ownerTransferDrop = false;
             UUID playerDropper = CompanionDropTracker.getPlayerDropper(itemEntity);
             if (playerDropper != null) {
                 if (CompanionDropTracker.isPlayerBlockDrop(itemEntity)) {
@@ -2174,18 +2348,26 @@ public class CompanionEntity extends PathfinderMob {
                 if (ownerId == null || !ownerId.equals(playerDropper)) {
                     continue;
                 }
+                ownerTransferDrop = true;
+                CompanionToolSlot toolSlot = CompanionToolSlot.fromStack(stack);
+                if (toolSlot == null && !stack.isEdible() && !(stack.getItem() instanceof ArmorItem)) {
+                    continue;
+                }
             } else {
                 UUID vanillaDropper = CompanionDropTracker.getVanillaDropper(itemEntity);
-                if (vanillaDropper != null && getPlayerById(vanillaDropper) != null) {
-                    continue;
+                if (vanillaDropper != null) {
+                    if (ownerId == null || !ownerId.equals(vanillaDropper)) {
+                        continue;
+                    }
+                    ownerTransferDrop = true;
+                    CompanionToolSlot toolSlot = CompanionToolSlot.fromStack(stack);
+                    if (toolSlot == null && !stack.isEdible() && !(stack.getItem() instanceof ArmorItem)) {
+                        continue;
+                    }
                 }
             }
             if (CompanionDropTracker.isMobDrop(itemEntity)
                     && !CompanionDropTracker.isMobDropFrom(itemEntity, this.getUUID())) {
-                continue;
-            }
-            ItemStack stack = itemEntity.getItem();
-            if (stack.isEmpty()) {
                 continue;
             }
             ItemStack equippedStack = tryAutoEquipDroppedTool(itemEntity, stack);
@@ -2193,8 +2375,17 @@ public class CompanionEntity extends PathfinderMob {
                 inventoryExchange.recordPickup(itemEntity, equippedStack);
                 pickupGratitude.onPickup(itemEntity, equippedStack, gameTime);
             }
+            ItemStack equippedArmor = tryAutoEquipDroppedArmor(itemEntity, stack);
+            if (!equippedArmor.isEmpty()) {
+                inventoryExchange.recordPickup(itemEntity, equippedArmor);
+                pickupGratitude.onPickup(itemEntity, equippedArmor, gameTime);
+            }
             if (stack.isEmpty()) {
                 itemEntity.discard();
+                continue;
+            }
+            if (ownerTransferDrop && stack.getItem() instanceof ArmorItem) {
+                itemEntity.setItem(stack);
                 continue;
             }
             int before = stack.getCount();
@@ -2212,45 +2403,88 @@ public class CompanionEntity extends PathfinderMob {
                 itemEntity.setItem(stack);
             }
             if (inventory.isFull()) {
-                break;
+                inventoryFull = true;
             }
         }
     }
 
-    private void notifyInventoryFullNeedChest(long gameTime, AABB range) {
-        if (ownerId == null || gameTime - lastInventoryFullNeedChestTick < INVENTORY_FULL_NOTIFY_COOLDOWN_TICKS) {
+    public void pauseItemPickup(int ticks) {
+        if (ticks <= 0 || this.level().isClientSide) {
             return;
         }
-        if (!hasNearbyOwnerDrop(range)) {
-            return;
+        long gameTime = this.level().getGameTime();
+        long until = gameTime + ticks;
+        if (this.nextItemPickupTick < until) {
+            this.nextItemPickupTick = until;
         }
-        Player ownerPlayer = getPlayerById(ownerId);
-        if (!(ownerPlayer instanceof ServerPlayer serverPlayer) || serverPlayer.isSpectator() || !serverPlayer.isAlive()) {
-            return;
-        }
-        lastInventoryFullNeedChestTick = gameTime;
-        sendReply(serverPlayer, Component.translatable(INVENTORY_FULL_NEED_CHEST_KEY));
     }
 
-    private boolean hasNearbyOwnerDrop(AABB range) {
-        if (ownerId == null || range == null) {
+    public boolean tryAcceptOwnerToss(net.minecraft.world.entity.item.ItemEntity itemEntity, Player player) {
+        if (this.level().isClientSide || itemEntity == null || player == null || !this.isAlive()) {
             return false;
         }
-        for (net.minecraft.world.entity.item.ItemEntity itemEntity
-                : this.level().getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class, range)) {
-            if (!itemEntity.isAlive()) {
-                continue;
-            }
-            UUID playerDropper = CompanionDropTracker.getPlayerDropper(itemEntity);
-            if (playerDropper == null || !ownerId.equals(playerDropper)) {
-                continue;
-            }
-            if (CompanionDropTracker.isPlayerBlockDrop(itemEntity) || itemEntity.getItem().isEmpty()) {
-                continue;
-            }
+        if (!this.isOwnedBy(player)) {
+            return false;
+        }
+        ItemStack stack = itemEntity.getItem();
+        if (stack.isEmpty()) {
+            return false;
+        }
+        if (inventoryExchange.isDropAllCatchupActiveFor(player, this.level().getGameTime())) {
+            player.getInventory().placeItemBackInInventory(stack.copy());
+            itemEntity.discard();
             return true;
         }
-        return false;
+        boolean accepted = false;
+        ItemStack equippedTool = tryAutoEquipDroppedTool(itemEntity, stack);
+        if (!equippedTool.isEmpty()) {
+            inventoryExchange.recordPickup(itemEntity, equippedTool);
+            pickupGratitude.onPickup(itemEntity, equippedTool, this.level().getGameTime());
+            accepted = true;
+        }
+        ItemStack equippedArmor = tryAutoEquipDroppedArmor(itemEntity, stack);
+        if (!equippedArmor.isEmpty()) {
+            inventoryExchange.recordPickup(itemEntity, equippedArmor);
+            pickupGratitude.onPickup(itemEntity, equippedArmor, this.level().getGameTime());
+            accepted = true;
+        }
+        if (stack.isEmpty()) {
+            itemEntity.discard();
+            return true;
+        }
+        if (stack.getItem() instanceof ArmorItem) {
+            itemEntity.setItem(stack);
+            return accepted;
+        }
+        int before = stack.getCount();
+        ItemStack pickedCopy = stack.copy();
+        inventory.add(stack);
+        int pickedCount = before - stack.getCount();
+        if (pickedCount <= 0) {
+            return accepted;
+        }
+        pickedCopy.setCount(pickedCount);
+        inventoryExchange.recordPickup(itemEntity, pickedCopy);
+        pickupGratitude.onPickup(itemEntity, pickedCopy, this.level().getGameTime());
+        if (stack.isEmpty()) {
+            itemEntity.discard();
+        } else {
+            itemEntity.setItem(stack);
+        }
+        return true;
+    }
+
+    private boolean hasAnyDedicatedStorageCapacity() {
+        for (CompanionToolSlot slot : CompanionToolSlot.values()) {
+            if (getToolSlot(slot).isEmpty()) {
+                return true;
+            }
+        }
+        ItemStack food = getFoodSlot();
+        if (food.isEmpty()) {
+            return true;
+        }
+        return food.getCount() < food.getMaxStackSize();
     }
 
     public void sendCommandList(Player player) {
@@ -2284,11 +2518,6 @@ public class CompanionEntity extends PathfinderMob {
         sendDirectMessage(nearest, Component.translatable(GREET_ABOUT_KEY));
         sendDirectMessage(nearest, Component.translatable(GREET_COMMANDS_KEY));
         this.hasGreeted = true;
-    }
-
-    private void tickChestStatus() {
-        Player nearest = this.level().getNearestPlayer(this, FOLLOW_SEARCH_DISTANCE);
-        this.chestManager.tick(nearest);
     }
 
     private void tickAutonomousBehavior() {
@@ -2385,6 +2614,32 @@ public class CompanionEntity extends PathfinderMob {
         setToolSlot(slot, toStore);
         stack.shrink(1);
         return toStore;
+    }
+
+    private ItemStack tryAutoEquipDroppedArmor(net.minecraft.world.entity.item.ItemEntity itemEntity, ItemStack stack) {
+        if (itemEntity == null || stack == null || stack.isEmpty()) {
+            return ItemStack.EMPTY;
+        }
+        UUID playerDropper = CompanionDropTracker.getPlayerDropper(itemEntity);
+        UUID vanillaDropper = CompanionDropTracker.getVanillaDropper(itemEntity);
+        if (playerDropper == null && vanillaDropper == null) {
+            return ItemStack.EMPTY;
+        }
+        if (!(stack.getItem() instanceof ArmorItem armorItem)) {
+            return ItemStack.EMPTY;
+        }
+        EquipmentSlot slot = armorItem.getEquipmentSlot();
+        if (slot.getType() != EquipmentSlot.Type.ARMOR) {
+            return ItemStack.EMPTY;
+        }
+        if (!getItemBySlot(slot).isEmpty()) {
+            return ItemStack.EMPTY;
+        }
+        ItemStack toEquip = stack.copy();
+        toEquip.setCount(1);
+        setItemSlot(slot, toEquip);
+        stack.shrink(1);
+        return toEquip;
     }
 
     private boolean isNegativeFood(ItemStack stack) {
@@ -3284,12 +3539,73 @@ public class CompanionEntity extends PathfinderMob {
 
     private void restoreToolSlotsFromHand() {
         ItemStack mainHand = getMainHandItem();
+        if (mainHand.isEmpty()) {
+            return;
+        }
+        if (mainHand.isEdible() && getFoodSlot().isEmpty()) {
+            setFoodSlot(mainHand);
+            setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+            return;
+        }
         CompanionToolSlot slot = CompanionToolSlot.fromStack(mainHand);
         if (slot == null || !getToolSlot(slot).isEmpty()) {
             return;
         }
         setToolSlot(slot, mainHand);
         setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+    }
+
+    private void migrateDedicatedItemsFromInventory() {
+        boolean changed = false;
+        for (int i = 0; i < inventory.getItems().size(); i++) {
+            ItemStack stack = inventory.getItems().get(i);
+            if (stack.isEmpty()) {
+                continue;
+            }
+            boolean slotChanged = false;
+            ItemStack working = stack.copy();
+            CompanionToolSlot toolSlot = CompanionToolSlot.fromStack(working);
+            if (toolSlot != null && getToolSlot(toolSlot).isEmpty()) {
+                ItemStack toStore = working.copy();
+                toStore.setCount(1);
+                setToolSlot(toolSlot, toStore);
+                working.shrink(1);
+                changed = true;
+                slotChanged = true;
+            }
+            if (!working.isEmpty() && working.isEdible()) {
+                ItemStack foodSlot = getFoodSlot();
+                if (foodSlot.isEmpty()) {
+                    int move = Math.min(working.getCount(), working.getMaxStackSize());
+                    if (move > 0) {
+                        ItemStack toStore = working.copy();
+                        toStore.setCount(move);
+                        setFoodSlot(toStore);
+                        working.shrink(move);
+                        changed = true;
+                        slotChanged = true;
+                    }
+                } else if (ItemStack.isSameItemSameTags(foodSlot, working)
+                        && foodSlot.getCount() < foodSlot.getMaxStackSize()) {
+                    int space = foodSlot.getMaxStackSize() - foodSlot.getCount();
+                    int move = Math.min(space, working.getCount());
+                    if (move > 0) {
+                        ItemStack merged = foodSlot.copy();
+                        merged.grow(move);
+                        setFoodSlot(merged);
+                        working.shrink(move);
+                        changed = true;
+                        slotChanged = true;
+                    }
+                }
+            }
+            if (slotChanged) {
+                inventory.getItems().set(i, working.isEmpty() ? ItemStack.EMPTY : working);
+            }
+        }
+        if (changed) {
+            onInventoryUpdated();
+        }
     }
 
     private void hideSwordWhileInBoat() {

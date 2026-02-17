@@ -47,6 +47,8 @@ public final class CompanionCommands {
                         .then(Commands.literal("msg")
                                 .then(Commands.argument("text", StringArgumentType.greedyString())
                                         .executes(CompanionCommands::handleMessage)))
+                        .then(Commands.literal("inv")
+                                .executes(CompanionCommands::handleInventory))
                         .then(Commands.literal("gui")
                                 .executes(CompanionCommands::handleGui))
                         .then(Commands.literal("bug")
@@ -114,6 +116,15 @@ public final class CompanionCommands {
             buffer.writeBoolean(true);
         });
         return 1;
+    }
+
+    private static int handleInventory(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
+        if (companion == null || !companion.canPlayerControl(player)) {
+            return 0;
+        }
+        return companion.openInventoryMenu(player) ? 1 : 0;
     }
 
     private static int handleBugReport(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {

@@ -44,7 +44,6 @@ final class CompanionTaskCoordinator {
         IDLE,
         WAITING_BUCKETS,
         WAITING_TORCH_RESOURCES,
-        WAITING_CHEST,
         GATHERING,
         DELIVERING,
         DELIVERING_ALL,
@@ -93,6 +92,8 @@ final class CompanionTaskCoordinator {
             "entity.aicompanion.companion.ai.home_review.in_progress";
     private static final String AI_HOME_REVIEW_FAILED_KEY =
             "entity.aicompanion.companion.ai.home_review.failed";
+    private static final String INVENTORY_FULL_KEY =
+            "entity.aicompanion.companion.inventory.full.need_chest";
 
     private final CompanionEntity owner;
     private final CompanionInventory inventory;
@@ -101,7 +102,6 @@ final class CompanionTaskCoordinator {
     private final CompanionTreeHarvestController treeHarvest;
     private final CompanionDeliveryController delivery;
     private final CompanionBucketHandler bucketHandler;
-    private final CompanionChestManager chestManager;
     private final CompanionCommandParser commandParser;
     private final CompanionTaskSequenceParser sequenceParser;
     private final CompanionHomeAssessmentController homeAssessment;
@@ -138,7 +138,6 @@ final class CompanionTaskCoordinator {
                              CompanionTreeHarvestController treeHarvest,
                              CompanionDeliveryController delivery,
                              CompanionBucketHandler bucketHandler,
-                             CompanionChestManager chestManager,
                              CompanionCommandParser commandParser,
                              CompanionHelpSystem helpSystem,
                              CompanionInventoryExchange inventoryExchange,
@@ -150,7 +149,6 @@ final class CompanionTaskCoordinator {
         this.treeHarvest = treeHarvest;
         this.delivery = delivery;
         this.bucketHandler = bucketHandler;
-        this.chestManager = chestManager;
         this.commandParser = commandParser;
         this.sequenceParser = new CompanionTaskSequenceParser(commandParser);
         this.homeAssessment = new CompanionHomeAssessmentController(owner);
@@ -162,10 +160,10 @@ final class CompanionTaskCoordinator {
     }
 
     boolean handlePlayerMessage(ServerPlayer player, String message) {
-        if (helpSystem.handleHelp(player, message)) {
-            return true;
+        if (isInventoryOpenCommand(message)) {
+            return owner.openInventoryMenu(player);
         }
-        if (chestManager.handleChestAssignment(player, message)) {
+        if (helpSystem.handleHelp(player, message)) {
             return true;
         }
         if (inventoryExchange.handleMessage(player, message)) {
@@ -259,7 +257,6 @@ final class CompanionTaskCoordinator {
             }
             return;
         }
-        chestManager.tick(player);
         if (mode == CompanionEntity.CompanionMode.STOPPED) {
             owner.getNavigation().stop();
             return;
@@ -269,15 +266,9 @@ final class CompanionTaskCoordinator {
             return;
         }
         if (inventory.isFull()) {
-            chestManager.requestChest(player, gameTime);
-            if (chestManager.hasChest()) {
-                chestManager.depositToChest();
-            }
-            taskState = TaskState.WAITING_CHEST;
+            owner.sendReply(player, Component.translatable(INVENTORY_FULL_KEY));
+            failActiveTask(player, "inventory_full");
             return;
-        }
-        if (taskState == TaskState.WAITING_CHEST && !inventory.isFull()) {
-            taskState = TaskState.GATHERING;
         }
         if (taskState == TaskState.WAITING_BUCKETS) {
             if (bucketHandler.ensureBuckets(activeRequest, player, gameTime) == CompanionBucketHandler.BucketStatus.READY) {
@@ -845,11 +836,8 @@ final class CompanionTaskCoordinator {
                 return;
             }
             if (treeResult == CompanionTreeHarvestController.Result.NEED_CHEST) {
-                chestManager.requestChest(player, gameTime);
-                if (chestManager.hasChest()) {
-                    chestManager.depositToChest();
-                }
-                taskState = TaskState.WAITING_CHEST;
+                owner.sendReply(player, Component.translatable(INVENTORY_FULL_KEY));
+                failActiveTask(player, "tree_inventory_full");
             }
             return;
         }
@@ -899,12 +887,20 @@ final class CompanionTaskCoordinator {
             return;
         }
         if (result == CompanionGatheringController.Result.NEED_CHEST) {
-            chestManager.requestChest(player, gameTime);
-            if (chestManager.hasChest()) {
-                chestManager.depositToChest();
-            }
-            taskState = TaskState.WAITING_CHEST;
+            owner.sendReply(player, Component.translatable(INVENTORY_FULL_KEY));
+            failActiveTask(player, "gather_inventory_full");
         }
+    }
+
+    private boolean isInventoryOpenCommand(String message) {
+        if (message == null) {
+            return false;
+        }
+        String normalized = message.trim()
+                .toLowerCase(Locale.ROOT)
+                .replace('\u0451', '\u0435');
+        return normalized.equals("\u0438\u043d\u0432\u0435\u043d\u0442\u0430\u0440\u044c")
+                || normalized.equals("inventory");
     }
 
     private void tickDelivery(Player player, long gameTime) {
