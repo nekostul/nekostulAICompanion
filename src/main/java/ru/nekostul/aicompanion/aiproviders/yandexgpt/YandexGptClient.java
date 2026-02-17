@@ -13,6 +13,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.UUID;
 
 public final class YandexGptClient {
@@ -52,6 +53,7 @@ public final class YandexGptClient {
     private static final String ENDPOINT =
             "https://llm.api.cloud.yandex.net/foundationModels/v1/completion";
     private static final int MAX_REPLY_LENGTH = 700;
+    private static final int BUILD_PLAN_MIN_TOKENS = 2048;
 
     private YandexGptClient() {
     }
@@ -60,11 +62,21 @@ public final class YandexGptClient {
         if (player == null || !isNotBlank(playerMessage)) {
             return error();
         }
-        return requestWithPrompts(
+        UUID playerId = player.getUUID();
+        String userPrompt = YandexGptPrompts.userPrompt(player.getName().getString(), playerMessage);
+        Result result = requestWithPrompts(
                 player,
                 YandexGptPrompts.system(),
-                YandexGptPrompts.userPrompt(player.getName().getString(), playerMessage)
+                userPrompt,
+                CompanionConfig.getYandexGptMaxTokens(),
+                true,
+                YandexGptConversationMemory.snapshot(playerId)
         );
+        if (result.status() == Status.SUCCESS && isNotBlank(result.text())) {
+            YandexGptConversationMemory.appendUser(playerId, userPrompt);
+            YandexGptConversationMemory.appendAssistant(playerId, result.text());
+        }
+        return result;
     }
 
     public static Result interpretCommand(ServerPlayer player, String playerMessage) {
@@ -74,7 +86,10 @@ public final class YandexGptClient {
         return requestWithPrompts(
                 player,
                 YandexGptPrompts.commandSystemPrompt(),
-                YandexGptPrompts.commandUserPrompt(player.getName().getString(), playerMessage)
+                YandexGptPrompts.commandUserPrompt(player.getName().getString(), playerMessage),
+                CompanionConfig.getYandexGptMaxTokens(),
+                true,
+                List.of()
         );
     }
 
@@ -85,11 +100,34 @@ public final class YandexGptClient {
         return requestWithPrompts(
                 player,
                 YandexGptPrompts.homeReviewSystemPrompt(),
-                YandexGptPrompts.homeReviewUserPrompt(player.getName().getString(), assessmentPayload)
+                YandexGptPrompts.homeReviewUserPrompt(player.getName().getString(), assessmentPayload),
+                CompanionConfig.getYandexGptMaxTokens(),
+                true,
+                List.of()
         );
     }
 
-    private static Result requestWithPrompts(ServerPlayer player, String systemPrompt, String userPrompt) {
+    public static Result generateHomeBuildPlan(ServerPlayer player, String buildRequest, String buildPointContext) {
+        if (player == null || !isNotBlank(buildRequest)) {
+            return error();
+        }
+        int maxTokens = Math.max(CompanionConfig.getYandexGptMaxTokens(), BUILD_PLAN_MIN_TOKENS);
+        return requestWithPrompts(
+                player,
+                YandexGptPrompts.homeBuildSystemPrompt(),
+                YandexGptPrompts.homeBuildUserPrompt(player.getName().getString(), buildRequest, buildPointContext),
+                maxTokens,
+                false,
+                List.of()
+        );
+    }
+
+    private static Result requestWithPrompts(ServerPlayer player,
+                                             String systemPrompt,
+                                             String userPrompt,
+                                             int maxTokens,
+                                             boolean shortTextMode,
+                                             List<YandexGptConversationMemory.Message> historyMessages) {
         if (player == null || !isNotBlank(systemPrompt) || !isNotBlank(userPrompt)) {
             return error();
         }
@@ -112,13 +150,14 @@ public final class YandexGptClient {
         }
 
         try {
-            String answer = requestCompletion(apiKey, folderId, model, systemPrompt, userPrompt);
+            String answer = requestCompletion(apiKey, folderId, model, systemPrompt, userPrompt, maxTokens, historyMessages);
             if (!isNotBlank(answer)) {
                 return error();
             }
+            String finalText = shortTextMode ? sanitizeReply(answer) : sanitizeStructuredReply(answer);
             YandexGptDailyUsageTracker.markUsed(playerId);
             return new Result(Status.SUCCESS,
-                    sanitizeReply(answer),
+                    finalText,
                     YandexGptDailyUsageTracker.remaining(playerId, dailyLimit));
         } catch (Exception exception) {
             LOGGER.debug("yandexgpt request failed: player={} error={}", playerId, exception.toString());
@@ -130,7 +169,9 @@ public final class YandexGptClient {
                                             String folderId,
                                             String model,
                                             String systemPrompt,
-                                            String userPrompt) throws Exception {
+                                            String userPrompt,
+                                            int maxTokens,
+                                            List<YandexGptConversationMemory.Message> historyMessages) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(ENDPOINT).openConnection();
         connection.setRequestMethod("POST");
         connection.setDoOutput(true);
@@ -144,18 +185,20 @@ public final class YandexGptClient {
 
         JsonObject options = new JsonObject();
         options.addProperty("temperature", CompanionConfig.getYandexGptTemperature());
-        options.addProperty("maxTokens", CompanionConfig.getYandexGptMaxTokens());
+        options.addProperty("maxTokens", Math.max(16, maxTokens));
         body.add("completionOptions", options);
 
         JsonArray messages = new JsonArray();
-        JsonObject system = new JsonObject();
-        system.addProperty("role", "system");
-        system.addProperty("text", systemPrompt);
-        messages.add(system);
-        JsonObject user = new JsonObject();
-        user.addProperty("role", "user");
-        user.addProperty("text", userPrompt);
-        messages.add(user);
+        appendMessage(messages, "system", systemPrompt);
+        if (historyMessages != null && !historyMessages.isEmpty()) {
+            for (YandexGptConversationMemory.Message historyMessage : historyMessages) {
+                if (historyMessage == null) {
+                    continue;
+                }
+                appendMessage(messages, historyMessage.role(), historyMessage.text());
+            }
+        }
+        appendMessage(messages, "user", userPrompt);
         body.add("messages", messages);
 
         try (OutputStream output = connection.getOutputStream()) {
@@ -199,6 +242,16 @@ public final class YandexGptClient {
         return new Result(Status.ERROR, "", 0);
     }
 
+    private static void appendMessage(JsonArray messages, String role, String text) {
+        if (messages == null || !isNotBlank(role) || !isNotBlank(text)) {
+            return;
+        }
+        JsonObject message = new JsonObject();
+        message.addProperty("role", role);
+        message.addProperty("text", text);
+        messages.add(message);
+    }
+
     private static String sanitizeReply(String raw) {
         if (raw == null) {
             return "";
@@ -212,6 +265,13 @@ public final class YandexGptClient {
             return cleaned;
         }
         return cleaned.substring(0, MAX_REPLY_LENGTH).trim() + "...";
+    }
+
+    private static String sanitizeStructuredReply(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        return raw.replace("\u0000", "").trim();
     }
 
     private static boolean isNotBlank(String value) {

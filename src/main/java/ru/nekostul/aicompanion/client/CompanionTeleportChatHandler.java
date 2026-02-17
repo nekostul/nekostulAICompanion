@@ -32,6 +32,18 @@ public final class CompanionTeleportChatHandler {
             "entity.aicompanion.companion.home.assess.rooms.offer";
     private static final String HOME_ASSESS_ROOMS_REMOVE_KEY =
             "entity.aicompanion.companion.home.assess.rooms.remove";
+    private static final String BUILD_POINT_OFFER_KEY =
+            "entity.aicompanion.companion.build.point.ask";
+    private static final String BUILD_POINT_REMOVE_KEY =
+            "entity.aicompanion.companion.build.point.remove";
+    private static final String BUILD_RESOURCES_OFFER_KEY =
+            "entity.aicompanion.companion.build.resources.offer";
+    private static final String BUILD_RESOURCES_REMOVE_KEY =
+            "entity.aicompanion.companion.build.resources.remove";
+    private static final String INVENTORY_DROP_CONFIRM_OFFER_KEY =
+            "entity.aicompanion.companion.inventory.drop.confirm";
+    private static final String INVENTORY_DROP_CONFIRM_REMOVE_KEY =
+            "entity.aicompanion.companion.inventory.drop.confirm.remove";
     private static final Set<String> TELEPORT_REQUEST_KEYS = Set.of(
             "entity.aicompanion.companion.teleport.request",
             "entity.aicompanion.companion.teleport.request.alt",
@@ -65,10 +77,19 @@ public final class CompanionTeleportChatHandler {
         boolean treeRetryRemove = containsTreeRetryRemove(message);
         boolean homeAssessRoomsOffer = containsHomeAssessRoomsOffer(message);
         boolean homeAssessRoomsRemove = containsHomeAssessRoomsRemove(message);
+        boolean buildPointOffer = containsBuildPointOffer(message);
+        boolean buildPointRemove = containsBuildPointRemove(message);
+        boolean buildResourcesOffer = containsBuildResourcesOffer(message);
+        boolean buildResourcesRemove = containsBuildResourcesRemove(message);
+        boolean inventoryDropConfirmOffer = containsInventoryDropConfirmOffer(message);
+        boolean inventoryDropConfirmRemove = containsInventoryDropConfirmRemove(message);
         if (teleportRequest || teleportIgnore
                 || homeRecoveryHp || homeRecoveryHpRemove
                 || treeRetryOffer || treeRetryRemove
-                || homeAssessRoomsOffer || homeAssessRoomsRemove) {
+                || homeAssessRoomsOffer || homeAssessRoomsRemove
+                || buildPointOffer || buildPointRemove
+                || buildResourcesOffer || buildResourcesRemove
+                || inventoryDropConfirmOffer || inventoryDropConfirmRemove) {
             event.setCanceled(true);
             Minecraft minecraft = Minecraft.getInstance();
             if (minecraft == null || minecraft.gui == null) {
@@ -81,6 +102,12 @@ public final class CompanionTeleportChatHandler {
                 replaceHomeRecoveryHpMessage(chat, message, homeRecoveryHpRemove);
             } else if (homeAssessRoomsOffer || homeAssessRoomsRemove) {
                 replaceHomeAssessRoomsMessage(chat, message, homeAssessRoomsRemove);
+            } else if (buildPointOffer || buildPointRemove) {
+                replaceBuildPointMessage(chat, message, buildPointRemove);
+            } else if (buildResourcesOffer || buildResourcesRemove) {
+                replaceBuildResourcesMessage(chat, message, buildResourcesRemove);
+            } else if (inventoryDropConfirmOffer || inventoryDropConfirmRemove) {
+                replaceInventoryDropConfirmMessage(chat, message, inventoryDropConfirmRemove);
             } else {
                 replaceTreeRetryMessage(chat, message, treeRetryRemove);
             }
@@ -215,6 +242,102 @@ public final class CompanionTeleportChatHandler {
         return false;
     }
 
+    private static boolean containsBuildResourcesOffer(Component message) {
+        if (message == null) {
+            return false;
+        }
+        if (message.getContents() instanceof TranslatableContents contents
+                && BUILD_RESOURCES_OFFER_KEY.equals(contents.getKey())) {
+            return true;
+        }
+        for (Component sibling : message.getSiblings()) {
+            if (containsBuildResourcesOffer(sibling)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsBuildPointOffer(Component message) {
+        if (message == null) {
+            return false;
+        }
+        if (message.getContents() instanceof TranslatableContents contents
+                && BUILD_POINT_OFFER_KEY.equals(contents.getKey())) {
+            return true;
+        }
+        for (Component sibling : message.getSiblings()) {
+            if (containsBuildPointOffer(sibling)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsBuildPointRemove(Component message) {
+        if (message == null) {
+            return false;
+        }
+        if (message.getContents() instanceof TranslatableContents contents
+                && BUILD_POINT_REMOVE_KEY.equals(contents.getKey())) {
+            return true;
+        }
+        for (Component sibling : message.getSiblings()) {
+            if (containsBuildPointRemove(sibling)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsBuildResourcesRemove(Component message) {
+        if (message == null) {
+            return false;
+        }
+        if (message.getContents() instanceof TranslatableContents contents
+                && BUILD_RESOURCES_REMOVE_KEY.equals(contents.getKey())) {
+            return true;
+        }
+        for (Component sibling : message.getSiblings()) {
+            if (containsBuildResourcesRemove(sibling)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsInventoryDropConfirmOffer(Component message) {
+        if (message == null) {
+            return false;
+        }
+        if (message.getContents() instanceof TranslatableContents contents
+                && INVENTORY_DROP_CONFIRM_OFFER_KEY.equals(contents.getKey())) {
+            return true;
+        }
+        for (Component sibling : message.getSiblings()) {
+            if (containsInventoryDropConfirmOffer(sibling)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsInventoryDropConfirmRemove(Component message) {
+        if (message == null) {
+            return false;
+        }
+        if (message.getContents() instanceof TranslatableContents contents
+                && INVENTORY_DROP_CONFIRM_REMOVE_KEY.equals(contents.getKey())) {
+            return true;
+        }
+        for (Component sibling : message.getSiblings()) {
+            if (containsInventoryDropConfirmRemove(sibling)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static void replaceTeleportMessage(ChatComponent chat, Component message, boolean ignore) {
         List<GuiMessage> messages = getChatMessages(chat);
         if (messages != null) {
@@ -282,6 +405,66 @@ public final class CompanionTeleportChatHandler {
             for (Iterator<GuiMessage> iterator = messages.iterator(); iterator.hasNext(); ) {
                 GuiMessage guiMessage = iterator.next();
                 if (containsHomeAssessRoomsOffer(guiMessage.content())) {
+                    iterator.remove();
+                    removed = true;
+                }
+            }
+            if (removed) {
+                chat.rescaleChat();
+            }
+        }
+        if (!removeOnly) {
+            chat.addMessage(message);
+        }
+    }
+
+    private static void replaceBuildPointMessage(ChatComponent chat, Component message, boolean removeOnly) {
+        List<GuiMessage> messages = getChatMessages(chat);
+        if (messages != null) {
+            boolean removed = false;
+            for (Iterator<GuiMessage> iterator = messages.iterator(); iterator.hasNext(); ) {
+                GuiMessage guiMessage = iterator.next();
+                if (containsBuildPointOffer(guiMessage.content())) {
+                    iterator.remove();
+                    removed = true;
+                }
+            }
+            if (removed) {
+                chat.rescaleChat();
+            }
+        }
+        if (!removeOnly) {
+            chat.addMessage(message);
+        }
+    }
+
+    private static void replaceBuildResourcesMessage(ChatComponent chat, Component message, boolean removeOnly) {
+        List<GuiMessage> messages = getChatMessages(chat);
+        if (messages != null) {
+            boolean removed = false;
+            for (Iterator<GuiMessage> iterator = messages.iterator(); iterator.hasNext(); ) {
+                GuiMessage guiMessage = iterator.next();
+                if (containsBuildResourcesOffer(guiMessage.content())) {
+                    iterator.remove();
+                    removed = true;
+                }
+            }
+            if (removed) {
+                chat.rescaleChat();
+            }
+        }
+        if (!removeOnly) {
+            chat.addMessage(message);
+        }
+    }
+
+    private static void replaceInventoryDropConfirmMessage(ChatComponent chat, Component message, boolean removeOnly) {
+        List<GuiMessage> messages = getChatMessages(chat);
+        if (messages != null) {
+            boolean removed = false;
+            for (Iterator<GuiMessage> iterator = messages.iterator(); iterator.hasNext(); ) {
+                GuiMessage guiMessage = iterator.next();
+                if (containsInventoryDropConfirmOffer(guiMessage.content())) {
                     iterator.remove();
                     removed = true;
                 }

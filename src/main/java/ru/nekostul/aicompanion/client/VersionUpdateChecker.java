@@ -33,12 +33,12 @@ import java.util.regex.Pattern;
 @Mod.EventBusSubscriber(modid = AiCompanionMod.MOD_ID, value = Dist.CLIENT,
         bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class VersionUpdateChecker {
-    private static final String MODRINTH_VERSIONS_URL = "https://api.modrinth.com/v2/project/nekostulai/version";
-    private static final String MODRINTH_VERSION_PAGE_URL_TEMPLATE = "https://modrinth.com/mod/nekostulai/version/%s";
+    private static final String MODRINTH_VERSIONS_URL = "https://api.modrinth.com/v2/project/nekostulAICompanion/version";
+    private static final String MODRINTH_VERSION_PAGE_URL_TEMPLATE = "https://modrinth.com/mod/nekostulAICompanion/version/%s";
     private static final String GITHUB_LATEST_RELEASE_URL =
-            "https://api.github.com/repos/nekostul/nekostulai/releases/latest";
-    private static final String GITHUB_RELEASES_FALLBACK_URL = "https://github.com/nekostul/nekostulai/releases/latest";
-    private static final String MODRINTH_PROJECT_FALLBACK_URL = "https://modrinth.com/mod/nekostulai/versions";
+            "https://api.github.com/repos/nekostul/nekostulAICompanion/releases/latest";
+    private static final String GITHUB_RELEASES_FALLBACK_URL = "https://github.com/nekostul/nekostulAICompanion/releases/latest";
+    private static final String MODRINTH_PROJECT_FALLBACK_URL = "https://modrinth.com/mod/nekostulAICompanion/versions";
 
     private static final String TARGET_LOADER = "forge";
     private static final String TARGET_MINECRAFT_VERSION = "1.20.1";

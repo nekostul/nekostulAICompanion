@@ -24,6 +24,7 @@ import java.util.UUID;
 public final class CompanionInventoryExchange {
     private static final int CONFIRM_THRESHOLD = 9;
     private static final String DROP_CONFIRM_KEY = "entity.aicompanion.companion.inventory.drop.confirm";
+    private static final String DROP_CONFIRM_REMOVE_KEY = "entity.aicompanion.companion.inventory.drop.confirm.remove";
     private static final String DROP_CONFIRM_BUTTON_KEY = "entity.aicompanion.companion.inventory.drop.confirm.button";
     private static final String DROP_TOOLS_NOTICE_KEY = "entity.aicompanion.companion.inventory.drop.tools.notice";
     private static final String DROP_TOOLS_BUTTON_KEY = "entity.aicompanion.companion.inventory.drop.tools.button";
@@ -100,6 +101,7 @@ public final class CompanionInventoryExchange {
         boolean keepToolsAndFood = pendingDropKeepToolsAndFood;
         pendingDropPlayerId = null;
         pendingDropKeepToolsAndFood = false;
+        owner.sendReply(player, Component.translatable(DROP_CONFIRM_REMOVE_KEY));
         dropAll(player, keepToolsAndFood, gameTime);
         return true;
     }
@@ -246,6 +248,7 @@ public final class CompanionInventoryExchange {
     }
 
     private void sendConfirm(Player player) {
+        owner.sendReply(player, Component.translatable(DROP_CONFIRM_REMOVE_KEY));
         Component button = Component.translatable(DROP_CONFIRM_BUTTON_KEY)
                 .withStyle(style -> style
                         .withColor(ChatFormatting.AQUA)

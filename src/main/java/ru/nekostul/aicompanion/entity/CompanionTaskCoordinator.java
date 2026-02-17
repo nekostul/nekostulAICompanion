@@ -48,7 +48,8 @@ final class CompanionTaskCoordinator {
         GATHERING,
         DELIVERING,
         DELIVERING_ALL,
-        HOME_ASSESSING
+        HOME_ASSESSING,
+        BUILDING
     }
 
     private static final Logger LOGGER = LogUtils.getLogger();
@@ -108,6 +109,7 @@ final class CompanionTaskCoordinator {
     private final CompanionAiChatController aiChatController;
     private final CompanionInventoryExchange inventoryExchange;
     private final CompanionTorchHandler torchHandler;
+    private final CompanionHouseBuildController houseBuildController;
 
     private CompanionResourceRequest activeRequest;
     private TaskState taskState = TaskState.IDLE;
@@ -127,6 +129,7 @@ final class CompanionTaskCoordinator {
     private final Set<UUID> aiCommandInFlightByPlayer = ConcurrentHashMap.newKeySet();
     private final Set<UUID> aiHomeReviewInFlightByPlayer = ConcurrentHashMap.newKeySet();
     private String lastAiHomeReviewPayload = "";
+    private boolean buildGatheringInProgress;
 
     CompanionTaskCoordinator(CompanionEntity owner,
                              CompanionInventory inventory,
@@ -155,6 +158,7 @@ final class CompanionTaskCoordinator {
         this.aiChatController = new CompanionAiChatController(owner);
         this.inventoryExchange = inventoryExchange;
         this.torchHandler = torchHandler;
+        this.houseBuildController = new CompanionHouseBuildController(owner, inventory);
     }
 
     boolean handlePlayerMessage(ServerPlayer player, String message) {
@@ -175,6 +179,12 @@ final class CompanionTaskCoordinator {
             taskState = homeAssessment.isSessionActive() ? TaskState.HOME_ASSESSING : TaskState.IDLE;
             if (!homeAssessment.isSessionActive()) {
                 requestAiHomeReviewIfNeeded(player, payloadBeforeFollowUp);
+            }
+            return true;
+        }
+        if (houseBuildController.handleMessage(player, message, owner.level().getGameTime())) {
+            if (houseBuildController.isSessionActive() && activeRequest == null) {
+                taskState = TaskState.BUILDING;
             }
             return true;
         }
@@ -210,8 +220,20 @@ final class CompanionTaskCoordinator {
         return tryInterpretCommandWithAi(player, message);
     }
 
+    boolean handleBuildPointClick(ServerPlayer player, net.minecraft.core.BlockPos clickedPos, long gameTime) {
+        if (!houseBuildController.handleBuildPointClick(player, clickedPos, gameTime)) {
+            return false;
+        }
+        if (houseBuildController.isSessionActive() && activeRequest == null) {
+            taskState = TaskState.BUILDING;
+        }
+        return true;
+    }
+
     void tick(CompanionEntity.CompanionMode mode, long gameTime) {
         tickTreeRetryPrompt(gameTime);
+        houseBuildController.tick(gameTime);
+        startPendingHouseGathering();
         if (taskState == TaskState.HOME_ASSESSING) {
             CompanionHomeAssessmentController.Result assessResult = homeAssessment.tick(gameTime);
             if (assessResult != CompanionHomeAssessmentController.Result.IN_PROGRESS) {
@@ -219,11 +241,22 @@ final class CompanionTaskCoordinator {
             }
             return;
         }
+        if (houseBuildController.isSessionActive() && activeRequest == null) {
+            if (mode == CompanionEntity.CompanionMode.STOPPED) {
+                owner.getNavigation().stop();
+                return;
+            }
+            taskState = TaskState.BUILDING;
+            return;
+        }
         if (activeRequest == null) {
             return;
         }
         Player player = owner.getPlayerById(activeRequest.getPlayerId());
         if (player == null) {
+            if (buildGatheringInProgress) {
+                finishBuildGathering(false);
+            }
             return;
         }
         chestManager.tick(player);
@@ -256,13 +289,19 @@ final class CompanionTaskCoordinator {
         if (taskState == TaskState.WAITING_TORCH_RESOURCES) {
             CompanionTorchHandler.Result torchResult = torchHandler.tick(activeRequest, player, gameTime);
             if (torchResult == CompanionTorchHandler.Result.READY) {
-                if (isSequenceGatherPhaseActive()) {
+                if (buildGatheringInProgress) {
+                    finishBuildGathering(true);
+                } else if (isSequenceGatherPhaseActive()) {
                     finishGatheringStep(player, List.of());
                 } else {
                     taskState = TaskState.DELIVERING;
                     delivery.startDelivery();
                 }
             } else if (torchResult == CompanionTorchHandler.Result.TIMED_OUT) {
+                if (buildGatheringInProgress) {
+                    finishBuildGathering(false);
+                    return;
+                }
                 failActiveTask(player, "torch_timeout_waiting_resources");
             }
             return;
@@ -277,7 +316,7 @@ final class CompanionTaskCoordinator {
     }
 
     boolean isBusy() {
-        if (taskState == TaskState.HOME_ASSESSING) {
+        if (taskState == TaskState.HOME_ASSESSING || houseBuildController.isSessionActive()) {
             return true;
         }
         return activeRequest != null && taskState != TaskState.IDLE
@@ -287,6 +326,48 @@ final class CompanionTaskCoordinator {
 
     void onInventoryUpdated() {
         equipment.equipBestArmor();
+    }
+
+    private void startPendingHouseGathering() {
+        if (activeRequest != null || taskState == TaskState.HOME_ASSESSING) {
+            return;
+        }
+        CompanionHouseBuildController.GatherTask gatherTask = houseBuildController.takePendingGatherTask();
+        if (gatherTask == null) {
+            return;
+        }
+        Player player = owner.getPlayerById(gatherTask.playerId);
+        if (!(player instanceof ServerPlayer serverPlayer) || serverPlayer.isSpectator()) {
+            houseBuildController.cancel();
+            return;
+        }
+        if (gatherTask.treeMode != CompanionTreeRequestMode.NONE && isPlayerInVillage(player)) {
+            owner.sendReply(player, Component.translatable(TREE_VILLAGE_BLOCK_KEY));
+            houseBuildController.onGatherFinished(false);
+            return;
+        }
+        activeRequest = new CompanionResourceRequest(gatherTask.playerId, gatherTask.type, gatherTask.amount,
+                gatherTask.treeMode);
+        buildGatheringInProgress = true;
+        if (activeRequest.getResourceType().isBucketResource()) {
+            if (bucketHandler.ensureBuckets(activeRequest, player, owner.level().getGameTime())
+                    == CompanionBucketHandler.BucketStatus.NEED_BUCKETS) {
+                taskState = TaskState.WAITING_BUCKETS;
+                return;
+            }
+        }
+        taskState = TaskState.GATHERING;
+    }
+
+    private void finishBuildGathering(boolean success) {
+        activeRequest = null;
+        buildGatheringInProgress = false;
+        if (houseBuildController.isSessionActive()) {
+            taskState = TaskState.BUILDING;
+        } else {
+            taskState = TaskState.IDLE;
+        }
+        houseBuildController.onGatherFinished(success);
     }
 
     private boolean handleParsedSequenceCommand(ServerPlayer player,
@@ -664,7 +745,9 @@ final class CompanionTaskCoordinator {
         if (activeRequest.getResourceType() == CompanionResourceType.TORCH) {
             CompanionTorchHandler.Result torchResult = torchHandler.tick(activeRequest, player, gameTime);
             if (torchResult == CompanionTorchHandler.Result.READY) {
-                if (isSequenceGatherPhaseActive()) {
+                if (buildGatheringInProgress) {
+                    finishBuildGathering(true);
+                } else if (isSequenceGatherPhaseActive()) {
                     finishGatheringStep(player, List.of());
                 } else {
                     taskState = TaskState.DELIVERING;
@@ -673,6 +756,10 @@ final class CompanionTaskCoordinator {
             } else if (torchResult == CompanionTorchHandler.Result.WAITING_RESOURCES) {
                 taskState = TaskState.WAITING_TORCH_RESOURCES;
             } else if (torchResult == CompanionTorchHandler.Result.TIMED_OUT) {
+                if (buildGatheringInProgress) {
+                    finishBuildGathering(false);
+                    return;
+                }
                 failActiveTask(player, "torch_timeout_gathering");
             }
             return;
@@ -680,7 +767,9 @@ final class CompanionTaskCoordinator {
         if (activeRequest.getResourceType().isBucketResource()) {
             CompanionBucketHandler.FillResult result = bucketHandler.tickFillBuckets(activeRequest, player, gameTime);
             if (result == CompanionBucketHandler.FillResult.DONE) {
-                if (isSequenceGatherPhaseActive()) {
+                if (buildGatheringInProgress) {
+                    finishBuildGathering(true);
+                } else if (isSequenceGatherPhaseActive()) {
                     finishGatheringStep(player, List.of());
                 } else {
                     taskState = TaskState.DELIVERING;
@@ -689,6 +778,10 @@ final class CompanionTaskCoordinator {
                 return;
             }
             if (result == CompanionBucketHandler.FillResult.NOT_FOUND) {
+                if (buildGatheringInProgress) {
+                    finishBuildGathering(false);
+                    return;
+                }
                 owner.sendReply(player, Component.translatable(missingKey(activeRequest.getResourceType())));
                 failActiveTask(player, "bucket_source_not_found");
                 return;
@@ -701,7 +794,9 @@ final class CompanionTaskCoordinator {
                 if (activeRequest.isTreeCountRequest()) {
                     List<ItemStack> treeDrops = treeHarvest.takeCollectedDrops();
                     treeHarvest.resetAfterRequest();
-                    if (isSequenceGatherPhaseActive()) {
+                    if (buildGatheringInProgress) {
+                        finishBuildGathering(true);
+                    } else if (isSequenceGatherPhaseActive()) {
                         finishGatheringStep(player, treeDrops);
                     } else {
                         delivery.startDelivery(treeDrops);
@@ -710,7 +805,9 @@ final class CompanionTaskCoordinator {
                     return;
                 }
                 treeHarvest.resetAfterRequest();
-                if (isSequenceGatherPhaseActive()) {
+                if (buildGatheringInProgress) {
+                    finishBuildGathering(true);
+                } else if (isSequenceGatherPhaseActive()) {
                     finishGatheringStep(player, List.of());
                 } else {
                     taskState = TaskState.DELIVERING;
@@ -721,6 +818,10 @@ final class CompanionTaskCoordinator {
             if (treeResult == CompanionTreeHarvestController.Result.FAILED) {
                 CompanionResourceRequest failedTreeRequest = activeRequest;
                 treeHarvest.resetAfterRequest();
+                if (buildGatheringInProgress) {
+                    finishBuildGathering(false);
+                    return;
+                }
                 failActiveTask(player, "tree_failed");
                 owner.setMode(CompanionEntity.CompanionMode.FOLLOW);
                 boolean offeredRetry = false;
@@ -733,6 +834,11 @@ final class CompanionTaskCoordinator {
                 return;
             }
             if (treeResult == CompanionTreeHarvestController.Result.NOT_FOUND) {
+                if (buildGatheringInProgress) {
+                    treeHarvest.resetAfterRequest();
+                    finishBuildGathering(false);
+                    return;
+                }
                 owner.sendReply(player, Component.translatable(TREE_NOT_FOUND_KEY));
                 treeHarvest.resetAfterRequest();
                 failActiveTask(player, "tree_not_found");
@@ -749,7 +855,9 @@ final class CompanionTaskCoordinator {
         }
         CompanionGatheringController.Result result = gathering.tick(activeRequest, gameTime);
         if (result == CompanionGatheringController.Result.DONE) {
-            if (isSequenceGatherPhaseActive()) {
+            if (buildGatheringInProgress) {
+                finishBuildGathering(true);
+            } else if (isSequenceGatherPhaseActive()) {
                 finishGatheringStep(player, List.of());
             } else {
                 taskState = TaskState.DELIVERING;
@@ -758,10 +866,18 @@ final class CompanionTaskCoordinator {
             return;
         }
         if (result == CompanionGatheringController.Result.TOOL_REQUIRED) {
+            if (buildGatheringInProgress) {
+                finishBuildGathering(false);
+                return;
+            }
             failActiveTask(player, "tool_required");
             return;
         }
         if (result == CompanionGatheringController.Result.FAILED) {
+            if (buildGatheringInProgress) {
+                finishBuildGathering(false);
+                return;
+            }
             CompanionResourceRequest failedGatherRequest = activeRequest;
             failActiveTask(player, "gather_failed");
             boolean offeredRetry = false;
@@ -774,6 +890,10 @@ final class CompanionTaskCoordinator {
             return;
         }
         if (result == CompanionGatheringController.Result.NOT_FOUND) {
+            if (buildGatheringInProgress) {
+                finishBuildGathering(false);
+                return;
+            }
             owner.sendReply(player, Component.translatable(missingKey(activeRequest.getResourceType())));
             failActiveTask(player, "resource_not_found");
             return;
@@ -915,7 +1035,8 @@ final class CompanionTaskCoordinator {
     private void resetActiveTask() {
         homeAssessment.cancel();
         activeRequest = null;
-        taskState = TaskState.IDLE;
+        buildGatheringInProgress = false;
+        taskState = houseBuildController.isSessionActive() ? TaskState.BUILDING : TaskState.IDLE;
     }
 
     private boolean handleTreeRetryClick(ServerPlayer player, String message) {

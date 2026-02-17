@@ -18,6 +18,7 @@ final class CompanionMovementController {
     private static final double WALK_DISTANCE_SQR = 16.0D;
     private static final double RUN_DISTANCE_SQR = 16.0D;
     private static final double HOLD_DISTANCE_SQR = 4.0D;
+    private static final double HOLD_VERTICAL_EPS = 0.75D;
     private static final double PLAYER_IDLE_SPEED = 0.02D;
     private static final double PLAYER_WALK_RATIO_MIN = 1.0D;
     private static final double PLAYER_WALK_RATIO_MAX = 1.0D;
@@ -158,7 +159,9 @@ final class CompanionMovementController {
 
     private boolean shouldHold(Player target, double distanceSqr) {
         double playerSpeed = horizontalSpeed(target);
-        if (playerSpeed < PLAYER_IDLE_SPEED && distanceSqr <= HOLD_DISTANCE_SQR) {
+        if (playerSpeed < PLAYER_IDLE_SPEED
+                && distanceSqr <= HOLD_DISTANCE_SQR
+                && Math.abs(target.getY() - mob.getY()) <= HOLD_VERTICAL_EPS) {
             return true;
         }
         return false;

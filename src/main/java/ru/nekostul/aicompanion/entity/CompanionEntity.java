@@ -155,6 +155,8 @@ public class CompanionEntity extends PathfinderMob {
     private static final String HOME_DEATH_NO_HOME_KEY = "entity.aicompanion.companion.home.death.no_home";
     private static final String HOME_DEATH_RECOVERY_HP_KEY = "entity.aicompanion.companion.home.death.recovery.hp";
     private static final String HOME_DEATH_RECOVERY_HP_REMOVE_KEY = "entity.aicompanion.companion.home.death.recovery.hp.remove";
+    private static final String INVENTORY_FULL_NEED_CHEST_KEY =
+            "entity.aicompanion.companion.inventory.full.need_chest";
     private static final String WHERE_STATUS_KEY = "entity.aicompanion.companion.where.status";
     private static final String WHERE_TELEPORT_BUTTON_KEY = "entity.aicompanion.companion.where.button";
     private static final String OWNER_DEATH_COORDS_KEY = "entity.aicompanion.companion.owner.death.coords";
@@ -190,6 +192,7 @@ public class CompanionEntity extends PathfinderMob {
     private static final int INVENTORY_SIZE = 27;
     private static final int ITEM_PICKUP_RADIUS = 3;
     private static final int ITEM_PICKUP_COOLDOWN_TICKS = 10;
+    private static final int INVENTORY_FULL_NOTIFY_COOLDOWN_TICKS = 100;
     private static final int HOME_LEAVE_DISTANCE = 96;
     private static final int HOME_AUTO_DISTANCE = 500;
     private static final int HOME_WARN_DISTANCE = 1000;
@@ -326,6 +329,7 @@ public class CompanionEntity extends PathfinderMob {
     private final EnumMap<ChatGroup, Long> chatGroupCooldowns = new EnumMap<>(ChatGroup.class);
     private long lastReactionTick = -1000L;
     private long nextItemPickupTick = -1L;
+    private long lastInventoryFullNeedChestTick = -10000L;
     private long lastTeleportCycleTick = -10000L;
     private long lastTeleportOriginalTick = -10000L;
     private long pendingTeleportUntilTick = -1L;
@@ -575,6 +579,13 @@ public class CompanionEntity extends PathfinderMob {
             return true;
         }
         return this.taskCoordinator.handlePlayerMessage(player, message);
+    }
+
+    public boolean handleBuildPointClick(ServerPlayer player, BlockPos clickedPos) {
+        if (player == null || clickedPos == null || recoveringAfterDeathAtHome) {
+            return false;
+        }
+        return this.taskCoordinator.handleBuildPointClick(player, clickedPos, this.level().getGameTime());
     }
 
     public boolean handleThanks(ServerPlayer player, String message) {
@@ -2142,10 +2153,11 @@ public class CompanionEntity extends PathfinderMob {
             return;
         }
         this.nextItemPickupTick = gameTime + ITEM_PICKUP_COOLDOWN_TICKS;
+        AABB range = this.getBoundingBox().inflate(ITEM_PICKUP_RADIUS);
         if (inventory.isFull()) {
+            notifyInventoryFullNeedChest(gameTime, range);
             return;
         }
-        AABB range = this.getBoundingBox().inflate(ITEM_PICKUP_RADIUS);
         for (net.minecraft.world.entity.item.ItemEntity itemEntity
                 : this.level().getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class, range)) {
             if (!itemEntity.isAlive()) {
@@ -2203,6 +2215,42 @@ public class CompanionEntity extends PathfinderMob {
                 break;
             }
         }
+    }
+
+    private void notifyInventoryFullNeedChest(long gameTime, AABB range) {
+        if (ownerId == null || gameTime - lastInventoryFullNeedChestTick < INVENTORY_FULL_NOTIFY_COOLDOWN_TICKS) {
+            return;
+        }
+        if (!hasNearbyOwnerDrop(range)) {
+            return;
+        }
+        Player ownerPlayer = getPlayerById(ownerId);
+        if (!(ownerPlayer instanceof ServerPlayer serverPlayer) || serverPlayer.isSpectator() || !serverPlayer.isAlive()) {
+            return;
+        }
+        lastInventoryFullNeedChestTick = gameTime;
+        sendReply(serverPlayer, Component.translatable(INVENTORY_FULL_NEED_CHEST_KEY));
+    }
+
+    private boolean hasNearbyOwnerDrop(AABB range) {
+        if (ownerId == null || range == null) {
+            return false;
+        }
+        for (net.minecraft.world.entity.item.ItemEntity itemEntity
+                : this.level().getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class, range)) {
+            if (!itemEntity.isAlive()) {
+                continue;
+            }
+            UUID playerDropper = CompanionDropTracker.getPlayerDropper(itemEntity);
+            if (playerDropper == null || !ownerId.equals(playerDropper)) {
+                continue;
+            }
+            if (CompanionDropTracker.isPlayerBlockDrop(itemEntity) || itemEntity.getItem().isEmpty()) {
+                continue;
+            }
+            return true;
+        }
+        return false;
     }
 
     public void sendCommandList(Player player) {

@@ -1,5 +1,4 @@
 package ru.nekostul.aicompanion.entity.ai;
-
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.player.Player;
@@ -30,16 +29,21 @@ public class FollowNearestPlayerGoal extends Goal {
     private final int sideSign;
 
     private static final double FOLLOW_BEHIND_DISTANCE = 2.6D;
-    private static final double FOLLOW_SIDE_DISTANCE = 1.2D;
+    private static final double FOLLOW_SIDE_DISTANCE = 0.0D;
     private static final double FOLLOW_BEHIND_FAR_DISTANCE = 3.6D;
     private static final double FOLLOW_MIN_DISTANCE_SQR = 2.25D;
     private static final double FOLLOW_MAX_DISTANCE_SQR = 20.25D;
+    private static final double FOLLOW_STOP_VERTICAL_EPS = 0.9D;
     private static final double PLAYER_MOVE_RECALC_SQR = 1.0D;
     private static final int TARGET_UPDATE_TICKS = 10;
-    private static final int PATH_RECALC_TICKS = 20;
+    private static final int PATH_RECALC_TICKS = 8;
     private static final double FOLLOW_POS_EPS_SQR = 0.25D;
     private static final double PATH_RECALC_EPS_SQR = 0.36D;
     private static final double FOLLOW_PROGRESS_EPS_SQR = 0.04D;
+    private static final float RUN_YAW_STEP_DEGREES = 7.0F;
+    private static final float RUN_YAW_DEADZONE_DEGREES = 10.0F;
+    private static final double RUN_ROTATE_MIN_SPEED_SQR = 1.0E-3D;
+    private static final double TARGET_IDLE_SPEED_SQR = 4.0E-4D;
 
     public FollowNearestPlayerGoal(PathfinderMob mob, double speedModifier, float startDistance, float stopDistance) {
         this(mob, speedModifier, startDistance, stopDistance, () -> true);
@@ -66,8 +70,12 @@ public class FollowNearestPlayerGoal extends Goal {
         if (nearest == null || nearest.isSpectator()) {
             return false;
         }
+        Vec3 nearestMotion = nearest.getDeltaMovement();
+        double nearestSpeedSqr = nearestMotion.x * nearestMotion.x + nearestMotion.z * nearestMotion.z;
         if (this.mob.distanceToSqr(nearest) <= (double) (this.stopDistance * this.stopDistance)
-                && this.mob.hasLineOfSight(nearest)) {
+                && this.mob.hasLineOfSight(nearest)
+                && canHoldAtCurrentVerticalOffset(nearest)
+                && nearestSpeedSqr < TARGET_IDLE_SPEED_SQR) {
             return false;
         }
         this.target = nearest;
@@ -83,10 +91,6 @@ public class FollowNearestPlayerGoal extends Goal {
             return false;
         }
         double distanceSqr = this.mob.distanceToSqr(this.target);
-        if (distanceSqr <= (double) (this.stopDistance * this.stopDistance)
-                && this.mob.hasLineOfSight(this.target)) {
-            return false;
-        }
         return distanceSqr <= (double) (this.startDistance * this.startDistance);
     }
 
@@ -125,8 +129,12 @@ public class FollowNearestPlayerGoal extends Goal {
             return;
         }
         double followDistanceSqr = this.mob.distanceToSqr(this.followPos);
+        Vec3 targetMotion = this.target.getDeltaMovement();
+        double targetSpeedSqr = targetMotion.x * targetMotion.x + targetMotion.z * targetMotion.z;
         if (followDistanceSqr <= (double) (this.stopDistance * this.stopDistance)
-                && this.mob.hasLineOfSight(this.target)) {
+                && this.mob.hasLineOfSight(this.target)
+                && canHoldAtCurrentVerticalOffset(this.target)
+                && targetSpeedSqr < TARGET_IDLE_SPEED_SQR) {
             this.mob.getNavigation().stop();
             return;
         }
@@ -135,10 +143,17 @@ public class FollowNearestPlayerGoal extends Goal {
             this.lastProgressTick = gameTime;
         }
         this.lastFollowDistanceSqr = followDistanceSqr;
-        this.mob.getLookControl().setLookAt(this.followPos.x, this.followPos.y, this.followPos.z);
         double speed = this.movementController.update(this.target, this.followPos, gameTime, distanceSqr);
         if (this.movementController.shouldHoldPosition() || speed <= 0.01D) {
             this.mob.getNavigation().stop();
+            return;
+        }
+        net.minecraft.world.level.pathfinder.Path currentPath = this.mob.getNavigation().getPath();
+        alignRunRotation();
+        if (currentPath == null || currentPath.isDone()) {
+            this.mob.getNavigation().moveTo(this.followPos.x, this.followPos.y, this.followPos.z, speed);
+            this.lastPathPos = this.followPos;
+            this.timeToRecalcPath = this.adjustedTickDelay(PATH_RECALC_TICKS);
             return;
         }
         if (--this.timeToRecalcPath <= 0) {
@@ -154,6 +169,27 @@ public class FollowNearestPlayerGoal extends Goal {
                 this.lastPathPos = this.followPos;
             }
         }
+    }
+
+    private void alignRunRotation() {
+        Vec3 motion = this.mob.getDeltaMovement();
+        double vx = motion.x;
+        double vz = motion.z;
+        if (vx * vx + vz * vz < 1.0E-4D) {
+            return;
+        }
+        if (vx * vx + vz * vz < RUN_ROTATE_MIN_SPEED_SQR) {
+            return;
+        }
+        float currentYaw = this.mob.getYRot();
+        float desiredYaw = (float) (Mth.atan2(vz, vx) * (180.0D / Math.PI)) - 90.0F;
+        if (Math.abs(Mth.wrapDegrees(desiredYaw - currentYaw)) < RUN_YAW_DEADZONE_DEGREES) {
+            desiredYaw = currentYaw;
+        }
+        float smoothedYaw = Mth.approachDegrees(currentYaw, desiredYaw, RUN_YAW_STEP_DEGREES);
+        this.mob.setYRot(smoothedYaw);
+        this.mob.setYBodyRot(smoothedYaw);
+        this.mob.setXRot(0.0F);
     }
 
     private void updateFollowTarget(long gameTime) {
@@ -190,8 +226,12 @@ public class FollowNearestPlayerGoal extends Goal {
     }
 
     private Vec3 computeFollowPos(Vec3 playerPos, double distanceSqr) {
-        Vec3 look = this.target.getLookAngle();
-        Vec3 forward = new Vec3(look.x, 0.0D, look.z);
+        Vec3 motion = this.target.getDeltaMovement();
+        Vec3 forward = new Vec3(motion.x, 0.0D, motion.z);
+        if (forward.lengthSqr() < 1.0E-4D) {
+            Vec3 look = this.target.getLookAngle();
+            forward = new Vec3(look.x, 0.0D, look.z);
+        }
         if (forward.lengthSqr() < 1.0E-4D) {
             float yaw = this.target.getYRot() * ((float) Math.PI / 180.0F);
             forward = new Vec3(-Mth.sin(yaw), 0.0D, Mth.cos(yaw));
@@ -244,5 +284,12 @@ public class FollowNearestPlayerGoal extends Goal {
         }
         Path path = this.mob.getNavigation().createPath(targetPos.x, targetPos.y, targetPos.z, 0);
         return path != null && path.canReach();
+    }
+
+    private boolean canHoldAtCurrentVerticalOffset(Player player) {
+        if (player == null) {
+            return false;
+        }
+        return Math.abs(player.getY() - this.mob.getY()) <= FOLLOW_STOP_VERTICAL_EPS;
     }
 }
