@@ -8,6 +8,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.SimpleMenuProvider;
@@ -47,6 +48,13 @@ public final class CompanionCommands {
                         .then(Commands.literal("msg")
                                 .then(Commands.argument("text", StringArgumentType.greedyString())
                                         .executes(CompanionCommands::handleMessage)))
+                        .then(Commands.literal("party")
+                                .then(Commands.literal("add")
+                                        .then(Commands.argument("player", EntityArgument.player())
+                                                .executes(context -> handleParty(context, true))))
+                                .then(Commands.literal("remove")
+                                        .then(Commands.argument("player", EntityArgument.player())
+                                                .executes(context -> handleParty(context, false)))))
                         .then(Commands.literal("inv")
                                 .executes(CompanionCommands::handleInventory))
                         .then(Commands.literal("gui")
@@ -101,6 +109,20 @@ public final class CompanionCommands {
         String message = StringArgumentType.getString(context, "text");
         boolean handled = CompanionChatEvents.handlePlayerMessage(player, message);
         return handled ? 1 : 0;
+    }
+
+    private static int handleParty(CommandContext<CommandSourceStack> context, boolean add)
+            throws CommandSyntaxException {
+        ServerPlayer owner = context.getSource().getPlayerOrException();
+        ServerPlayer target = EntityArgument.getPlayer(context, "player");
+        CompanionEntity companion = CompanionSingleNpcManager.getActive(owner);
+        if (companion == null || !companion.canManageParty(owner)) {
+            return 0;
+        }
+        boolean changed = add
+                ? companion.addPartyMember(owner, target)
+                : companion.removePartyMember(owner, target);
+        return changed ? 1 : 0;
     }
 
     private static int handleGui(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
