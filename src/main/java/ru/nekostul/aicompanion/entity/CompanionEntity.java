@@ -85,6 +85,7 @@ import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -189,6 +190,7 @@ public class CompanionEntity extends PathfinderMob {
     private static final int TELEPORT_Y_SEARCH_UP = 2;
     private static final int TELEPORT_Y_SEARCH_DOWN = 6;
     private static final int TELEPORT_NEARBY_RADIUS = 5;
+    private static final int TELEPORT_RESOLVE_CHUNK_RADIUS = 4;
     private static final String TELEPORT_REQUEST_KEY = "entity.aicompanion.companion.teleport.request";
     private static final String TELEPORT_REQUEST_ALT_KEY = "entity.aicompanion.companion.teleport.request.alt";
     private static final int TELEPORT_MESSAGE_COOLDOWN_TICKS = 6000;
@@ -209,7 +211,7 @@ public class CompanionEntity extends PathfinderMob {
     private static final int BOAT_MAX_PASSENGERS = 2;
     private static final int DIMENSION_TELEPORT_TICKS = 10 * 20;
     private static final int WHERE_MIN_DISTANCE = 100;
-    private static final int WHERE_COOLDOWN_TICKS = 5 * 60 * 20;
+    private static final int WHERE_COOLDOWN_TICKS = 10 * 20;
     private static final double BOAT_REQUEST_DISTANCE = 12.0D;
     private static final double BOAT_REQUEST_DISTANCE_SQR = BOAT_REQUEST_DISTANCE * BOAT_REQUEST_DISTANCE;
     private static final int HOME_INTERACT_COOLDOWN_TICKS = 1200;
@@ -248,6 +250,7 @@ public class CompanionEntity extends PathfinderMob {
     private static final Map<UUID, Long> TELEPORT_IGNORED_TICKS = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> WHERE_FALLBACK_COOLDOWNS = new ConcurrentHashMap<>();
     private static final Set<UUID> APPROVED_DIMENSION_TELEPORTS = ConcurrentHashMap.newKeySet();
+    private static final Set<UUID> APPROVED_WHERE_TELEPORTS = ConcurrentHashMap.newKeySet();
 
     private static final class PendingTeleportRequest {
         private final UUID companionId;
@@ -869,6 +872,7 @@ public class CompanionEntity extends PathfinderMob {
         }
         PENDING_TELEPORT_REQUESTS.remove(player.getUUID());
         PENDING_TELEPORTS.remove(player.getUUID());
+        APPROVED_WHERE_TELEPORTS.remove(player.getUUID());
         long gameTime = getServerTick();
         long untilTick = gameTime + DIMENSION_TELEPORT_TICKS;
         int secondsLeft = secondsLeftStatic(untilTick, gameTime);
@@ -957,6 +961,7 @@ public class CompanionEntity extends PathfinderMob {
         int secondsLeft = secondsLeftStatic(untilTick, gameTime);
         PENDING_TELEPORT_REQUESTS.remove(player.getUUID());
         PENDING_TELEPORTS.remove(player.getUUID());
+        APPROVED_WHERE_TELEPORTS.remove(player.getUUID());
         registerPendingTeleportRequest(player, companionId, levelKey, lastPos, WHERE_STATUS_KEY, untilTick, secondsLeft);
         sendWhereMessageFallback(player, lastPos, secondsLeft);
         return true;
@@ -1258,10 +1263,17 @@ public class CompanionEntity extends PathfinderMob {
         pendingWherePlayerId = player.getUUID();
         pendingWhereUntilTick = gameTime + WHERE_TELEPORT_TICKS;
         pendingWhereLastSeconds = -1;
-        removePendingTeleportRequest(player.getUUID(), this.getUUID());
+        PENDING_TELEPORT_REQUESTS.remove(player.getUUID());
         PENDING_TELEPORTS.remove(player.getUUID());
+        APPROVED_DIMENSION_TELEPORTS.remove(player.getUUID());
+        APPROVED_WHERE_TELEPORTS.remove(player.getUUID());
         int secondsLeft = secondsLeft(pendingWhereUntilTick, gameTime);
-        registerPendingTeleportRequest(player, WHERE_STATUS_KEY, pendingWhereUntilTick, secondsLeft);
+        if (!registerPendingTeleportRequest(player, WHERE_STATUS_KEY, pendingWhereUntilTick, secondsLeft)) {
+            pendingWherePlayerId = null;
+            pendingWhereUntilTick = -1L;
+            pendingWhereLastSeconds = -1;
+            return;
+        }
         sendWhereMessage(player, secondsLeft);
         pendingWhereLastSeconds = secondsLeft;
     }
@@ -1308,6 +1320,7 @@ public class CompanionEntity extends PathfinderMob {
         if (pendingWherePlayerId != null) {
             removePendingTeleportRequest(pendingWherePlayerId, this.getUUID());
             PENDING_TELEPORTS.remove(pendingWherePlayerId);
+            APPROVED_WHERE_TELEPORTS.remove(pendingWherePlayerId);
             sendTimedMessageRemoval(TELEPORT_IGNORE_WHERE_KEY, pendingWherePlayerId);
         }
         pendingWherePlayerId = null;
@@ -2565,10 +2578,11 @@ public class CompanionEntity extends PathfinderMob {
         if (ownerPlayer == null || ownerPlayer.isSpectator() || !ownerPlayer.isAlive()) {
             return false;
         }
-        if (this.mode == CompanionMode.STOPPED) {
+        boolean urgentDefenseActive = combatController.tickUrgentDefense(ownerPlayer, gameTime);
+        if (urgentDefenseActive && this.mode == CompanionMode.STOPPED) {
             setMode(CompanionMode.AUTONOMOUS);
         }
-        return combatController.tickUrgentDefense(ownerPlayer, gameTime);
+        return urgentDefenseActive;
     }
 
     private void tickHomeRegen(long gameTime) {
@@ -3040,6 +3054,8 @@ public class CompanionEntity extends PathfinderMob {
         }
         if (!accepted && DIMENSION_TELEPORT_REQUEST_KEY.equals(request.messageKey)) {
             APPROVED_DIMENSION_TELEPORTS.remove(player.getUUID());
+        } else if (!accepted && WHERE_STATUS_KEY.equals(request.messageKey)) {
+            APPROVED_WHERE_TELEPORTS.remove(player.getUUID());
         }
         MinecraftServer server = player.getServer();
         if (server == null) {
@@ -3058,6 +3074,7 @@ public class CompanionEntity extends PathfinderMob {
             PENDING_TELEPORT_REQUESTS.remove(player.getUUID(), request);
             PENDING_TELEPORTS.remove(player.getUUID());
             APPROVED_DIMENSION_TELEPORTS.remove(player.getUUID());
+            APPROVED_WHERE_TELEPORTS.remove(player.getUUID());
             return false;
         }
         CompanionEntity companion = getCompanionFromPendingMap(player, request);
@@ -3072,6 +3089,11 @@ public class CompanionEntity extends PathfinderMob {
             return true;
         }
         if (WHERE_STATUS_KEY.equals(request.messageKey)) {
+            if (accepted && (companion == null || !companion.isAlive())) {
+                APPROVED_WHERE_TELEPORTS.add(player.getUUID());
+                sendTeleportIgnore(player, TELEPORT_IGNORE_WHERE_KEY);
+                return true;
+            }
             if (companion != null) {
                 companion.clearWhereRequest();
             } else {
@@ -3091,7 +3113,8 @@ public class CompanionEntity extends PathfinderMob {
                 companion.sendReply(player, Component.translatable(HOME_DEATH_RECOVERY_HP_REMOVE_KEY));
                 companion.sendReply(player, Component.translatable(HOME_DEATH_RECOVERY_HP_KEY, currentHp, maxHp));
             } else {
-                if (DIMENSION_TELEPORT_REQUEST_KEY.equals(request.messageKey)) {
+                boolean requiresDimensionMove = companion.level() != player.level();
+                if (DIMENSION_TELEPORT_REQUEST_KEY.equals(request.messageKey) || requiresDimensionMove) {
                     try {
                         companion = companion.moveToPlayerDimension(player);
                     } catch (RuntimeException ignored) {
@@ -3126,12 +3149,13 @@ public class CompanionEntity extends PathfinderMob {
         PENDING_TELEPORT_REQUESTS.remove(player.getUUID(), request);
         PENDING_TELEPORTS.remove(player.getUUID());
         APPROVED_DIMENSION_TELEPORTS.remove(player.getUUID());
+        APPROVED_WHERE_TELEPORTS.remove(player.getUUID());
         if (companion != null) {
             companion.clearTeleportRequestState();
             companion.clearTeleportReminder();
         }
         String removeKey = getTimedMessageRemovalKey(request.messageKey);
-        if (removeKey != null && !WHERE_STATUS_KEY.equals(request.messageKey)) {
+        if (removeKey != null) {
             sendTeleportIgnore(player, removeKey);
         }
         return true;
@@ -3150,6 +3174,7 @@ public class CompanionEntity extends PathfinderMob {
             PENDING_TELEPORT_REQUESTS.remove(player.getUUID(), request);
             PENDING_TELEPORTS.remove(player.getUUID());
             APPROVED_DIMENSION_TELEPORTS.remove(player.getUUID());
+            APPROVED_WHERE_TELEPORTS.remove(player.getUUID());
             return false;
         }
         ServerLevel requestLevel = server.getLevel(request.levelKey);
@@ -3161,6 +3186,7 @@ public class CompanionEntity extends PathfinderMob {
         PENDING_TELEPORT_REQUESTS.remove(player.getUUID(), request);
         PENDING_TELEPORTS.remove(player.getUUID());
         APPROVED_DIMENSION_TELEPORTS.remove(player.getUUID());
+        APPROVED_WHERE_TELEPORTS.remove(player.getUUID());
         if (companion != null) {
             companion.clearTeleportRequestState();
             companion.clearTeleportReminder();
@@ -3232,11 +3258,43 @@ public class CompanionEntity extends PathfinderMob {
         if (entity instanceof CompanionEntity companion && companion.isAlive()) {
             return companion;
         }
-        if (chunkPos != null) {
-            level.getChunkSource().getChunk(chunkPos.x, chunkPos.z, ChunkStatus.FULL, true);
-            entity = level.getEntity(companionId);
-            if (entity instanceof CompanionEntity chunkCompanion && chunkCompanion.isAlive()) {
-                return chunkCompanion;
+        if (chunkPos == null) {
+            return null;
+        }
+        int minY = level.getMinBuildHeight();
+        int maxY = level.getMaxBuildHeight();
+        for (int radius = 0; radius <= TELEPORT_RESOLVE_CHUNK_RADIUS; radius++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) {
+                        continue;
+                    }
+                    int chunkX = chunkPos.x + dx;
+                    int chunkZ = chunkPos.z + dz;
+                    level.getChunkSource().getChunk(chunkX, chunkZ, ChunkStatus.FULL, true);
+                    entity = level.getEntity(companionId);
+                    if (entity instanceof CompanionEntity loadedCompanion && loadedCompanion.isAlive()) {
+                        return loadedCompanion;
+                    }
+                    AABB chunkArea = new AABB(
+                            chunkX * 16.0D,
+                            minY,
+                            chunkZ * 16.0D,
+                            chunkX * 16.0D + 16.0D,
+                            maxY,
+                            chunkZ * 16.0D + 16.0D
+                    );
+                    List<CompanionEntity> companions = level.getEntitiesOfClass(
+                            CompanionEntity.class,
+                            chunkArea,
+                            candidate -> candidate != null
+                                    && candidate.isAlive()
+                                    && companionId.equals(candidate.getUUID())
+                    );
+                    if (!companions.isEmpty()) {
+                        return companions.get(0);
+                    }
+                }
             }
         }
         return null;
@@ -3274,6 +3332,7 @@ public class CompanionEntity extends PathfinderMob {
         PENDING_TELEPORT_REQUESTS.remove(playerId, request);
         PENDING_TELEPORTS.remove(playerId);
         APPROVED_DIMENSION_TELEPORTS.remove(playerId);
+        APPROVED_WHERE_TELEPORTS.remove(playerId);
         String removeKey = getTimedMessageRemovalKey(request.messageKey);
         if (removeKey == null) {
             return;
@@ -3299,6 +3358,8 @@ public class CompanionEntity extends PathfinderMob {
             if (request == null) {
                 PENDING_TELEPORT_REQUESTS.remove(entry.getKey());
                 PENDING_TELEPORTS.remove(entry.getKey());
+                APPROVED_DIMENSION_TELEPORTS.remove(entry.getKey());
+                APPROVED_WHERE_TELEPORTS.remove(entry.getKey());
                 continue;
             }
             ServerLevel level = server.getLevel(request.levelKey);
@@ -3332,6 +3393,7 @@ public class CompanionEntity extends PathfinderMob {
                         PENDING_TELEPORT_REQUESTS.remove(entry.getKey(), request);
                         PENDING_TELEPORTS.remove(entry.getKey());
                         APPROVED_DIMENSION_TELEPORTS.remove(entry.getKey());
+                        APPROVED_WHERE_TELEPORTS.remove(entry.getKey());
                         if (companion != null) {
                             companion.clearTeleportRequestState();
                             companion.clearTeleportReminder();
@@ -3348,17 +3410,63 @@ public class CompanionEntity extends PathfinderMob {
                 continue;
             }
             if (WHERE_STATUS_KEY.equals(request.messageKey) && request.originPos != null) {
-                if (level.hasChunk(request.chunkPos.x, request.chunkPos.z)) {
-                    Entity entity = level.getEntity(request.companionId);
-                    if (!(entity instanceof CompanionEntity companion) || !companion.isAlive()) {
-                        removeExpiredPendingRequest(server, entry.getKey(), request);
+                ServerPlayer player = server.getPlayerList().getPlayer(entry.getKey());
+                if (APPROVED_WHERE_TELEPORTS.contains(entry.getKey())) {
+                    if (player == null || player.isSpectator() || !player.isAlive()) {
+                        continue;
                     }
+                    CompanionEntity companion = getCompanionFromPendingMap(player, request);
+                    if (companion == null) {
+                        companion = resolveCompanionForTeleport(server, request, level);
+                    }
+                    if (companion == null || !companion.isAlive()) {
+                        continue;
+                    }
+                    boolean recoveringAtHome = companion.recoveringAfterDeathAtHome && companion.isAtHome();
+                    if (recoveringAtHome) {
+                        int currentHp = Mth.ceil(Math.max(0.0F, companion.getHealth()));
+                        int maxHp = Mth.ceil(companion.getMaxHealth());
+                        companion.sendReply(player, Component.translatable(HOME_DEATH_RECOVERY_HP_REMOVE_KEY));
+                        companion.sendReply(player, Component.translatable(HOME_DEATH_RECOVERY_HP_KEY, currentHp, maxHp));
+                    } else {
+                        boolean shouldFollowAfterTeleport = companion.isAtHome()
+                                || companion.getMode() == CompanionMode.STOPPED;
+                        boolean teleported = false;
+                        if (companion.level() != player.level()) {
+                            if (forceTeleportToPlayerDimension(companion, player)
+                                    && player.level() instanceof ServerLevel playerLevel) {
+                                Entity movedEntity = playerLevel.getEntity(request.companionId);
+                                if (movedEntity instanceof CompanionEntity movedCompanion) {
+                                    companion = movedCompanion;
+                                }
+                                teleported = true;
+                            }
+                        } else {
+                            Vec3 targetPos = companion.resolveTeleportTarget(player);
+                            companion.teleportTo(targetPos.x, targetPos.y, targetPos.z);
+                            companion.getNavigation().stop();
+                            teleported = true;
+                        }
+                        if (!teleported) {
+                            continue;
+                        }
+                        if (shouldFollowAfterTeleport && companion.isAlive()) {
+                            companion.setMode(CompanionMode.AUTONOMOUS);
+                        }
+                    }
+                    PENDING_TELEPORT_REQUESTS.remove(entry.getKey(), request);
+                    PENDING_TELEPORTS.remove(entry.getKey());
+                    APPROVED_DIMENSION_TELEPORTS.remove(entry.getKey());
+                    APPROVED_WHERE_TELEPORTS.remove(entry.getKey());
+                    companion.clearWhereRequest();
+                    companion.clearTeleportRequestState();
+                    companion.clearTeleportReminder();
+                    sendTeleportIgnore(player, TELEPORT_IGNORE_WHERE_KEY);
                     continue;
                 }
                 int secondsLeft = secondsLeftStatic(request.untilTick, gameTime);
                 if (secondsLeft != request.lastSeconds) {
                     request.lastSeconds = secondsLeft;
-                    ServerPlayer player = server.getPlayerList().getPlayer(entry.getKey());
                     if (player != null) {
                         sendWhereMessageFallback(player, request.originPos, secondsLeft);
                     }

@@ -3,7 +3,6 @@ package ru.nekostul.aicompanion.entity;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -222,10 +221,7 @@ final class CompanionCombatController {
         if (isImmediateThreat(player, monster, distanceSqr)) {
             return true;
         }
-        if (monster.hasLineOfSight(player)) {
-            return true;
-        }
-        return canReachPlayer(monster, player);
+        return monster.hasLineOfSight(player) && owner.hasLineOfSight(monster);
     }
 
     private boolean isImmediateThreat(Player player, Monster monster, double distanceSqr) {
@@ -235,11 +231,4 @@ final class CompanionCombatController {
         return player.getLastHurtByMob() == monster;
     }
 
-    private boolean canReachPlayer(Monster monster, Player player) {
-        if (monster.getNavigation() == null) {
-            return false;
-        }
-        Path path = monster.getNavigation().createPath(player, 0);
-        return path != null && path.canReach();
-    }
 }

@@ -260,7 +260,7 @@
   "entity.aicompanion.companion.help.home": "Home: /ainpc sethome and \"go home\". If home is far, I will ask for confirmation.",
   "entity.aicompanion.companion.help.inventory": "Inventory: open with /ainpc inv, chat message \"inventory\" (single word only), or double SHIFT+RMB on NPC. It is a regular 36-slot inventory titled nekostulAI. Food is stored only in the food slot, and tools/armor only in the equipment panel (/ainpc gui). I do not pick up normal player drops into this inventory; I only accept food and one tool per dedicated slot.",
   "entity.aicompanion.companion.help.mining": "Mining: you can set a task sequence. Examples: \"first mine 10 dirt, then 4 logs\" or \"mine 10 dirt and 4 logs\". Tasks run strictly in order, and I drop gathered items only after the whole sequence is done. If one task fails, I report the reason and stop the sequence.",
-  "entity.aicompanion.companion.help.where": "\"Where are you\" shows my coordinates and a teleport button. Cooldown is 5 minutes.",
+  "entity.aicompanion.companion.help.where": "\"Where are you\" shows my coordinates and a teleport button. Cooldown is 10 seconds.",
   "entity.aicompanion.companion.help.ai": "AI chat: type \"ai <your question>\" or \"ии <your question>\". Configure in config/aicompanion-common.toml: ai.yandexgpt.enabled, ai.yandexgpt.apiKey, ai.yandexgpt.folderId, ai.yandexgpt.model.",
   "entity.aicompanion.companion.inventory.drop.confirm": "My inventory is quite full. Drop everything?",
   "entity.aicompanion.companion.inventory.drop.confirm.remove": "",

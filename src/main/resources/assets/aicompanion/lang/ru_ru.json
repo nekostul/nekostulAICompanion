@@ -260,7 +260,7 @@
   "entity.aicompanion.companion.help.home": "Дом: /ainpc sethome и команда «иди домой». Если дом далеко, попрошу подтверждение.",
   "entity.aicompanion.companion.help.inventory": "Инвентарь: открыть можно командой /ainpc inv, сообщением «инвентарь» (только это одно слово) или SHIFT+ПКМ (двойной клик) по NPC. Это обычный инвентарь на 36 слотов. Еда хранится только в food-слоте, инструменты и броня - только в панели экипировки (/ainpc gui). От игрока в обычный инвентарь предметы не подбираю, принимаю только еду, броню и по одному инструменту в соответствующий слот.",
   "entity.aicompanion.companion.help.mining": "Добыча: можно задавать цепочку задач. Примеры: «сначала добудь 10 земли, потом дерева 4» или «добудь 10 земли и 4 дерева». Задачи выполняются строго по порядку, а добытое скидываю только после завершения всей цепочки. Если задача не выполняется, сообщу причину и остановлю цепочку.",
-  "entity.aicompanion.companion.help.where": "Команда «где ты» покажет координаты и кнопку телепорта. КД 5 минут.",
+  "entity.aicompanion.companion.help.where": "Команда «где ты» покажет координаты и кнопку телепорта. КД 10 секунд.",
   "entity.aicompanion.companion.help.ai": "ИИ-чат: пиши «ии <твой вопрос>» или «ai <your question>». Настрой в config/aicompanion-common.toml: ai.yandexgpt.enabled, ai.yandexgpt.apiKey, ai.yandexgpt.folderId, ai.yandexgpt.model.",
   "entity.aicompanion.companion.inventory.drop.confirm": "В инвентаре много предметов. Точно скинуть всё?",
   "entity.aicompanion.companion.inventory.drop.confirm.remove": "",
