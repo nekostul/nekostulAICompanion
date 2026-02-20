@@ -87,6 +87,7 @@ import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -234,6 +235,8 @@ public class CompanionEntity extends PathfinderMob {
     private static final int HOSTILE_PLAYER_SECOND_HIT_COUNT = 3;
     private static final int SWING_DURATION_TICKS = 6;
     private static final int DOUBLE_DOOR_SCAN_RADIUS = 2;
+    private static final double DOUBLE_DOOR_NEAR_DISTANCE_SQR = 9.0D;
+    private static final int DOUBLE_DOOR_CLOSE_DELAY_TICKS = 12;
 
     private static final EntityDataAccessor<ItemStack> TOOL_PICKAXE =
             SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
@@ -298,6 +301,18 @@ public class CompanionEntity extends PathfinderMob {
         public PortalInfo getPortalInfo(Entity entity, ServerLevel destWorld,
                                         Function<ServerLevel, PortalInfo> defaultPortalInfo) {
             return new PortalInfo(destination, Vec3.ZERO, yRot, xRot);
+        }
+    }
+
+    private static final class ManagedDoubleDoor {
+        private final BlockPos firstLower;
+        private final BlockPos secondLower;
+        private long lastNearTick;
+
+        private ManagedDoubleDoor(BlockPos firstLower, BlockPos secondLower, long lastNearTick) {
+            this.firstLower = firstLower;
+            this.secondLower = secondLower;
+            this.lastNearTick = lastNearTick;
         }
     }
 
@@ -392,6 +407,7 @@ public class CompanionEntity extends PathfinderMob {
     private long hostilePlayerLastPathTick = -1L;
     private UUID ownerId;
     private final Set<UUID> partyMembers = new HashSet<>();
+    private final Map<String, ManagedDoubleDoor> trackedDoubleDoors = new HashMap<>();
 
     public CompanionEntity(EntityType<? extends PathfinderMob> type, Level level) {
         super(type, level);
@@ -570,14 +586,22 @@ public class CompanionEntity extends PathfinderMob {
         if (ownerId != null && ownerId.equals(member.getUUID())) {
             return false;
         }
-        return partyMembers.add(member.getUUID());
+        boolean added = partyMembers.add(member.getUUID());
+        if (added) {
+            sendReply(owner, Component.literal("Игрок " + member.getGameProfile().getName() + " добавлен в пати."));
+        }
+        return added;
     }
 
     public boolean removePartyMember(ServerPlayer owner, ServerPlayer member) {
         if (!canManageParty(owner) || member == null) {
             return false;
         }
-        return partyMembers.remove(member.getUUID());
+        boolean removed = partyMembers.remove(member.getUUID());
+        if (removed) {
+            sendReply(owner, Component.literal("Игрок " + member.getGameProfile().getName() + " удалён из пати."));
+        }
+        return removed;
     }
 
     public boolean handlePlayerCommand(ServerPlayer player, String message) {
@@ -2686,14 +2710,21 @@ public class CompanionEntity extends PathfinderMob {
         if (this.level().isClientSide || !this.isAlive()) {
             return;
         }
+        long gameTime = this.level().getGameTime();
+        trackAndSyncNearbyDoubleDoors(gameTime);
+        closeTrackedDoubleDoorsWhenFar(gameTime);
+    }
+
+    private void trackAndSyncNearbyDoubleDoors(long gameTime) {
         BlockPos base = this.blockPosition();
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        Set<String> seenPairs = new HashSet<>();
         for (int dy = -1; dy <= 1; dy++) {
             for (int dx = -DOUBLE_DOOR_SCAN_RADIUS; dx <= DOUBLE_DOOR_SCAN_RADIUS; dx++) {
                 for (int dz = -DOUBLE_DOOR_SCAN_RADIUS; dz <= DOUBLE_DOOR_SCAN_RADIUS; dz++) {
                     cursor.set(base.getX() + dx, base.getY() + dy, base.getZ() + dz);
                     BlockState state = this.level().getBlockState(cursor);
-                    if (!isOpenedLowerDoor(state)) {
+                    if (!isLowerDoorState(state)) {
                         continue;
                     }
                     Direction facing = state.getValue(DoorBlock.FACING);
@@ -2706,10 +2737,24 @@ public class CompanionEntity extends PathfinderMob {
                         if (neighborState.getValue(DoorBlock.FACING) != facing) {
                             continue;
                         }
-                        if (!neighborState.hasProperty(DoorBlock.OPEN) || neighborState.getValue(DoorBlock.OPEN)) {
+                        if (!neighborState.hasProperty(DoorBlock.OPEN)) {
                             continue;
                         }
-                        setDoorOpenState(neighborPos, true);
+                        BlockPos first = cursor.immutable();
+                        BlockPos second = neighborPos.immutable();
+                        String key = doubleDoorPairKey(first, second);
+                        if (!seenPairs.add(key)) {
+                            continue;
+                        }
+                        boolean shouldOpen = state.getValue(DoorBlock.OPEN) || neighborState.getValue(DoorBlock.OPEN);
+                        setDoorPairOpenState(first, second, shouldOpen);
+                        ManagedDoubleDoor tracked = trackedDoubleDoors.get(key);
+                        if (tracked == null) {
+                            trackedDoubleDoors.put(key, new ManagedDoubleDoor(canonicalFirst(first, second),
+                                    canonicalSecond(first, second), gameTime));
+                        } else {
+                            tracked.lastNearTick = gameTime;
+                        }
                     }
                 }
             }
@@ -2727,8 +2772,83 @@ public class CompanionEntity extends PathfinderMob {
         return state.getValue(DoorBlock.HALF) == DoubleBlockHalf.LOWER;
     }
 
-    private boolean isOpenedLowerDoor(BlockState state) {
-        return isLowerDoorState(state) && state.getValue(DoorBlock.OPEN);
+    private void closeTrackedDoubleDoorsWhenFar(long gameTime) {
+        if (trackedDoubleDoors.isEmpty()) {
+            return;
+        }
+        Iterator<Map.Entry<String, ManagedDoubleDoor>> iterator = trackedDoubleDoors.entrySet().iterator();
+        while (iterator.hasNext()) {
+            ManagedDoubleDoor tracked = iterator.next().getValue();
+            if (tracked == null) {
+                iterator.remove();
+                continue;
+            }
+            BlockState firstState = this.level().getBlockState(tracked.firstLower);
+            BlockState secondState = this.level().getBlockState(tracked.secondLower);
+            if (!isLowerDoorState(firstState) || !isLowerDoorState(secondState)) {
+                iterator.remove();
+                continue;
+            }
+            boolean eitherOpen = firstState.getValue(DoorBlock.OPEN) || secondState.getValue(DoorBlock.OPEN);
+            if (!eitherOpen) {
+                iterator.remove();
+                continue;
+            }
+            double distanceToFirst = this.distanceToSqr(
+                    tracked.firstLower.getX() + 0.5D,
+                    tracked.firstLower.getY(),
+                    tracked.firstLower.getZ() + 0.5D
+            );
+            double distanceToSecond = this.distanceToSqr(
+                    tracked.secondLower.getX() + 0.5D,
+                    tracked.secondLower.getY(),
+                    tracked.secondLower.getZ() + 0.5D
+            );
+            double nearestDistance = Math.min(distanceToFirst, distanceToSecond);
+            if (nearestDistance <= DOUBLE_DOOR_NEAR_DISTANCE_SQR) {
+                tracked.lastNearTick = gameTime;
+                continue;
+            }
+            if (gameTime - tracked.lastNearTick < DOUBLE_DOOR_CLOSE_DELAY_TICKS) {
+                continue;
+            }
+            setDoorPairOpenState(tracked.firstLower, tracked.secondLower, false);
+            iterator.remove();
+        }
+    }
+
+    private void setDoorPairOpenState(BlockPos firstLower, BlockPos secondLower, boolean open) {
+        setDoorOpenState(firstLower, open);
+        setDoorOpenState(secondLower, open);
+    }
+
+    private String doubleDoorPairKey(BlockPos first, BlockPos second) {
+        if (first == null || second == null) {
+            return "";
+        }
+        BlockPos canonicalFirst = canonicalFirst(first, second);
+        BlockPos canonicalSecond = canonicalSecond(first, second);
+        return canonicalFirst.asLong() + ":" + canonicalSecond.asLong();
+    }
+
+    private BlockPos canonicalFirst(BlockPos first, BlockPos second) {
+        if (first == null) {
+            return second;
+        }
+        if (second == null) {
+            return first;
+        }
+        return first.asLong() <= second.asLong() ? first : second;
+    }
+
+    private BlockPos canonicalSecond(BlockPos first, BlockPos second) {
+        if (first == null) {
+            return second;
+        }
+        if (second == null) {
+            return first;
+        }
+        return first.asLong() <= second.asLong() ? second : first;
     }
 
     private void setDoorOpenState(BlockPos lowerPos, boolean open) {
