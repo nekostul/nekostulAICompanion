@@ -19,6 +19,13 @@ final class YandexGptPrompts {
                     + "Если запрос небезопасный, токсичный или нарушает правила сервера, мягко откажи.";
 
     static final String NO_COMMAND_TOKEN = "__NO_COMMAND__";
+    private static final String HELPFUL_ASSISTANT_RULES =
+            "Always help the player directly with practical in-game steps and do not redirect to wiki or external "
+                    + "guides unless the player explicitly asks for links. "
+                    + "If a request may require mods or server-specific mechanics, first ask exactly one short "
+                    + "clarifying question. "
+                    + "For example, for space travel ask whether a space mod is installed; without a mod explain "
+                    + "briefly why it is impossible in vanilla and suggest the next practical step.";
 
     private static final String COMMAND_TASK_SYSTEM_PROMPT =
             "Техническая задача: интерпретируй сообщение игрока как команду для NPC на добычу/доставку ресурсов. "
@@ -69,7 +76,7 @@ final class YandexGptPrompts {
     }
 
     static String system() {
-        return SYSTEM_ROLE_PROMPT + " " + SYSTEM_PROMPT;
+        return SYSTEM_ROLE_PROMPT + " " + SYSTEM_PROMPT + " " + HELPFUL_ASSISTANT_RULES;
     }
 
     static String userPrompt(String playerName, String playerMessage) {

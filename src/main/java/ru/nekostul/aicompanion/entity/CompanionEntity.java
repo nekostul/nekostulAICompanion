@@ -53,7 +53,9 @@ import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.ChunkStatus;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.DoorBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.level.portal.PortalInfo;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.AABB;
@@ -231,6 +233,7 @@ public class CompanionEntity extends PathfinderMob {
     private static final double HOSTILE_PLAYER_CHASE_SPEED = 0.32D;
     private static final int HOSTILE_PLAYER_SECOND_HIT_COUNT = 3;
     private static final int SWING_DURATION_TICKS = 6;
+    private static final int DOUBLE_DOOR_SCAN_RADIUS = 2;
 
     private static final EntityDataAccessor<ItemStack> TOOL_PICKAXE =
             SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
@@ -444,7 +447,7 @@ public class CompanionEntity extends PathfinderMob {
         this.goalSelector.addGoal(0, new FloatGoal(this));
         this.goalSelector.addGoal(1, new HoldPositionGoal(this, this::isStopMode));
         this.goalSelector.addGoal(2, new FollowNearestPlayerGoal(this, 2.4D, (float) FOLLOW_SEARCH_DISTANCE, 3.0F,
-                this::isFollowModeActive));
+                this::isFollowModeActive, this::resolveFollowOwnerPlayer));
         this.goalSelector.addGoal(3, new OpenDoorGoal(this, true));
         this.goalSelector.addGoal(4, new WaterAvoidingRandomStrollGoal(this, 0.8D) {
             @Override
@@ -1973,7 +1976,7 @@ public class CompanionEntity extends PathfinderMob {
         }
         if (!this.level().isClientSide) {
             long gameTime = this.level().getGameTime();
-            Player nearest = this.level().getNearestPlayer(this, FOLLOW_SEARCH_DISTANCE);
+            Player ownerPlayer = resolveFollowOwnerPlayer();
             CompanionSingleNpcManager.updateState(this, this.taskCoordinator.isBusy(),
                     this.lastTeleportCycleTick, this.lastTeleportOriginalTick);
             tickSetHomeCooldown(gameTime, null);
@@ -2023,12 +2026,13 @@ public class CompanionEntity extends PathfinderMob {
             } else {
                 tickAutonomousBehavior();
             }
-            this.hungerSystem.tick(nearest, gameTime);
+            this.hungerSystem.tick(ownerPlayer, gameTime);
             tickHomeRegen(gameTime);
             syncHungerFullFlag();
             tickAmbientChat();
             tickBoatRideRequest(gameTime);
             hideSwordWhileInBoat();
+            syncAdjacentDoubleDoors();
             tickTeleportRequest();
         }
     }
@@ -2152,7 +2156,7 @@ public class CompanionEntity extends PathfinderMob {
                 return false;
             }
             if (attackingPlayer != null) {
-                registerHostilePlayerHit(attackingPlayer, this.level().getGameTime());
+                clearHostilePlayerMemory();
             }
         }
         int[] armorBefore = snapshotArmorDamage();
@@ -2535,8 +2539,8 @@ public class CompanionEntity extends PathfinderMob {
 
     private void tickAutonomousBehavior() {
         long gameTime = this.level().getGameTime();
-        Player nearest = this.level().getNearestPlayer(this, FOLLOW_SEARCH_DISTANCE);
-        Player combatPlayer = resolveCombatPlayer(nearest);
+        Player ownerPlayer = resolveFollowOwnerPlayer();
+        Player combatPlayer = resolveCombatPlayer(ownerPlayer);
         this.toolHandler.resetToolRequest();
         if (tickHostilePlayerRetaliation(gameTime)) {
             return;
@@ -2548,10 +2552,18 @@ public class CompanionEntity extends PathfinderMob {
             }
             return;
         }
+        if (this.taskCoordinator.isHouseBuildPlacementActive()) {
+            combatController.clearCombatFocus();
+            this.taskCoordinator.tick(this.mode, gameTime);
+            if (!this.toolHandler.wasToolRequested()) {
+                this.equipment.equipIdleHand();
+            }
+            return;
+        }
         if (combatController.tick(combatPlayer, gameTime)) {
             return;
         }
-        if (foodHuntController.tick(nearest, gameTime, taskCoordinator.isBusy())) {
+        if (foodHuntController.tick(ownerPlayer, gameTime, taskCoordinator.isBusy())) {
             return;
         }
         this.taskCoordinator.tick(this.mode, gameTime);
@@ -2560,18 +2572,18 @@ public class CompanionEntity extends PathfinderMob {
         }
     }
 
-    private Player resolveCombatPlayer(Player nearest) {
-        if (ownerId != null) {
-            Player ownerPlayer = getPlayerById(ownerId);
-            if (ownerPlayer != null && ownerPlayer.isAlive() && !ownerPlayer.isSpectator()) {
-                return ownerPlayer;
-            }
+    private Player resolveCombatPlayer(Player ownerPlayer) {
+        if (ownerPlayer != null && ownerPlayer.isAlive() && !ownerPlayer.isSpectator()) {
+            return ownerPlayer;
         }
-        return nearest;
+        return null;
     }
 
     private boolean tryUrgentOwnerDefense(long gameTime) {
         if (this.level().isClientSide || ownerId == null || this.getHealth() <= 4.0F) {
+            return false;
+        }
+        if (this.taskCoordinator.isHouseBuildPlacementActive()) {
             return false;
         }
         Player ownerPlayer = getPlayerById(ownerId);
@@ -2670,6 +2682,75 @@ public class CompanionEntity extends PathfinderMob {
         return;
     }
 
+    private void syncAdjacentDoubleDoors() {
+        if (this.level().isClientSide || !this.isAlive()) {
+            return;
+        }
+        BlockPos base = this.blockPosition();
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -DOUBLE_DOOR_SCAN_RADIUS; dx <= DOUBLE_DOOR_SCAN_RADIUS; dx++) {
+                for (int dz = -DOUBLE_DOOR_SCAN_RADIUS; dz <= DOUBLE_DOOR_SCAN_RADIUS; dz++) {
+                    cursor.set(base.getX() + dx, base.getY() + dy, base.getZ() + dz);
+                    BlockState state = this.level().getBlockState(cursor);
+                    if (!isOpenedLowerDoor(state)) {
+                        continue;
+                    }
+                    Direction facing = state.getValue(DoorBlock.FACING);
+                    for (Direction direction : Direction.Plane.HORIZONTAL) {
+                        BlockPos neighborPos = cursor.relative(direction);
+                        BlockState neighborState = this.level().getBlockState(neighborPos);
+                        if (!isLowerDoorState(neighborState)) {
+                            continue;
+                        }
+                        if (neighborState.getValue(DoorBlock.FACING) != facing) {
+                            continue;
+                        }
+                        if (!neighborState.hasProperty(DoorBlock.OPEN) || neighborState.getValue(DoorBlock.OPEN)) {
+                            continue;
+                        }
+                        setDoorOpenState(neighborPos, true);
+                    }
+                }
+            }
+        }
+    }
+
+    private boolean isLowerDoorState(BlockState state) {
+        if (!(state.getBlock() instanceof DoorBlock)) {
+            return false;
+        }
+        if (!state.hasProperty(DoorBlock.HALF) || !state.hasProperty(DoorBlock.OPEN)
+                || !state.hasProperty(DoorBlock.FACING)) {
+            return false;
+        }
+        return state.getValue(DoorBlock.HALF) == DoubleBlockHalf.LOWER;
+    }
+
+    private boolean isOpenedLowerDoor(BlockState state) {
+        return isLowerDoorState(state) && state.getValue(DoorBlock.OPEN);
+    }
+
+    private void setDoorOpenState(BlockPos lowerPos, boolean open) {
+        if (lowerPos == null) {
+            return;
+        }
+        BlockState lower = this.level().getBlockState(lowerPos);
+        if (!isLowerDoorState(lower) || lower.getValue(DoorBlock.OPEN) == open) {
+            return;
+        }
+        this.level().setBlock(lowerPos, lower.setValue(DoorBlock.OPEN, open), 10);
+        BlockPos upperPos = lowerPos.above();
+        BlockState upper = this.level().getBlockState(upperPos);
+        if (!(upper.getBlock() instanceof DoorBlock)
+                || !upper.hasProperty(DoorBlock.HALF)
+                || upper.getValue(DoorBlock.HALF) != DoubleBlockHalf.UPPER
+                || !upper.hasProperty(DoorBlock.OPEN)) {
+            return;
+        }
+        this.level().setBlock(upperPos, upper.setValue(DoorBlock.OPEN, open), 10);
+    }
+
     private boolean isHungerFullSynced() {
         return this.level().isClientSide
                 ? this.entityData.get(HUNGER_FULL)
@@ -2702,6 +2783,17 @@ public class CompanionEntity extends PathfinderMob {
         return false;
     }
 
+    private Player resolveFollowOwnerPlayer() {
+        if (ownerId == null) {
+            return null;
+        }
+        Player ownerPlayer = getPlayerById(ownerId);
+        if (ownerPlayer == null || ownerPlayer.isSpectator() || !ownerPlayer.isAlive()) {
+            return null;
+        }
+        return ownerPlayer;
+    }
+
     private boolean isStopMode() {
         return this.mode == CompanionMode.STOPPED && !returningHome;
     }
@@ -2717,14 +2809,14 @@ public class CompanionEntity extends PathfinderMob {
         if (this.taskCoordinator.isBusy()) {
             return;
         }
-        Player nearest = this.level().getNearestPlayer(this, TELEPORT_SEARCH_DISTANCE);
-        if (nearest == null || nearest.isSpectator() || !nearest.isAlive()) {
+        Player ownerPlayer = resolveFollowOwnerPlayer();
+        if (ownerPlayer == null) {
             return;
         }
-        if (this.distanceToSqr(nearest) <= TELEPORT_REQUEST_DISTANCE_SQR) {
+        if (this.distanceToSqr(ownerPlayer) <= TELEPORT_REQUEST_DISTANCE_SQR) {
             return;
         }
-        Vec3 targetPos = resolveTeleportTarget(nearest);
+        Vec3 targetPos = resolveTeleportTarget(ownerPlayer);
         this.teleportTo(targetPos.x, targetPos.y, targetPos.z);
         this.getNavigation().stop();
     }
@@ -3493,14 +3585,6 @@ public class CompanionEntity extends PathfinderMob {
         if (level == null) {
             return;
         }
-        ServerPlayer nearest = findNearestPlayer(level, lastPos, TELEPORT_SEARCH_DISTANCE);
-        if (nearest == null) {
-            return;
-        }
-        if (nearest.distanceToSqr(lastPos.getX() + 0.5D, lastPos.getY() + 0.5D, lastPos.getZ() + 0.5D)
-                <= TELEPORT_REQUEST_DISTANCE_SQR) {
-            return;
-        }
         Entity first = level.getEntity(companionId);
         CompanionEntity companion = first instanceof CompanionEntity loaded ? loaded : null;
         if (companion == null) {
@@ -3511,7 +3595,15 @@ public class CompanionEntity extends PathfinderMob {
         if (companion == null || companion.isRemoved() || !companion.isAlive()) {
             return;
         }
-        Vec3 targetPos = companion.resolveTeleportTarget(nearest);
+        Player ownerPlayer = companion.resolveFollowOwnerPlayer();
+        if (!(ownerPlayer instanceof ServerPlayer owner) || owner.level() != companion.level()) {
+            return;
+        }
+        if (owner.distanceToSqr(lastPos.getX() + 0.5D, lastPos.getY() + 0.5D, lastPos.getZ() + 0.5D)
+                <= TELEPORT_REQUEST_DISTANCE_SQR) {
+            return;
+        }
+        Vec3 targetPos = companion.resolveTeleportTarget(owner);
         companion.teleportTo(targetPos.x, targetPos.y, targetPos.z);
         companion.getNavigation().stop();
     }

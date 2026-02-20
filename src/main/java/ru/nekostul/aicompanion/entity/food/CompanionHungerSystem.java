@@ -111,7 +111,7 @@ public final class CompanionHungerSystem {
         }
         hunger = Math.min(MAX_HUNGER, hunger + food.getNutrition());
         float heal = Math.max(1.0F, food.getNutrition() * 0.5F);
-        owner.heal(heal);
+        applyFoodHeal(heal);
         owner.swing(InteractionHand.MAIN_HAND);
         owner.playSound(SoundEvents.GENERIC_EAT, 1.0F, 1.0F);
         nextEatTick = gameTime + EAT_COOLDOWN_TICKS;
@@ -149,7 +149,7 @@ public final class CompanionHungerSystem {
         owner.onInventoryUpdated();
         hunger = Math.min(MAX_HUNGER, hunger + food.getNutrition());
         float heal = Math.max(1.0F, food.getNutrition() * 0.5F);
-        owner.heal(heal);
+        applyFoodHeal(heal);
         owner.swing(InteractionHand.MAIN_HAND);
         owner.playSound(SoundEvents.GENERIC_EAT, 1.0F, 1.0F);
         nextEatTick = gameTime + EAT_COOLDOWN_TICKS;
@@ -183,10 +183,22 @@ public final class CompanionHungerSystem {
         }
         hunger = Math.min(MAX_HUNGER, hunger + food.getNutrition());
         float heal = Math.max(1.0F, food.getNutrition() * 0.5F);
-        owner.heal(heal);
+        applyFoodHeal(heal);
         owner.swing(InteractionHand.MAIN_HAND);
         owner.playSound(SoundEvents.GENERIC_EAT, 1.0F, 1.0F);
         nextEatTick = gameTime + EAT_COOLDOWN_TICKS;
+    }
+
+    private void applyFoodHeal(float healAmount) {
+        if (healAmount <= 0.0F || !owner.isAlive()) {
+            return;
+        }
+        float before = owner.getHealth();
+        owner.heal(healAmount);
+        if (owner.getHealth() > before) {
+            return;
+        }
+        owner.setHealth(Math.min(owner.getMaxHealth(), before + healAmount));
     }
 }
 

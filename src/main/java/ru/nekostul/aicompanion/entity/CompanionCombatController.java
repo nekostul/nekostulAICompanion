@@ -10,19 +10,17 @@ import ru.nekostul.aicompanion.entity.inventory.CompanionEquipment;
 import ru.nekostul.aicompanion.entity.movement.CompanionMovementSpeed;
 
 final class CompanionCombatController {
-    private static final int DEFENSE_RADIUS = 12;
+    private static final int DEFENSE_RADIUS = 7;
     private static final double DEFENSE_RADIUS_SQR = DEFENSE_RADIUS * DEFENSE_RADIUS;
     private static final double ATTACK_RANGE_SQR = 4.0D;
     private static final double WATER_ATTACK_RANGE_SQR = 6.25D;
     private static final double CHASE_START_RANGE_SQR = 6.25D;
     private static final double CHASE_STOP_RANGE_SQR = ATTACK_RANGE_SQR;
-    private static final double COMBAT_CHASE_SPEED = 0.32D;
+    private static final double COMBAT_CHASE_SPEED = 0.42D;
     private static final double RETREAT_SPEED = 0.32D;
     private static final int ATTACK_COOLDOWN_TICKS = 20;
-    private static final int CHASE_REPATH_TICKS = 10;
     private static final int COMBAT_ACTIVE_TICKS = 20;
     private static final float LOW_HEALTH_THRESHOLD = 4.0F;
-    private static final double IMMEDIATE_THREAT_DISTANCE_SQR = 4.0D;
     private static final double URGENT_ASSIST_RADIUS_SQR = 32.0D * 32.0D;
     private static final double DODGE_TRIGGER_RANGE_SQR = 9.0D;
     private static final double DODGE_STEP_DISTANCE = 1.2D;
@@ -81,6 +79,12 @@ final class CompanionCombatController {
         return gameTime - lastCombatTick <= COMBAT_ACTIVE_TICKS;
     }
 
+    void clearCombatFocus() {
+        chasingTarget = false;
+        resetChaseMoveTracking();
+        owner.setTarget(null);
+    }
+
     private void retreatToPlayer(Player player) {
         owner.setTarget(null);
         Vec3 target = player.position();
@@ -99,15 +103,12 @@ final class CompanionCombatController {
         double distanceSqr = owner.distanceToSqr(target);
         double attackRangeSqr = resolveAttackRangeSqr(threat);
         double chaseStopRangeSqr = Math.max(CHASE_STOP_RANGE_SQR, attackRangeSqr);
-        tryDodgeThreat(threat, gameTime, distanceSqr);
         if (!chasingTarget && distanceSqr > chaseStopRangeSqr) {
             chasingTarget = true;
         }
         if (chasingTarget && distanceSqr > chaseStopRangeSqr) {
-            if (shouldIssueChaseMove(target, gameTime)) {
-                owner.getNavigation().moveTo(threat, navSpeed(COMBAT_CHASE_SPEED));
-                rememberChaseMove(target, gameTime);
-            }
+            owner.getNavigation().moveTo(threat, navSpeed(COMBAT_CHASE_SPEED));
+            rememberChaseMove(target, gameTime);
             return;
         }
         chasingTarget = false;
@@ -151,20 +152,6 @@ final class CompanionCombatController {
         nextDodgeTick = gameTime + DODGE_COOLDOWN_MIN_TICKS + owner.getRandom().nextInt(DODGE_COOLDOWN_RANGE_TICKS + 1);
     }
 
-    private boolean shouldIssueChaseMove(Vec3 target, long gameTime) {
-        if (target == null) {
-            return false;
-        }
-        BlockPos targetPos = BlockPos.containing(target);
-        if (lastChasePos == null || !lastChasePos.equals(targetPos)) {
-            return true;
-        }
-        if (!owner.getNavigation().isDone()) {
-            return false;
-        }
-        return lastChaseTick < 0L || gameTime - lastChaseTick >= CHASE_REPATH_TICKS;
-    }
-
     private void rememberChaseMove(Vec3 target, long gameTime) {
         lastChasePos = target != null ? BlockPos.containing(target) : null;
         lastChaseTick = gameTime;
@@ -180,21 +167,15 @@ final class CompanionCombatController {
     }
 
     private Monster findThreat(Player player) {
-        AABB range = player.getBoundingBox().inflate(DEFENSE_RADIUS);
+        AABB range = owner.getBoundingBox().inflate(DEFENSE_RADIUS);
         Monster nearest = null;
         double nearestDistance = Double.MAX_VALUE;
         for (Monster monster : owner.level().getEntitiesOfClass(Monster.class, range)) {
             if (!monster.isAlive()) {
                 continue;
             }
-            if (monster.getTarget() != null && monster.getTarget() != player && monster.getTarget() != owner) {
-                continue;
-            }
-            double distance = player.distanceToSqr(monster);
+            double distance = owner.distanceToSqr(monster);
             if (distance > DEFENSE_RADIUS_SQR) {
-                continue;
-            }
-            if (!isThreatRelevant(player, monster, distance)) {
                 continue;
             }
             if (distance < nearestDistance) {
@@ -215,20 +196,6 @@ final class CompanionCombatController {
             }
         }
         return null;
-    }
-
-    private boolean isThreatRelevant(Player player, Monster monster, double distanceSqr) {
-        if (isImmediateThreat(player, monster, distanceSqr)) {
-            return true;
-        }
-        return monster.hasLineOfSight(player) && owner.hasLineOfSight(monster);
-    }
-
-    private boolean isImmediateThreat(Player player, Monster monster, double distanceSqr) {
-        if (distanceSqr > IMMEDIATE_THREAT_DISTANCE_SQR) {
-            return false;
-        }
-        return player.getLastHurtByMob() == monster;
     }
 
 }

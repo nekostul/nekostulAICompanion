@@ -52,7 +52,7 @@ public final class YandexGptClient {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final String ENDPOINT =
             "https://llm.api.cloud.yandex.net/foundationModels/v1/completion";
-    private static final int MAX_REPLY_LENGTH = 700;
+    private static final int MAX_REPLY_LENGTH = 256;
     private static final int BUILD_PLAN_MIN_TOKENS = 2048;
 
     private YandexGptClient() {
@@ -264,7 +264,7 @@ public final class YandexGptClient {
         if (cleaned.length() <= MAX_REPLY_LENGTH) {
             return cleaned;
         }
-        return cleaned.substring(0, MAX_REPLY_LENGTH).trim() + "...";
+        return cleaned.substring(0, MAX_REPLY_LENGTH).trim();
     }
 
     private static String sanitizeStructuredReply(String raw) {

@@ -85,7 +85,7 @@ final class CompanionHouseBuildController {
     private static final int MAX_BLOCKS = 1500;
     private static final int MAX_REL = 64;
     private static final int BLOCKS_PER_TICK = 1;
-    private static final int PLACE_INTERVAL_TICKS = 2;
+    private static final int PLACE_INTERVAL_TICKS = 4;
     private static final double BUILD_SPEED = 0.35D;
     private static final double PLACE_RANGE_SQR = 20.25D;
     private static final int REPATH_TICKS = 3;
@@ -151,6 +151,7 @@ final class CompanionHouseBuildController {
     private UUID activePlayerId;
     private String buildRequestText = "";
     private BlockPos buildOrigin;
+    private BlockPos buildStartAnchor;
     private final Deque<Placement> placementQueue = new ArrayDeque<>();
     private final Map<Item, Integer> remainingRequired = new LinkedHashMap<>();
     private final Deque<GatherTask> gatherQueue = new ArrayDeque<>();
@@ -176,6 +177,10 @@ final class CompanionHouseBuildController {
 
     boolean isSessionActive() {
         return state != State.IDLE;
+    }
+
+    boolean isBuildingActive() {
+        return state == State.BUILDING;
     }
 
     boolean handleMessage(ServerPlayer player, String message, long gameTime) {
@@ -243,8 +248,12 @@ final class CompanionHouseBuildController {
             return;
         }
         if (state == State.WAITING_PLAYER_RESOURCES) {
+            ensureNearBuildStartAnchor(gameTime);
             checkPlayerResources(player);
             return;
+        }
+        if (state == State.WAITING_GATHER_START) {
+            ensureNearBuildStartAnchor(gameTime);
         }
         if (state == State.BUILDING) {
             tickBuilding(player, gameTime);
@@ -297,6 +306,7 @@ final class CompanionHouseBuildController {
         activePlayerId = null;
         buildRequestText = "";
         buildOrigin = null;
+        buildStartAnchor = null;
         placementQueue.clear();
         remainingRequired.clear();
         plannedWorldBlocks.clear();
@@ -344,6 +354,7 @@ final class CompanionHouseBuildController {
     private void setBuildPoint(ServerPlayer player, BlockPos point, long gameTime) {
         owner.sendReply(player, Component.translatable(K_POINT_REMOVE));
         buildOrigin = point.immutable();
+        buildStartAnchor = null;
         int requestHash = buildRequestText == null ? 0 : buildRequestText.hashCode();
         planVariantSeed = (int) (gameTime ^ buildOrigin.asLong() ^ player.getUUID().hashCode() ^ requestHash);
         state = State.WAITING_PLAN;
@@ -412,6 +423,8 @@ final class CompanionHouseBuildController {
             blockedPlacements = 0;
             plannedWorldBlocks.clear();
             buildBounds = computeBounds(placements);
+            buildStartAnchor = null;
+            resolveBuildStartAnchor();
             nextPlaceTick = -1L;
             int toBuildCount = 0;
             for (Placement placement : placements) {
@@ -459,6 +472,8 @@ final class CompanionHouseBuildController {
 
     private void startBuilding(ServerPlayer player) {
         state = State.BUILDING;
+        resolveBuildStartAnchor();
+        owner.getNavigation().stop();
         owner.sendReply(player, Component.translatable(K_RES_REMOVE));
         owner.sendReply(player, Component.translatable(K_BUILD_START));
         lastMoveTarget = null;
@@ -493,7 +508,16 @@ final class CompanionHouseBuildController {
             promptResources(player, missing);
             return;
         }
+        if (ensureNearBuildStartAnchor(gameTime)) {
+            return;
+        }
         if (nextPlaceTick >= 0L && gameTime < nextPlaceTick) {
+            return;
+        }
+        if (ensureBuilderOutsideStructure(gameTime)) {
+            return;
+        }
+        if (isInsideBuildFootprint(owner.blockPosition())) {
             return;
         }
 
@@ -506,7 +530,6 @@ final class CompanionHouseBuildController {
             }
 
             BlockPos target = buildOrigin.offset(placement.rel());
-            BlockPos standTarget = computeOutsideApproachTarget(target);
             BlockState existing = owner.level().getBlockState(target);
             if (existing.is(placement.block()) || isFoundationSatisfied(placement, existing)) {
                 consumePlannedBlock(placement);
@@ -515,63 +538,12 @@ final class CompanionHouseBuildController {
                 continue;
             }
 
-            if (isOnPlacementBlock(target)) {
-                if (shouldSkipStalledTarget(target)) {
-                    deferCurrentPlacement();
-                    actions++;
-                    nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
-                    continue;
-                }
-                moveTo(standTarget != null ? standTarget : target, gameTime);
-                return;
-            }
-            if (shouldDeferForEntityCollision(target, placement)) {
-                if (shouldSkipStalledTarget(target)) {
-                    deferCurrentPlacement();
-                    actions++;
-                    nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
-                    continue;
-                }
-                moveTo(computeOutsideApproachTarget(target), gameTime);
-                return;
-            }
-            double dist = owner.distanceToSqr(target.getX() + 0.5D, target.getY() + 0.5D, target.getZ() + 0.5D);
-            if (dist > PLACE_RANGE_SQR) {
-                if (tryPlaceTempSupportIfNeeded(target, gameTime)) {
-                    actions++;
-                    nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
-                    continue;
-                }
-                if (shouldSkipStalledTarget(target)) {
-                    deferCurrentPlacement();
-                    actions++;
-                    nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
-                    continue;
-                }
-                moveTo(computeOutsideApproachTarget(target), gameTime);
-                return;
-            }
-
             if (!canPlaceAt(target, placement.block(), existing)) {
-                if (shouldSkipStalledTarget(target)) {
-                    blockedPlacements++;
-                    consumePlannedBlock(placement);
-                    actions++;
-                    nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
-                    continue;
-                }
-                moveTo(computeOutsideApproachTarget(target), gameTime);
-                return;
-            }
-            if (wouldTrapBuilderAt(target)) {
-                if (shouldSkipStalledTarget(target)) {
-                    deferCurrentPlacement();
-                    actions++;
-                    nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
-                    continue;
-                }
-                moveTo(computeOutsideApproachTarget(target), gameTime);
-                return;
+                blockedPlacements++;
+                consumePlannedBlock(placement);
+                actions++;
+                nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
+                continue;
             }
 
             if (!inventory.consumeItem(placement.item(), 1)) {
@@ -581,15 +553,11 @@ final class CompanionHouseBuildController {
 
             if (!placePlannedBlock(target, placement.block())) {
                 refundPlacementItem(placement);
-                if (shouldSkipStalledTarget(target)) {
-                    blockedPlacements++;
-                    consumePlannedBlock(placement);
-                    actions++;
-                    nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
-                    continue;
-                }
-                moveTo(computeOutsideApproachTarget(target), gameTime);
-                return;
+                blockedPlacements++;
+                consumePlannedBlock(placement);
+                actions++;
+                nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
+                continue;
             }
             playPlacementSound(target, placement.block());
             owner.swing(InteractionHand.MAIN_HAND, true);
@@ -1021,6 +989,39 @@ final class CompanionHouseBuildController {
         outsideEscapeTicks = 0;
     }
 
+    private BlockPos resolveBuildStartAnchor() {
+        if (buildStartAnchor != null) {
+            return buildStartAnchor;
+        }
+        if (buildOrigin == null) {
+            return null;
+        }
+        if (buildBounds == null) {
+            buildStartAnchor = buildOrigin.immutable();
+            return buildStartAnchor;
+        }
+        BlockPos outside = computeOutsideAnchor(buildOrigin);
+        if (outside != null) {
+            buildStartAnchor = outside.immutable();
+            return buildStartAnchor;
+        }
+        buildStartAnchor = buildOrigin.immutable();
+        return buildStartAnchor;
+    }
+
+    private boolean ensureNearBuildStartAnchor(long gameTime) {
+        BlockPos anchor = resolveBuildStartAnchor();
+        if (anchor == null) {
+            return false;
+        }
+        double distanceSqr = owner.distanceToSqr(anchor.getX() + 0.5D, anchor.getY(), anchor.getZ() + 0.5D);
+        if (distanceSqr <= PLACE_RANGE_SQR) {
+            return false;
+        }
+        moveTo(anchor, gameTime);
+        return true;
+    }
+
     private void prioritizeNearestPlacement(int scanLimit) {
         if (placementQueue.isEmpty() || buildOrigin == null || scanLimit <= 1) {
             return;
@@ -1075,10 +1076,6 @@ final class CompanionHouseBuildController {
             outsideEscapeTicks = 0;
         }
         outsideEscapeTicks++;
-        if (outsideEscapeTicks > OUTSIDE_ESCAPE_MAX_TICKS) {
-            // Failsafe: do not freeze forever when path outside cannot be found.
-            return false;
-        }
         moveTo(outside, gameTime);
         return true;
     }

@@ -93,6 +93,7 @@ public final class CompanionGatheringController {
     private CompanionResourceType activeType;
     private int activeAmount;
     private UUID requestPlayerId;
+    private BlockPos requestTargetOrigin;
     private BlockPos targetBlock;
     private BlockPos pendingResourceBlock;
     private BlockPos pendingSightPos;
@@ -138,14 +139,22 @@ public final class CompanionGatheringController {
 
     public Result tick(CompanionResourceRequest request, long gameTime) {
         if (request == null) {
+            requestTargetOrigin = null;
             resetRequestState();
             return finalizeResult(Result.IDLE, gameTime);
         }
-        if (activeType != request.getResourceType() || activeAmount != request.getAmount()) {
+        BlockPos requestTarget = request.getTargetPos();
+        if (activeType != request.getResourceType()
+                || activeAmount != request.getAmount()
+                || !sameBlockPos(requestTargetOrigin, requestTarget)) {
             activeType = request.getResourceType();
             activeAmount = request.getAmount();
             requestPlayerId = request.getPlayerId();
+            requestTargetOrigin = requestTarget == null ? null : requestTarget.immutable();
             resetRequestState();
+            if (requestTargetOrigin != null) {
+                resourceAnchor = requestTargetOrigin;
+            }
         }
         if (inventory.isFull()) {
             clearTargetState();
@@ -178,6 +187,9 @@ public final class CompanionGatheringController {
             }
             TargetSelection selection = findTarget(activeType, gameTime);
             if (selection == null) {
+                if (requestTargetOrigin != null) {
+                    return finalizeResult(Result.NOT_FOUND, gameTime);
+                }
                 if (gameTime == lastScanTick && !lastScanFound) {
                     return finalizeResult(Result.NOT_FOUND, gameTime);
                 }
@@ -251,6 +263,7 @@ public final class CompanionGatheringController {
         hash = 31 * hash + (digStonePos != null ? digStonePos.hashCode() : 0);
         hash = 31 * hash + (resourceAnchor != null ? resourceAnchor.hashCode() : 0);
         hash = 31 * hash + (lastMinedBlock != null ? lastMinedBlock.hashCode() : 0);
+        hash = 31 * hash + (requestTargetOrigin != null ? requestTargetOrigin.hashCode() : 0);
         return hash;
     }
 
@@ -450,6 +463,11 @@ public final class CompanionGatheringController {
     }
 
     private TargetSelection findTarget(CompanionResourceType type, long gameTime) {
+        if (requestTargetOrigin != null) {
+            TargetSelection requested = findTargetAroundRequestedOrigin(type, requestTargetOrigin);
+            finishScan(requested, gameTime, requested != null);
+            return requested;
+        }
         int scanRadius = scanRadiusForType(type);
         if (resourceAnchor != null) {
             if (owner.blockPosition().distSqr(resourceAnchor) <= (double) (scanRadius * scanRadius)) {
@@ -513,6 +531,40 @@ public final class CompanionGatheringController {
         }
         finishScan(null, gameTime, false);
         return null;
+    }
+
+    private TargetSelection findTargetAroundRequestedOrigin(CompanionResourceType type, BlockPos origin) {
+        if (type == null || origin == null || type == CompanionResourceType.LOG) {
+            return null;
+        }
+        BlockState exactState = owner.level().getBlockState(origin);
+        TargetSelection exactSelection = resolveTargetSelection(type, origin, exactState);
+        if (exactSelection != null) {
+            return exactSelection;
+        }
+        int radius = Math.max(LOCAL_RADIUS, 1);
+        int height = Math.max(LOCAL_HEIGHT, 2);
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        TargetSelection best = null;
+        double bestScore = Double.MAX_VALUE;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -height; dy <= height; dy++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    cursor.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
+                    TargetSelection candidate = resolveTargetSelection(type, cursor.immutable(),
+                            owner.level().getBlockState(cursor));
+                    if (candidate == null) {
+                        continue;
+                    }
+                    double score = origin.distSqr(candidate.resourcePos);
+                    if (score < bestScore) {
+                        bestScore = score;
+                        best = candidate;
+                    }
+                }
+            }
+        }
+        return best;
     }
 
     private TargetSelection findLocalTarget(CompanionResourceType type) {
@@ -1194,6 +1246,16 @@ public final class CompanionGatheringController {
 
     private int scanRadiusForType(CompanionResourceType type) {
         return isOreRequest(type) ? CompanionConfig.getOreScanRadius() : RESOURCE_SCAN_RADIUS;
+    }
+
+    private boolean sameBlockPos(BlockPos first, BlockPos second) {
+        if (first == null && second == null) {
+            return true;
+        }
+        if (first == null || second == null) {
+            return false;
+        }
+        return first.equals(second);
     }
 
     private boolean exceedsOccludedOreDepth(BlockPos blockerPos, BlockPos resourcePos) {

@@ -9,7 +9,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 final class YandexGptConversationMemory {
-    static final int MAX_MESSAGES = 10;
+    static final int MAX_MESSAGES = 15;
     private static final int MAX_MESSAGE_LENGTH = 512;
     private static final Map<UUID, Deque<Message>> HISTORY = new ConcurrentHashMap<>();
 

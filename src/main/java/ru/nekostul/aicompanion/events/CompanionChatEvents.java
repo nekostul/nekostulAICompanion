@@ -136,14 +136,39 @@ public final class CompanionChatEvents {
     }
 
     private static CompanionEntity.CompanionMode parseMode(String message) {
-        String normalized = message.toUpperCase(Locale.ROOT);
-        if (normalized.contains("СЛЕДУЙ") || normalized.contains("FOLLOWING")) {
+        String normalized = normalize(stripAiPrefix(message));
+        if (normalized.contains("следуй")
+                || normalized.contains("following")
+                || normalized.contains("follow")) {
             return CompanionEntity.CompanionMode.AUTONOMOUS;
         }
-        if (normalized.contains("СТОП") || normalized.contains("STOP")) {
+        if (normalized.contains("стоп")
+                || normalized.contains("стой")
+                || normalized.contains("stop")) {
             return CompanionEntity.CompanionMode.STOPPED;
         }
         return null;
+    }
+
+    private static String stripAiPrefix(String message) {
+        if (message == null) {
+            return "";
+        }
+        String normalized = normalize(message);
+        if (normalized.equals("ии") || normalized.equals("ai") || normalized.equals("gpt")) {
+            return "";
+        }
+        if (normalized.startsWith("ии ")
+                || normalized.startsWith("ai ")
+                || normalized.startsWith("gpt ")) {
+            String trimmed = message.trim();
+            int firstSpace = trimmed.indexOf(' ');
+            if (firstSpace < 0 || firstSpace + 1 >= trimmed.length()) {
+                return "";
+            }
+            return trimmed.substring(firstSpace + 1).trim();
+        }
+        return message;
     }
 
     private static boolean containsCommandsKeyword(String message) {

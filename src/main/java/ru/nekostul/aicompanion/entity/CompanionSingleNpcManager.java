@@ -6,11 +6,14 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.core.registries.Registries;
 
+import java.util.List;
 import java.util.UUID;
 
 public final class CompanionSingleNpcManager {
+    private static final double WORLD_SEARCH_BOUND = 30_000_000.0D;
     private static UUID activeId;
     private static ResourceKey<Level> activeDimension;
     private static BlockPos lastKnownPos;
@@ -28,28 +31,7 @@ public final class CompanionSingleNpcManager {
         if (entity.level().isClientSide) {
             return;
         }
-        UUID currentId = entity.getUUID();
-        if (activeId != null && !activeId.equals(currentId)) {
-            ServerLevel previousLevel = resolveLevel(entity, activeDimension);
-            if (previousLevel != null) {
-                Entity previous = previousLevel.getEntity(activeId);
-                if (previous instanceof CompanionEntity companion) {
-                    companion.markPermanentDeathOnNextDeath();
-                    if (companion.isAlive()) {
-                        companion.kill();
-                    } else {
-                        companion.discard();
-                    }
-                }
-            }
-        }
-        activeId = currentId;
-        activeDimension = entity.level().dimension();
-        lastKnownPos = entity.blockPosition();
-        updateHomeState(entity);
-        lastMode = entity.getMode();
-        lastBusy = false;
-        updatePersistedState(entity);
+        rememberCompanionState(entity, false);
     }
 
     static void unregister(CompanionEntity entity) {
@@ -79,27 +61,20 @@ public final class CompanionSingleNpcManager {
             return null;
         }
         ensureLoaded(player.server);
-        if (activeId == null || activeDimension == null) {
-            return null;
+        CompanionEntity tracked = resolveTrackedCompanion(player, false);
+        if (tracked != null && tracked.canPlayerControl(player)) {
+            return tracked;
         }
-        ServerLevel level = player.server.getLevel(activeDimension);
-        if (level == null) {
-            return null;
+        CompanionEntity owned = findLoadedCompanion(player, false, true);
+        if (owned != null) {
+            rememberCompanionState(owned, false);
+            return owned;
         }
-        Entity entity = level.getEntity(activeId);
-        if (entity instanceof CompanionEntity companion) {
-            if (companion.isAlive()) {
-                return companion;
-            }
-            return null;
+        CompanionEntity controllable = findLoadedCompanion(player, false, false);
+        if (controllable != null) {
+            rememberCompanionState(controllable, false);
         }
-        if (lastKnownPos != null && !level.hasChunkAt(lastKnownPos)) {
-            return null;
-        }
-        activeId = null;
-        activeDimension = null;
-        lastKnownPos = null;
-        return null;
+        return controllable;
     }
 
     public static CompanionEntity getActiveIncludingDead(ServerPlayer player) {
@@ -107,39 +82,29 @@ public final class CompanionSingleNpcManager {
             return null;
         }
         ensureLoaded(player.server);
-        if (activeId == null || activeDimension == null) {
-            return null;
+        CompanionEntity tracked = resolveTrackedCompanion(player, true);
+        if (tracked != null && tracked.canPlayerControl(player)) {
+            return tracked;
         }
-        ServerLevel level = player.server.getLevel(activeDimension);
-        if (level == null) {
-            return null;
+        CompanionEntity owned = findLoadedCompanion(player, true, true);
+        if (owned != null) {
+            rememberCompanionState(owned, false);
+            return owned;
         }
-        Entity entity = level.getEntity(activeId);
-        if (entity instanceof CompanionEntity companion) {
-            return companion;
+        CompanionEntity controllable = findLoadedCompanion(player, true, false);
+        if (controllable != null) {
+            rememberCompanionState(controllable, false);
         }
-        if (lastKnownPos != null && !level.hasChunkAt(lastKnownPos)) {
-            return null;
-        }
-        activeId = null;
-        activeDimension = null;
-        lastKnownPos = null;
-        return null;
+        return controllable;
     }
 
     static void updateState(CompanionEntity entity, boolean busy, long teleportCycleTick, long teleportOriginalTick) {
         if (entity == null || entity.level().isClientSide) {
             return;
         }
-        activeId = entity.getUUID();
-        activeDimension = entity.level().dimension();
-        lastKnownPos = entity.blockPosition();
-        updateHomeState(entity);
-        lastMode = entity.getMode();
-        lastBusy = busy;
+        rememberCompanionState(entity, busy);
         lastTeleportCycleTick = teleportCycleTick;
         lastTeleportOriginalTick = teleportOriginalTick;
-        updatePersistedState(entity);
     }
 
     public static UUID getActiveId() {
@@ -191,6 +156,91 @@ public final class CompanionSingleNpcManager {
             return null;
         }
         return entity.getServer().getLevel(dimension);
+    }
+
+    private static CompanionEntity resolveTrackedCompanion(ServerPlayer player, boolean includeDead) {
+        if (player == null || player.server == null || activeId == null || activeDimension == null) {
+            return null;
+        }
+        ServerLevel level = player.server.getLevel(activeDimension);
+        if (level == null) {
+            return null;
+        }
+        Entity entity = level.getEntity(activeId);
+        if (entity instanceof CompanionEntity companion) {
+            if (includeDead || companion.isAlive()) {
+                return companion;
+            }
+            return null;
+        }
+        if (lastKnownPos != null && !level.hasChunkAt(lastKnownPos)) {
+            return null;
+        }
+        activeId = null;
+        activeDimension = null;
+        lastKnownPos = null;
+        return null;
+    }
+
+    private static CompanionEntity findLoadedCompanion(ServerPlayer player, boolean includeDead, boolean ownedOnly) {
+        if (player == null || player.server == null) {
+            return null;
+        }
+        CompanionEntity nearest = null;
+        boolean nearestInPlayerLevel = false;
+        double nearestDistanceSqr = Double.MAX_VALUE;
+        for (ServerLevel level : player.server.getAllLevels()) {
+            AABB searchBounds = new AABB(
+                    -WORLD_SEARCH_BOUND,
+                    level.getMinBuildHeight(),
+                    -WORLD_SEARCH_BOUND,
+                    WORLD_SEARCH_BOUND,
+                    level.getMaxBuildHeight(),
+                    WORLD_SEARCH_BOUND
+            );
+            List<CompanionEntity> companions = level.getEntitiesOfClass(
+                    CompanionEntity.class,
+                    searchBounds,
+                    companion -> {
+                        if (companion == null) {
+                            return false;
+                        }
+                        if (!includeDead && !companion.isAlive()) {
+                            return false;
+                        }
+                        return ownedOnly
+                                ? companion.isOwnedBy(player)
+                                : companion.canPlayerControl(player);
+                    }
+            );
+            for (CompanionEntity companion : companions) {
+                boolean inPlayerLevel = companion.level() == player.level();
+                double distanceSqr = inPlayerLevel
+                        ? player.distanceToSqr(companion.getX(), companion.getY(), companion.getZ())
+                        : Double.MAX_VALUE;
+                if (nearest == null
+                        || (inPlayerLevel && !nearestInPlayerLevel)
+                        || (inPlayerLevel == nearestInPlayerLevel && distanceSqr < nearestDistanceSqr)) {
+                    nearest = companion;
+                    nearestInPlayerLevel = inPlayerLevel;
+                    nearestDistanceSqr = distanceSqr;
+                }
+            }
+        }
+        return nearest;
+    }
+
+    private static void rememberCompanionState(CompanionEntity entity, boolean busy) {
+        if (entity == null || entity.level().isClientSide) {
+            return;
+        }
+        activeId = entity.getUUID();
+        activeDimension = entity.level().dimension();
+        lastKnownPos = entity.blockPosition();
+        updateHomeState(entity);
+        lastMode = entity.getMode();
+        lastBusy = busy;
+        updatePersistedState(entity);
     }
 
     private static void updateHomeState(CompanionEntity entity) {

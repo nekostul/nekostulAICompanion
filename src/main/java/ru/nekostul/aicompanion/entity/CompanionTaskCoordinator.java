@@ -315,6 +315,10 @@ final class CompanionTaskCoordinator {
                 && taskState != TaskState.WAITING_TORCH_RESOURCES;
     }
 
+    boolean isHouseBuildPlacementActive() {
+        return houseBuildController.isBuildingActive();
+    }
+
     void onInventoryUpdated() {
         equipment.equipBestArmor();
     }
@@ -646,7 +650,7 @@ final class CompanionTaskCoordinator {
         }
         int amount = clampTaskAmount(parsed, player);
         activeRequest = new CompanionResourceRequest(player.getUUID(), parsed.getResourceType(), amount,
-                parsed.getTreeMode());
+                parsed.getTreeMode(), parsed.getTargetPos());
         if (parsed.getResourceType().isBucketResource()) {
             if (bucketHandler.ensureBuckets(activeRequest, player, owner.level().getGameTime())
                     == CompanionBucketHandler.BucketStatus.NEED_BUCKETS) {

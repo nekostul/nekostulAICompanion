@@ -1,5 +1,7 @@
 package ru.nekostul.aicompanion.entity.command;
 
+import net.minecraft.core.BlockPos;
+
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.concurrent.ThreadLocalRandom;
@@ -45,13 +47,15 @@ public final class CompanionCommandParser {
         private final CompanionResourceType resourceType;
         private final int amount;
         private final CompanionTreeRequestMode treeMode;
+        private final BlockPos targetPos;
 
         CommandRequest(TaskAction taskAction, CompanionResourceType resourceType, int amount,
-                       CompanionTreeRequestMode treeMode) {
+                       CompanionTreeRequestMode treeMode, BlockPos targetPos) {
             this.taskAction = taskAction;
             this.resourceType = resourceType;
             this.amount = amount;
             this.treeMode = treeMode;
+            this.targetPos = targetPos == null ? null : targetPos.immutable();
         }
 
         public TaskAction getTaskAction() {
@@ -69,9 +73,17 @@ public final class CompanionCommandParser {
         public CompanionTreeRequestMode getTreeMode() {
             return treeMode;
         }
+
+        public BlockPos getTargetPos() {
+            return targetPos;
+        }
     }
 
     private static final Pattern NUMBER_PATTERN = Pattern.compile("(\\d+)");
+    private static final Pattern XYZ_PATTERN = Pattern.compile(
+            "(?iu)\\bx\\s*[:=]?\\s*(-?\\d+)\\s*[,; ]+\\s*y\\s*[:=]?\\s*(-?\\d+)\\s*[,; ]+\\s*z\\s*[:=]?\\s*(-?\\d+)\\s*$");
+    private static final Pattern TRAILING_TRIPLE_PATTERN = Pattern.compile(
+            "(-?\\d+)\\s+(-?\\d+)\\s+(-?\\d+)\\s*$");
     private static final int DEFAULT_BUCKET_AMOUNT = 1;
     private static final int DEFAULT_ORE_MIN_AMOUNT = 1;
     private static final int DEFAULT_ORE_MAX_AMOUNT = 5;
@@ -91,6 +103,8 @@ public final class CompanionCommandParser {
         if (normalized.isEmpty()) {
             return new ParseResult(null, ParseError.EMPTY_MESSAGE);
         }
+        ParsedCoordinates parsedCoordinates = parseTrailingCoordinates(normalized);
+        String amountSource = parsedCoordinates.messageWithoutCoordinates();
         TaskAction taskAction = parseTaskAction(normalized, fallbackAction);
         if (taskAction == null) {
             return new ParseResult(null, ParseError.MISSING_ACTION);
@@ -100,11 +114,13 @@ public final class CompanionCommandParser {
             return new ParseResult(null, ParseError.MISSING_RESOURCE);
         }
         CompanionTreeRequestMode treeMode = parseTreeMode(normalized, resourceType);
-        int amount = parseAmount(normalized, resourceType, treeMode);
+        int amount = parseAmount(amountSource, resourceType, treeMode);
         if (amount <= 0) {
             return new ParseResult(null, ParseError.INVALID_AMOUNT);
         }
-        return new ParseResult(new CommandRequest(taskAction, resourceType, amount, treeMode), ParseError.NONE);
+        BlockPos targetPos = shouldUseTargetCoordinates(resourceType, treeMode) ? parsedCoordinates.targetPos() : null;
+        return new ParseResult(new CommandRequest(taskAction, resourceType, amount, treeMode, targetPos),
+                ParseError.NONE);
     }
 
     private TaskAction parseTaskAction(String normalized, TaskAction fallbackAction) {
@@ -140,7 +156,8 @@ public final class CompanionCommandParser {
     }
 
     private int parseAmount(String normalized, CompanionResourceType resourceType, CompanionTreeRequestMode treeMode) {
-        Matcher matcher = NUMBER_PATTERN.matcher(normalized);
+        String safeNormalized = normalized == null ? "" : normalized;
+        Matcher matcher = NUMBER_PATTERN.matcher(safeNormalized);
         if (matcher.find()) {
             try {
                 return Integer.parseInt(matcher.group(1));
@@ -204,5 +221,63 @@ public final class CompanionCommandParser {
 
     private String normalize(String message) {
         return CompanionRussianNormalizer.normalize(message);
+    }
+
+    private ParsedCoordinates parseTrailingCoordinates(String normalized) {
+        if (normalized == null || normalized.isBlank()) {
+            return ParsedCoordinates.empty(normalized);
+        }
+        Matcher xyzMatcher = XYZ_PATTERN.matcher(normalized);
+        if (xyzMatcher.find()) {
+            BlockPos pos = parseBlockPos(xyzMatcher.group(1), xyzMatcher.group(2), xyzMatcher.group(3));
+            if (pos == null) {
+                return ParsedCoordinates.empty(normalized);
+            }
+            String withoutCoordinates = normalized.substring(0, xyzMatcher.start()).trim();
+            return new ParsedCoordinates(pos, withoutCoordinates);
+        }
+        Matcher trailingMatcher = TRAILING_TRIPLE_PATTERN.matcher(normalized);
+        if (trailingMatcher.find()) {
+            BlockPos pos = parseBlockPos(trailingMatcher.group(1), trailingMatcher.group(2), trailingMatcher.group(3));
+            if (pos == null) {
+                return ParsedCoordinates.empty(normalized);
+            }
+            String withoutCoordinates = normalized.substring(0, trailingMatcher.start()).trim();
+            return new ParsedCoordinates(pos, withoutCoordinates);
+        }
+        return ParsedCoordinates.empty(normalized);
+    }
+
+    private BlockPos parseBlockPos(String xRaw, String yRaw, String zRaw) {
+        try {
+            int x = Integer.parseInt(xRaw);
+            int y = Integer.parseInt(yRaw);
+            int z = Integer.parseInt(zRaw);
+            return new BlockPos(x, y, z);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private boolean shouldUseTargetCoordinates(CompanionResourceType resourceType, CompanionTreeRequestMode treeMode) {
+        if (resourceType == null) {
+            return false;
+        }
+        if (treeMode != null && treeMode != CompanionTreeRequestMode.NONE) {
+            return false;
+        }
+        if (resourceType == CompanionResourceType.LOG) {
+            return false;
+        }
+        if (resourceType == CompanionResourceType.TORCH) {
+            return false;
+        }
+        return !resourceType.isBucketResource();
+    }
+
+    private record ParsedCoordinates(BlockPos targetPos, String messageWithoutCoordinates) {
+        private static ParsedCoordinates empty(String normalized) {
+            return new ParsedCoordinates(null, normalized == null ? "" : normalized);
+        }
     }
 }

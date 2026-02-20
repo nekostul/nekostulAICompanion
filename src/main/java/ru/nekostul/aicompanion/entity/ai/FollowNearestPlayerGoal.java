@@ -10,6 +10,7 @@ import net.minecraft.util.Mth;
 
 import java.util.EnumSet;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 public class FollowNearestPlayerGoal extends Goal {
     private final PathfinderMob mob;
@@ -18,6 +19,7 @@ public class FollowNearestPlayerGoal extends Goal {
     private final float startDistance;
     private final float stopDistance;
     private final BooleanSupplier followEnabled;
+    private final Supplier<Player> targetSelector;
     private Player target;
     private int timeToRecalcPath;
     private Vec3 followPos;
@@ -46,16 +48,22 @@ public class FollowNearestPlayerGoal extends Goal {
     private static final double TARGET_IDLE_SPEED_SQR = 4.0E-4D;
 
     public FollowNearestPlayerGoal(PathfinderMob mob, double speedModifier, float startDistance, float stopDistance) {
-        this(mob, speedModifier, startDistance, stopDistance, () -> true);
+        this(mob, speedModifier, startDistance, stopDistance, () -> true, null);
     }
 
     public FollowNearestPlayerGoal(PathfinderMob mob, double speedModifier, float startDistance, float stopDistance,
                                    BooleanSupplier followEnabled) {
+        this(mob, speedModifier, startDistance, stopDistance, followEnabled, null);
+    }
+
+    public FollowNearestPlayerGoal(PathfinderMob mob, double speedModifier, float startDistance, float stopDistance,
+                                   BooleanSupplier followEnabled, Supplier<Player> targetSelector) {
         this.mob = mob;
         this.maxSpeedModifier = speedModifier;
         this.startDistance = startDistance;
         this.stopDistance = stopDistance;
         this.followEnabled = followEnabled;
+        this.targetSelector = targetSelector;
         this.movementController = new CompanionMovementController(mob, speedModifier);
         this.sideSign = (mob.getUUID().hashCode() & 1) == 0 ? 1 : -1;
         this.setFlags(EnumSet.of(Goal.Flag.MOVE, Goal.Flag.LOOK));
@@ -66,19 +74,25 @@ public class FollowNearestPlayerGoal extends Goal {
         if (!this.followEnabled.getAsBoolean()) {
             return false;
         }
-        Player nearest = this.mob.level().getNearestPlayer(this.mob, this.startDistance);
-        if (nearest == null || nearest.isSpectator()) {
+        Player selected = this.targetSelector != null
+                ? this.targetSelector.get()
+                : this.mob.level().getNearestPlayer(this.mob, this.startDistance);
+        if (selected == null || selected.isSpectator() || !selected.isAlive()) {
             return false;
         }
-        Vec3 nearestMotion = nearest.getDeltaMovement();
+        if (this.targetSelector != null
+                && this.mob.distanceToSqr(selected) > (double) (this.startDistance * this.startDistance)) {
+            return false;
+        }
+        Vec3 nearestMotion = selected.getDeltaMovement();
         double nearestSpeedSqr = nearestMotion.x * nearestMotion.x + nearestMotion.z * nearestMotion.z;
-        if (this.mob.distanceToSqr(nearest) <= (double) (this.stopDistance * this.stopDistance)
-                && this.mob.hasLineOfSight(nearest)
-                && canHoldAtCurrentVerticalOffset(nearest)
+        if (this.mob.distanceToSqr(selected) <= (double) (this.stopDistance * this.stopDistance)
+                && this.mob.hasLineOfSight(selected)
+                && canHoldAtCurrentVerticalOffset(selected)
                 && nearestSpeedSqr < TARGET_IDLE_SPEED_SQR) {
             return false;
         }
-        this.target = nearest;
+        this.target = selected;
         return true;
     }
 
