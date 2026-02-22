@@ -13,6 +13,7 @@
   "entity.aicompanion.companion.spawn.greeting": "Привет! Я nekostulAI.",
   "entity.aicompanion.companion.spawn.about": "Могу добывать и приносить ресурсы по команде.",
   "entity.aicompanion.companion.spawn.commands": "Напиши «помощь», если нужно.",
+  "entity.aicompanion.companion.spawn.exists": "У тебя уже есть NPC в этом мире.",
   "entity.aicompanion.companion.mode.stop": "Принято. Останавливаюсь. Чтобы снова включить следование, напиши «СЛЕДУЙ».",
   "entity.aicompanion.companion.mode.follow": "Следование включено.",
   "entity.aicompanion.companion.mode.autonomous": "Перехожу в следование.",

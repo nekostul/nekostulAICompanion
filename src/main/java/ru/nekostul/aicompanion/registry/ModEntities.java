@@ -19,7 +19,7 @@ public final class ModEntities {
             "companion",
             () -> EntityType.Builder.<CompanionEntity>of(CompanionEntity::new, MobCategory.CREATURE)
                     .sized(0.6F, 1.8F)
-                    .clientTrackingRange(8)
+                    .clientTrackingRange(64)
                     .build(new ResourceLocation(AiCompanionMod.MOD_ID, "companion").toString())
     );
 

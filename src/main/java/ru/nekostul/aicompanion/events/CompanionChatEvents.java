@@ -10,11 +10,16 @@ import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.server.ServerLifecycleHooks;
 
 import ru.nekostul.aicompanion.AiCompanionMod;
+import ru.nekostul.aicompanion.aiproviders.yandexgpt.YandexGptClient;
 import ru.nekostul.aicompanion.entity.CompanionEntity;
 import ru.nekostul.aicompanion.entity.CompanionSingleNpcManager;
 
 import java.util.Locale;
 import java.util.Queue;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 @Mod.EventBusSubscriber(modid = AiCompanionMod.MOD_ID, bus = Mod.EventBusSubscriber.Bus.FORGE)
@@ -23,7 +28,10 @@ public final class CompanionChatEvents {
     private static final String MODE_STOP_KEY = "entity.aicompanion.companion.mode.stop";
     private static final String MODE_FOLLOW_KEY = "entity.aicompanion.companion.mode.follow";
     private static final String MODE_AUTONOMOUS_KEY = "entity.aicompanion.companion.mode.autonomous";
+    private static final String AI_WAIT_KEY = "entity.aicompanion.companion.ai.wait";
+    private static final String AI_NO_COMMAND_TOKEN = "__NO_COMMAND__";
     private static final Queue<Runnable> PENDING_CHAT_REPLIES = new ConcurrentLinkedQueue<>();
+    private static final Set<UUID> AI_INTERPRET_IN_FLIGHT = ConcurrentHashMap.newKeySet();
 
     private CompanionChatEvents() {
     }
@@ -55,6 +63,13 @@ public final class CompanionChatEvents {
         if (message.isEmpty()) {
             return false;
         }
+        if (isAiPrefixedMessage(message)) {
+            CompanionEntity companion = findNearestCompanion(player);
+            if (companion == null) {
+                return false;
+            }
+            return handleMessageForCompanion(player, companion, message, true);
+        }
 
         Boolean response = parseYesNo(message);
         if (response != null && CompanionEntity.handleTeleportResponse(player, response)) {
@@ -77,9 +92,24 @@ public final class CompanionChatEvents {
         if (companion == null) {
             return false;
         }
+        return handleMessageForCompanion(player, companion, message, true);
+    }
 
+    private static boolean handleMessageForCompanion(ServerPlayer player,
+                                                     CompanionEntity companion,
+                                                     String message,
+                                                     boolean allowAiPrefixInterpretation) {
+        if (player == null || companion == null || message == null) {
+            return false;
+        }
+        if (allowAiPrefixInterpretation && isAiPrefixedMessage(message)) {
+            return handleAiPrefixedCommand(player, companion, message);
+        }
         if (companion.handleThanks(player, message)) {
             return true;
+        }
+        if (isWhereCommand(message)) {
+            return companion.handleWhereCommand(player);
         }
 
         if (isGoHomeCommand(message)) {
@@ -119,6 +149,106 @@ public final class CompanionChatEvents {
             return true;
         }
         return false;
+    }
+
+    private static boolean handleAiPrefixedCommand(ServerPlayer player, CompanionEntity companion, String message) {
+        if (player == null || companion == null || message == null) {
+            return false;
+        }
+        if (!companion.canPlayerControl(player)) {
+            return true;
+        }
+        String payload = extractAiPayload(message);
+        if (payload == null || payload.isBlank()) {
+            return companion.handlePlayerCommand(player, message);
+        }
+        UUID playerId = player.getUUID();
+        if (!AI_INTERPRET_IN_FLIGHT.add(playerId)) {
+            companion.sendReply(player, Component.translatable(AI_WAIT_KEY));
+            return true;
+        }
+        CompletableFuture
+                .supplyAsync(() -> YandexGptClient.interpretCommand(player, payload))
+                .thenAccept(result -> PENDING_CHAT_REPLIES.add(
+                        () -> completeAiInterpretation(player, companion, message, result)))
+                .exceptionally(error -> {
+                    PENDING_CHAT_REPLIES.add(() -> completeAiInterpretation(player, companion, message, null));
+                    return null;
+                });
+        return true;
+    }
+
+    private static void completeAiInterpretation(ServerPlayer player,
+                                                 CompanionEntity companion,
+                                                 String originalMessage,
+                                                 YandexGptClient.Result result) {
+        UUID playerId = player == null ? null : player.getUUID();
+        try {
+            if (player == null || companion == null || !player.isAlive() || player.isSpectator() || !companion.isAlive()) {
+                return;
+            }
+            if (result == null || result.status() != YandexGptClient.Status.SUCCESS) {
+                companion.handlePlayerCommand(player, originalMessage);
+                return;
+            }
+            String interpreted = normalizeInterpretedCommand(result.text());
+            if (interpreted.isBlank() || interpreted.equalsIgnoreCase(AI_NO_COMMAND_TOKEN)) {
+                companion.handlePlayerCommand(player, originalMessage);
+                return;
+            }
+            boolean handled = handleMessageForCompanion(player, companion, interpreted, false);
+            if (!handled) {
+                companion.handlePlayerCommand(player, originalMessage);
+            }
+        } finally {
+            if (playerId != null) {
+                AI_INTERPRET_IN_FLIGHT.remove(playerId);
+            }
+        }
+    }
+
+    private static String normalizeInterpretedCommand(String rawText) {
+        if (rawText == null) {
+            return "";
+        }
+        String cleaned = rawText
+                .replace('\r', ' ')
+                .replace('\n', ' ')
+                .replaceAll("\\s{2,}", " ")
+                .trim();
+        if (cleaned.startsWith("```") && cleaned.endsWith("```") && cleaned.length() > 6) {
+            cleaned = cleaned.substring(3, cleaned.length() - 3).trim();
+        }
+        if (cleaned.startsWith("`") && cleaned.endsWith("`") && cleaned.length() > 2) {
+            cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
+        }
+        if (cleaned.startsWith("\"") && cleaned.endsWith("\"") && cleaned.length() > 2) {
+            cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
+        }
+        if (cleaned.regionMatches(true, 0, "command:", 0, "command:".length())) {
+            cleaned = cleaned.substring("command:".length()).trim();
+        }
+        return cleaned;
+    }
+
+    private static boolean isAiPrefixedMessage(String message) {
+        if (message == null) {
+            return false;
+        }
+        String normalized = normalize(message);
+        return normalized.equals("\u0438\u0438")
+                || normalized.equals("ai")
+                || normalized.equals("gpt")
+                || normalized.startsWith("\u0438\u0438 ")
+                || normalized.startsWith("ai ")
+                || normalized.startsWith("gpt ");
+    }
+
+    private static String extractAiPayload(String message) {
+        if (!isAiPrefixedMessage(message)) {
+            return null;
+        }
+        return stripAiPrefix(message);
     }
 
     private static CompanionEntity findNearestCompanion(ServerPlayer player) {

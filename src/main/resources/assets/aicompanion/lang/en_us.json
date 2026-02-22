@@ -13,6 +13,7 @@
   "entity.aicompanion.companion.spawn.greeting": "Hey! I'm nekostulAI.",
   "entity.aicompanion.companion.spawn.about": "I can gather and bring resources on request.",
   "entity.aicompanion.companion.spawn.commands": "Type \"help\" if you need it.",
+  "entity.aicompanion.companion.spawn.exists": "You already have an NPC in this world.",
   "entity.aicompanion.companion.mode.stop": "Got it. Stopping here. To follow again, type \"FOLLOWING\".",
   "entity.aicompanion.companion.mode.follow": "Following is on.",
   "entity.aicompanion.companion.mode.autonomous": "Switching to following.",

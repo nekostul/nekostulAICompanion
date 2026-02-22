@@ -98,6 +98,18 @@ public final class CompanionSingleNpcManager {
         return controllable;
     }
 
+    public static boolean hasOwnedCompanion(ServerPlayer player) {
+        if (player == null || player.server == null) {
+            return false;
+        }
+        ensureLoaded(player.server);
+        CompanionEntity tracked = resolveTrackedCompanion(player, true);
+        if (tracked != null && tracked.isOwnedBy(player)) {
+            return true;
+        }
+        return findLoadedCompanion(player, true, true) != null;
+    }
+
     static void updateState(CompanionEntity entity, boolean busy, long teleportCycleTick, long teleportOriginalTick) {
         if (entity == null || entity.level().isClientSide) {
             return;

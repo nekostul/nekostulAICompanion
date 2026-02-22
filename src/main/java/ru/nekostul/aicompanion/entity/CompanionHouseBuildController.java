@@ -24,6 +24,7 @@ import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.level.block.state.properties.DoorHingeSide;
+import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -39,6 +40,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -86,8 +88,10 @@ final class CompanionHouseBuildController {
     private static final int MAX_REL = 64;
     private static final int BLOCKS_PER_TICK = 1;
     private static final int PLACE_INTERVAL_TICKS = 4;
+    private static final int MAX_PLACEMENT_RETRIES = 16;
     private static final double BUILD_SPEED = 0.35D;
     private static final double PLACE_RANGE_SQR = 20.25D;
+    private static final double BUILD_START_ANCHOR_REACH_SQR = 2.25D;
     private static final int REPATH_TICKS = 3;
     private static final int BUILD_OUTSIDE_MARGIN = 1;
     private static final int STALL_SKIP_TICKS = 30;
@@ -168,6 +172,7 @@ final class CompanionHouseBuildController {
     private final Deque<BlockPos> tempSupportBlocks = new ArrayDeque<>();
     private long nextTempSupportTick = -1L;
     private final Set<BlockPos> plannedWorldBlocks = new HashSet<>();
+    private final Map<BlockPos, Integer> placementRetryCounts = new HashMap<>();
     private int planVariantSeed;
 
     CompanionHouseBuildController(CompanionEntity owner, CompanionInventory inventory) {
@@ -313,6 +318,7 @@ final class CompanionHouseBuildController {
         gatherQueue.clear();
         pendingGatherTask = null;
         blockedPlacements = 0;
+        placementRetryCounts.clear();
         lastMoveTarget = null;
         lastMoveTick = -1L;
         nextPlaceTick = -1L;
@@ -421,10 +427,10 @@ final class CompanionHouseBuildController {
             gatherQueue.clear();
             pendingGatherTask = null;
             blockedPlacements = 0;
+            placementRetryCounts.clear();
             plannedWorldBlocks.clear();
             buildBounds = computeBounds(placements);
             buildStartAnchor = null;
-            resolveBuildStartAnchor();
             nextPlaceTick = -1L;
             int toBuildCount = 0;
             for (Placement placement : placements) {
@@ -443,6 +449,9 @@ final class CompanionHouseBuildController {
                 remainingRequired.merge(placement.item(), 1, Integer::sum);
                 toBuildCount++;
             }
+            // Recalculate anchor after planned targets are known to avoid standing on future placements.
+            buildStartAnchor = null;
+            resolveBuildStartAnchor();
 
             owner.sendReply(player, Component.translatable(K_PLAN_READY, toBuildCount));
             Map<Item, Integer> missing = computeMissing();
@@ -520,6 +529,7 @@ final class CompanionHouseBuildController {
         if (isInsideBuildFootprint(owner.blockPosition())) {
             return;
         }
+        owner.getNavigation().stop();
 
         int actions = 0;
         while (actions < BLOCKS_PER_TICK && !placementQueue.isEmpty()) {
@@ -532,6 +542,7 @@ final class CompanionHouseBuildController {
             BlockPos target = buildOrigin.offset(placement.rel());
             BlockState existing = owner.level().getBlockState(target);
             if (existing.is(placement.block()) || isFoundationSatisfied(placement, existing)) {
+                clearPlacementRetry(target);
                 consumePlannedBlock(placement);
                 actions++;
                 nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
@@ -539,11 +550,12 @@ final class CompanionHouseBuildController {
             }
 
             if (!canPlaceAt(target, placement.block(), existing)) {
-                blockedPlacements++;
-                consumePlannedBlock(placement);
-                actions++;
-                nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
-                continue;
+                if (handlePlacementFailure(target, placement, false)) {
+                    actions++;
+                    nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
+                    continue;
+                }
+                return;
             }
 
             if (!inventory.consumeItem(placement.item(), 1)) {
@@ -553,14 +565,16 @@ final class CompanionHouseBuildController {
 
             if (!placePlannedBlock(target, placement.block())) {
                 refundPlacementItem(placement);
-                blockedPlacements++;
-                consumePlannedBlock(placement);
-                actions++;
-                nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
-                continue;
+                if (handlePlacementFailure(target, placement, true)) {
+                    actions++;
+                    nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
+                    continue;
+                }
+                return;
             }
             playPlacementSound(target, placement.block());
             owner.swing(InteractionHand.MAIN_HAND, true);
+            clearPlacementRetry(target);
             consumePlannedBlock(placement);
             actions++;
             nextPlaceTick = gameTime + PLACE_INTERVAL_TICKS;
@@ -589,7 +603,7 @@ final class CompanionHouseBuildController {
         if (existing.is(block)) {
             return true;
         }
-        if (!existing.canBeReplaced()) {
+        if (!existing.canBeReplaced() && !canOverwriteOccupiedBlock(target, existing)) {
             return false;
         }
         if (!(block instanceof DoorBlock)) {
@@ -597,7 +611,23 @@ final class CompanionHouseBuildController {
         }
         BlockPos upperPos = target.above();
         BlockState upper = owner.level().getBlockState(upperPos);
-        return upper.is(block) || upper.canBeReplaced();
+        return upper.is(block) || upper.canBeReplaced() || canOverwriteOccupiedBlock(upperPos, upper);
+    }
+
+    private boolean canOverwriteOccupiedBlock(BlockPos target, BlockState state) {
+        if (target == null || state == null) {
+            return false;
+        }
+        if (state.isAir() || state.canBeReplaced()) {
+            return true;
+        }
+        if (state.hasBlockEntity()) {
+            return false;
+        }
+        if (state.is(Blocks.BEDROCK) || state.is(Blocks.BARRIER) || state.is(Blocks.END_PORTAL_FRAME)) {
+            return false;
+        }
+        return state.getDestroySpeed(owner.level(), target) >= 0.0F;
     }
 
     private boolean isFoundationSatisfied(Placement placement, BlockState existing) {
@@ -621,8 +651,7 @@ final class CompanionHouseBuildController {
             return false;
         }
         if (!(block instanceof DoorBlock doorBlock)) {
-            owner.level().setBlock(target, block.defaultBlockState(), 3);
-            return true;
+            return owner.level().setBlock(target, block.defaultBlockState(), 3);
         }
         BlockPos upperPos = target.above();
         BlockState upper = owner.level().getBlockState(upperPos);
@@ -634,6 +663,39 @@ final class CompanionHouseBuildController {
         owner.level().setBlock(target, lowerState, 3);
         owner.level().setBlock(upperPos, upperState, 3);
         return true;
+    }
+
+    private boolean handlePlacementFailure(BlockPos target, Placement placement, boolean retryable) {
+        if (placement == null) {
+            return true;
+        }
+        if (target == null) {
+            blockedPlacements++;
+            consumePlannedBlock(placement);
+            return true;
+        }
+        if (!retryable) {
+            blockedPlacements++;
+            consumePlannedBlock(placement);
+            return true;
+        }
+        int retries = placementRetryCounts.merge(target.immutable(), 1, Integer::sum);
+        if (retries >= MAX_PLACEMENT_RETRIES) {
+            placementRetryCounts.remove(target);
+            blockedPlacements++;
+            consumePlannedBlock(placement);
+            return true;
+        }
+        // Do not reposition while placing: keep NPC stationary and retry this block later.
+        deferCurrentPlacement();
+        return true;
+    }
+
+    private void clearPlacementRetry(BlockPos target) {
+        if (target == null) {
+            return;
+        }
+        placementRetryCounts.remove(target);
     }
 
     private BlockState resolveDoorLowerStateForPlacement(DoorBlock doorBlock, BlockPos target) {
@@ -990,23 +1052,76 @@ final class CompanionHouseBuildController {
     }
 
     private BlockPos resolveBuildStartAnchor() {
-        if (buildStartAnchor != null) {
+        if (buildStartAnchor != null && isValidBuildStartAnchor(buildStartAnchor)) {
             return buildStartAnchor;
         }
+        buildStartAnchor = null;
         if (buildOrigin == null) {
             return null;
         }
-        if (buildBounds == null) {
-            buildStartAnchor = buildOrigin.immutable();
+        BlockPos adjacent = resolveAdjacentBuildStartAnchor();
+        if (adjacent != null) {
+            buildStartAnchor = adjacent.immutable();
             return buildStartAnchor;
         }
-        BlockPos outside = computeOutsideAnchor(buildOrigin);
-        if (outside != null) {
-            buildStartAnchor = outside.immutable();
-            return buildStartAnchor;
+        if (buildBounds != null) {
+            BlockPos outside = computeOutsideAnchor(buildOrigin);
+            if (outside != null) {
+                buildStartAnchor = outside.immutable();
+                return buildStartAnchor;
+            }
         }
         buildStartAnchor = buildOrigin.immutable();
         return buildStartAnchor;
+    }
+
+    private BlockPos resolveAdjacentBuildStartAnchor() {
+        if (buildOrigin == null) {
+            return null;
+        }
+        BlockPos ownerPos = owner.blockPosition();
+        List<BlockPos> candidates = new ArrayList<>(12);
+        int[][] horizontal = {
+                {1, 0}, {-1, 0}, {0, 1}, {0, -1},
+                {1, 1}, {1, -1}, {-1, 1}, {-1, -1}
+        };
+        int[] yOffsets = {0, 1, -1, 2, -2};
+        for (int[] side : horizontal) {
+            int dx = side[0];
+            int dz = side[1];
+            for (int yOffset : yOffsets) {
+                BlockPos candidate = buildOrigin.offset(dx, yOffset, dz);
+                if (!isWalkableStandPos(candidate)) {
+                    continue;
+                }
+                if (intersectsPlannedBuildColumn(candidate)) {
+                    continue;
+                }
+                if (buildBounds != null && isInsideBuildFootprint(candidate)) {
+                    continue;
+                }
+                if (!candidates.contains(candidate)) {
+                    candidates.add(candidate.immutable());
+                }
+            }
+            int heightY = owner.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                    buildOrigin.getX() + dx, buildOrigin.getZ() + dz);
+            BlockPos byHeight = new BlockPos(buildOrigin.getX() + dx, heightY, buildOrigin.getZ() + dz);
+            if (isWalkableStandPos(byHeight)
+                    && !intersectsPlannedBuildColumn(byHeight)
+                    && (buildBounds == null || !isInsideBuildFootprint(byHeight))
+                    && !candidates.contains(byHeight)) {
+                candidates.add(byHeight.immutable());
+            }
+        }
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        if (ownerPos != null) {
+            candidates.sort(Comparator.comparingDouble(pos ->
+                    owner.distanceToSqr(pos.getX() + 0.5D, pos.getY(), pos.getZ() + 0.5D)));
+        }
+        return candidates.get(0);
     }
 
     private boolean ensureNearBuildStartAnchor(long gameTime) {
@@ -1015,11 +1130,53 @@ final class CompanionHouseBuildController {
             return false;
         }
         double distanceSqr = owner.distanceToSqr(anchor.getX() + 0.5D, anchor.getY(), anchor.getZ() + 0.5D);
-        if (distanceSqr <= PLACE_RANGE_SQR) {
+        if (distanceSqr <= BUILD_START_ANCHOR_REACH_SQR) {
+            owner.getNavigation().stop();
             return false;
+        }
+        if (!canNavigateTo(anchor)) {
+            // Fallback: do not freeze building when anchor path is temporarily unavailable.
+            buildStartAnchor = null;
+            BlockPos recalculated = resolveBuildStartAnchor();
+            if (recalculated == null) {
+                return false;
+            }
+            anchor = recalculated;
+            distanceSqr = owner.distanceToSqr(anchor.getX() + 0.5D, anchor.getY(), anchor.getZ() + 0.5D);
+            if (distanceSqr <= BUILD_START_ANCHOR_REACH_SQR || !canNavigateTo(anchor)) {
+                return false;
+            }
         }
         moveTo(anchor, gameTime);
         return true;
+    }
+
+    private boolean canNavigateTo(BlockPos target) {
+        if (target == null || owner.getNavigation() == null) {
+            return false;
+        }
+        Path path = owner.getNavigation().createPath(target.getX() + 0.5D, target.getY(), target.getZ() + 0.5D, 0);
+        return path != null;
+    }
+
+    private boolean isValidBuildStartAnchor(BlockPos anchor) {
+        if (anchor == null || !isWalkableStandPos(anchor)) {
+            return false;
+        }
+        if (buildBounds != null && isInsideBuildFootprint(anchor)) {
+            return false;
+        }
+        return !intersectsPlannedBuildColumn(anchor);
+    }
+
+    private boolean intersectsPlannedBuildColumn(BlockPos pos) {
+        if (pos == null || plannedWorldBlocks.isEmpty()) {
+            return false;
+        }
+        if (plannedWorldBlocks.contains(pos) || plannedWorldBlocks.contains(pos.above())) {
+            return true;
+        }
+        return false;
     }
 
     private void prioritizeNearestPlacement(int scanLimit) {
@@ -1479,9 +1636,18 @@ final class CompanionHouseBuildController {
                 if (existingDoor != null) {
                     unique.remove(existingDoor.rel());
                 }
+                unique.remove(rel.above());
                 unique.put(rel, placement);
                 doorColumns.put(doorKey, placement);
             }
+            return;
+        }
+        Placement below = unique.get(rel.below());
+        if (below != null && below.block() instanceof DoorBlock) {
+            return;
+        }
+        Placement atPos = unique.get(rel);
+        if (atPos != null && atPos.block() instanceof DoorBlock) {
             return;
         }
         unique.put(rel, placement);
@@ -1740,6 +1906,10 @@ final class CompanionHouseBuildController {
         if (doorBlock instanceof DoorBlock && doorItem != null && doorItem != Items.AIR
                 && doorBottomY <= wallEndY && unique.size() < MAX_BLOCKS) {
             BlockPos doorRel = new BlockPos(doorX, doorBottomY, doorZ);
+            BlockPos doorTopRel = doorRel.above();
+            if (unique.remove(doorTopRel) != null) {
+                changed = true;
+            }
             unique.put(doorRel, new Placement(doorRel, doorBlock, doorItem));
             changed = true;
         }
@@ -3183,10 +3353,5 @@ final class CompanionHouseBuildController {
                 : message.trim().toLowerCase(Locale.ROOT).replace('\u0451', '\u0435');
     }
 }
-
-
-
-
-
 
 

@@ -20,22 +20,25 @@ final class YandexGptPrompts {
 
     static final String NO_COMMAND_TOKEN = "__NO_COMMAND__";
     private static final String HELPFUL_ASSISTANT_RULES =
-            "Always help the player directly with practical in-game steps and do not redirect to wiki or external "
-                    + "guides unless the player explicitly asks for links. "
-                    + "If a request may require mods or server-specific mechanics, first ask exactly one short "
-                    + "clarifying question. "
-                    + "For example, for space travel ask whether a space mod is installed; without a mod explain "
-                    + "briefly why it is impossible in vanilla and suggest the next practical step.";
+            "Всегда помогай игроку практическими шагами прямо в игре и не отправляй в вики или внешние гайды, "
+                    + "если он сам не попросил ссылки. "
+                    + "Если запрос может требовать модов или серверных механик, сначала задай ровно один короткий "
+                    + "уточняющий вопрос. "
+                    + "Например, про полет в космос сначала спроси, установлен ли космический мод; без мода кратко "
+                    + "объясни, что в ваниле это невозможно, и предложи следующий практический шаг.";
 
     private static final String COMMAND_TASK_SYSTEM_PROMPT =
-            "Техническая задача: интерпретируй сообщение игрока как команду для NPC на добычу/доставку ресурсов. "
-                    + "Верни строго одну строку без пояснений. "
-                    + "Если в сообщении нет задачи на добычу или доставку, верни ровно " + NO_COMMAND_TOKEN + ". "
-                    + "Разрешенные глаголы в ответе: «добыть», «принеси». "
-                    + "Если действий несколько, объединяй через «потом». "
-                    + "Формат примера: «добыть 10 земли», «принеси 10 земли, потом принеси 10 дубовых брёвен». "
-                    + "Не добавляй лишний текст, объяснения или markdown.";
-
+            "Техническая задача: преобразуй сообщение игрока в одну исполняемую строку команды для NPC. "
+                    + "Верни строго одну строку без пояснений и без markdown. "
+                    + "Если в сообщении нет явного намерения команды, верни ровно " + NO_COMMAND_TOKEN + ". "
+                    + "Допустимые семейства команд: управление режимом (стоп/стой/stop, следуй/follow), "
+                    + "ресурсные команды (добудь..., принеси..., цепочки через потом/then), "
+                    + "дом и местоположение (иди домой, где ты), "
+                    + "инвентарь (инвентарь/inventory), "
+                    + "управление пати (party add <name>, party remove <name>). "
+                    + "Сохраняй из сообщения названия ресурсов, количество и координаты XYZ, если они есть. "
+                    + "Никогда не возвращай префикс 'ии', 'ai' или 'gpt'.";
+    
     private static final String HOME_REVIEW_SYSTEM_PROMPT =
             "Техническая задача: оцени дом по структурированному отчету NPC. "
                     + "Ответ: одна короткая реплика на русском до 256 символов, без markdown, без списков и без эмодзи. "

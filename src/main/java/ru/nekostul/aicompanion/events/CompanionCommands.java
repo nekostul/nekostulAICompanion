@@ -31,6 +31,7 @@ import ru.nekostul.aicompanion.registry.ModEntities;
 public final class CompanionCommands {
     private static final String TREECHOP_ENABLED_KEY = "entity.aicompanion.companion.treechop.enabled";
     private static final String TREECHOP_DISABLED_KEY = "entity.aicompanion.companion.treechop.disabled";
+    private static final String SPAWN_EXISTS_KEY = "entity.aicompanion.companion.spawn.exists";
 
     private CompanionCommands() {
     }
@@ -204,6 +205,10 @@ public final class CompanionCommands {
 
     private static int handleSpawn(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
         ServerPlayer player = context.getSource().getPlayerOrException();
+        if (CompanionSingleNpcManager.hasOwnedCompanion(player)) {
+            context.getSource().sendFailure(Component.translatable(SPAWN_EXISTS_KEY));
+            return 0;
+        }
         CompanionEntity companion = spawnCompanionNear(player);
         return companion != null ? 1 : 0;
     }
