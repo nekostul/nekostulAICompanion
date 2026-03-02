@@ -40,7 +40,7 @@ public final class CompanionSingleNpcManager {
             return;
         }
         if (activeId != null && activeId.equals(entity.getUUID())) {
-            if (entity.isAlive()) {
+            if (entity.isAlive() || entity.shouldKeepManagerTrackingWhenUnloaded()) {
                 activeDimension = entity.level().dimension();
                 lastKnownPos = entity.blockPosition();
                 updateHomeState(entity);

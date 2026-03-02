@@ -3950,6 +3950,10 @@ public class CompanionEntity extends PathfinderMob {
         return waitingForHomeRespawn && !this.isAlive() && !isHomeInCurrentLevel();
     }
 
+    boolean shouldKeepManagerTrackingWhenUnloaded() {
+        return isWaitingForHomeRespawnWithoutHome();
+    }
+
     private boolean isNoHomeReminderDisableCommand(String message) {
         if (message == null) {
             return false;
