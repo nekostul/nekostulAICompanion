@@ -135,6 +135,8 @@ public class CompanionEntity extends PathfinderMob {
     private static final String HOME_SET_FREE_RADIUS_ACTIVE_NBT = "CompanionHomeSetFreeRadiusActive";
     private static final String HOME_RESPAWN_WAITING_NBT = "CompanionHomeRespawnWaiting";
     private static final String HOME_DEATH_RECOVERY_NBT = "CompanionHomeDeathRecovery";
+    private static final String HOME_NO_HOME_REMINDER_DISABLED_NBT = "CompanionHomeNoHomeReminderDisabled";
+    private static final String HOME_NO_HOME_COMMAND_HINT_SENT_NBT = "CompanionHomeNoHomeCommandHintSent";
     private static final String TOOL_SLOT_PICKAXE_NBT = "Pickaxe";
     private static final String TOOL_SLOT_AXE_NBT = "Axe";
     private static final String TOOL_SLOT_SHOVEL_NBT = "Shovel";
@@ -164,6 +166,11 @@ public class CompanionEntity extends PathfinderMob {
     private static final String HOME_FOLLOW_BUTTON_KEY = "entity.aicompanion.companion.home.follow.button";
     private static final String HOME_SET_COOLDOWN_KEY = "entity.aicompanion.companion.home.set.cooldown";
     private static final String HOME_DEATH_NO_HOME_KEY = "entity.aicompanion.companion.home.death.no_home";
+    private static final String HOME_DEATH_NO_HOME_BUTTON_KEY = "entity.aicompanion.companion.home.death.no_home.button";
+    private static final String HOME_DEATH_NO_HOME_DISABLED_KEY =
+            "entity.aicompanion.companion.home.death.no_home.disabled";
+    private static final String HOME_DEATH_NO_HOME_COMMAND_BLOCKED_KEY =
+            "entity.aicompanion.companion.home.death.no_home.command_blocked";
     private static final String HOME_DEATH_RECOVERY_HP_KEY = "entity.aicompanion.companion.home.death.recovery.hp";
     private static final String HOME_DEATH_RECOVERY_HP_REMOVE_KEY = "entity.aicompanion.companion.home.death.recovery.hp.remove";
     private static final String WHERE_STATUS_KEY = "entity.aicompanion.companion.where.status";
@@ -237,6 +244,9 @@ public class CompanionEntity extends PathfinderMob {
     private static final int DOUBLE_DOOR_SCAN_RADIUS = 2;
     private static final double DOUBLE_DOOR_NEAR_DISTANCE_SQR = 9.0D;
     private static final int DOUBLE_DOOR_CLOSE_DELAY_TICKS = 12;
+    private static final int HOME_RECOVERY_FALLBACK_INTERVAL_TICKS = 20;
+    private static final int HOME_NO_HOME_REMINDER_TICKS = 60 * 20;
+    private static final String HOME_NO_HOME_REMINDER_DISABLE_TOKEN = "__ainpc_home_no_home_reminder_off__";
 
     private static final EntityDataAccessor<ItemStack> TOOL_PICKAXE =
             SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
@@ -257,6 +267,7 @@ public class CompanionEntity extends PathfinderMob {
     private static final Map<UUID, Long> WHERE_FALLBACK_COOLDOWNS = new ConcurrentHashMap<>();
     private static final Set<UUID> APPROVED_DIMENSION_TELEPORTS = ConcurrentHashMap.newKeySet();
     private static final Set<UUID> APPROVED_WHERE_TELEPORTS = ConcurrentHashMap.newKeySet();
+    private static long lastHomeRecoveryFallbackTick = -10000L;
 
     private static final class PendingTeleportRequest {
         private final UUID companionId;
@@ -392,6 +403,7 @@ public class CompanionEntity extends PathfinderMob {
     private long lastHomeRegenTick = -1L;
     private long lastHomeDeathInteractTick = -10000L;
     private boolean wasAtHome;
+    private long nextNoHomeRespawnReminderTick = -1L;
     private long homeSetCooldownUntilTick = -1L;
     private BlockPos homeSetAnchorPos;
     private ResourceLocation homeSetAnchorDimension;
@@ -399,6 +411,8 @@ public class CompanionEntity extends PathfinderMob {
     private boolean permanentDeathOnNextDeath;
     private boolean waitingForHomeRespawn;
     private boolean recoveringAfterDeathAtHome;
+    private boolean homeNoHomeReminderDisabled;
+    private boolean noHomeCommandBlockedHintSentForDeath;
     private final Map<UUID, Integer> hostilePlayerStrikes = new HashMap<>();
     private UUID hostilePlayerTargetId;
     private int hostilePlayerHitsRemaining;
@@ -608,6 +622,9 @@ public class CompanionEntity extends PathfinderMob {
         if (!canPlayerControl(player)) {
             return false;
         }
+        if (handleHomeRespawnWaitStateMessage(player, message)) {
+            return true;
+        }
         if (recoveringAfterDeathAtHome) {
             return true;
         }
@@ -615,6 +632,29 @@ public class CompanionEntity extends PathfinderMob {
             return true;
         }
         return this.taskCoordinator.handlePlayerMessage(player, message);
+    }
+
+    public boolean handleHomeRespawnWaitStateMessage(ServerPlayer player, String message) {
+        if (!canPlayerControl(player)) {
+            return false;
+        }
+        if (isNoHomeReminderDisableCommand(message)) {
+            if (!homeNoHomeReminderDisabled) {
+                homeNoHomeReminderDisabled = true;
+                sendReply(player, Component.translatable(HOME_DEATH_NO_HOME_DISABLED_KEY));
+            }
+            return true;
+        }
+        if (!isWaitingForHomeRespawnWithoutHome()) {
+            return false;
+        }
+        if (!noHomeCommandBlockedHintSentForDeath) {
+            sendReply(player, Component.translatable(
+                    HOME_DEATH_NO_HOME_COMMAND_BLOCKED_KEY,
+                    Component.literal("помощь дом").withStyle(ChatFormatting.AQUA)));
+            noHomeCommandBlockedHintSentForDeath = true;
+        }
+        return true;
     }
 
     public boolean openInventoryMenu(ServerPlayer player) {
@@ -806,6 +846,8 @@ public class CompanionEntity extends PathfinderMob {
         if (waitingForHomeRespawn && !this.isAlive()) {
             reviveAfterDeath();
         }
+        nextNoHomeRespawnReminderTick = -1L;
+        noHomeCommandBlockedHintSentForDeath = false;
         return true;
     }
 
@@ -827,6 +869,8 @@ public class CompanionEntity extends PathfinderMob {
         homeReturnPlayerId = null;
         recoveringAfterDeathAtHome = false;
         waitingForHomeRespawn = false;
+        nextNoHomeRespawnReminderTick = -1L;
+        noHomeCommandBlockedHintSentForDeath = false;
         clearSetHomeCooldownState();
         clearHomeRequest();
         sendReply(player, Component.translatable(HOME_DELETED_KEY));
@@ -1208,6 +1252,20 @@ public class CompanionEntity extends PathfinderMob {
 
     private boolean isAtHome() {
         return isHomeInCurrentLevel() && this.blockPosition().below().equals(homePos);
+    }
+
+    private boolean isAdjacentToHomeStandBlock() {
+        if (!isHomeInCurrentLevel() || homePos == null) {
+            return false;
+        }
+        BlockPos standPos = homePos.above();
+        BlockPos currentPos = this.blockPosition();
+        if (currentPos.equals(standPos) || currentPos.getY() != standPos.getY()) {
+            return false;
+        }
+        int dx = Math.abs(currentPos.getX() - standPos.getX());
+        int dz = Math.abs(currentPos.getZ() - standPos.getZ());
+        return dx <= 1 && dz <= 1;
     }
 
     private void requestHomeConfirmation(ServerPlayer player, int distance) {
@@ -1626,6 +1684,16 @@ public class CompanionEntity extends PathfinderMob {
             resetHomeMoveTracking();
             return;
         }
+        if (homeDirectReturn && isAdjacentToHomeStandBlock()) {
+            teleportHome();
+            this.getNavigation().stop();
+            returningHome = false;
+            homeLeaveTarget = null;
+            homeReturnPlayerId = null;
+            homeDirectReturn = false;
+            resetHomeMoveTracking();
+            return;
+        }
         if (homeLeaveTarget == null && player != null && !homeDirectReturn) {
             homeLeaveTarget = resolveHomeLeaveTarget(player);
         }
@@ -1885,6 +1953,8 @@ public class CompanionEntity extends PathfinderMob {
         tag.putBoolean(HOME_SET_FREE_RADIUS_ACTIVE_NBT, this.homeSetFreeRadiusActive);
         tag.putBoolean(HOME_RESPAWN_WAITING_NBT, this.waitingForHomeRespawn);
         tag.putBoolean(HOME_DEATH_RECOVERY_NBT, this.recoveringAfterDeathAtHome);
+        tag.putBoolean(HOME_NO_HOME_REMINDER_DISABLED_NBT, this.homeNoHomeReminderDisabled);
+        tag.putBoolean(HOME_NO_HOME_COMMAND_HINT_SENT_NBT, this.noHomeCommandBlockedHintSentForDeath);
         if (this.ownerId != null) {
             tag.putUUID(OWNER_NBT, this.ownerId);
         }
@@ -1975,6 +2045,11 @@ public class CompanionEntity extends PathfinderMob {
                 && tag.getBoolean(HOME_RESPAWN_WAITING_NBT);
         this.recoveringAfterDeathAtHome = tag.contains(HOME_DEATH_RECOVERY_NBT)
                 && tag.getBoolean(HOME_DEATH_RECOVERY_NBT);
+        this.homeNoHomeReminderDisabled = tag.contains(HOME_NO_HOME_REMINDER_DISABLED_NBT)
+                && tag.getBoolean(HOME_NO_HOME_REMINDER_DISABLED_NBT);
+        this.noHomeCommandBlockedHintSentForDeath = tag.contains(HOME_NO_HOME_COMMAND_HINT_SENT_NBT)
+                && tag.getBoolean(HOME_NO_HOME_COMMAND_HINT_SENT_NBT);
+        this.nextNoHomeRespawnReminderTick = -1L;
         this.ownerId = tag.hasUUID(OWNER_NBT) ? tag.getUUID(OWNER_NBT) : null;
         this.partyMembers.clear();
         ListTag partyTag = tag.getList(PARTY_NBT, Tag.TAG_STRING);
@@ -2211,6 +2286,7 @@ public class CompanionEntity extends PathfinderMob {
         clearWhereRequest();
         clearFollowRequest(false);
         clearBoatRideRequest(true);
+        this.noHomeCommandBlockedHintSentForDeath = false;
         super.die(source);
     }
 
@@ -2232,6 +2308,8 @@ public class CompanionEntity extends PathfinderMob {
                 this.deathTime = 0;
                 this.waitingForHomeRespawn = false;
                 this.recoveringAfterDeathAtHome = false;
+                this.nextNoHomeRespawnReminderTick = -1L;
+                this.noHomeCommandBlockedHintSentForDeath = false;
             } else {
                 this.dead = true;
                 this.deathTime = 20;
@@ -2241,7 +2319,13 @@ public class CompanionEntity extends PathfinderMob {
         if (!isHomeInCurrentLevel()) {
             if (!waitingForHomeRespawn) {
                 waitingForHomeRespawn = true;
-                notifyNoHomeRespawnHint();
+                noHomeCommandBlockedHintSentForDeath = false;
+                nextNoHomeRespawnReminderTick = this.level().getGameTime() + HOME_NO_HOME_REMINDER_TICKS;
+                if (!homeNoHomeReminderDisabled) {
+                    notifyNoHomeRespawnHint();
+                }
+            } else {
+                tickNoHomeRespawnReminder(this.level().getGameTime());
             }
             this.dead = true;
             this.deathTime = 20;
@@ -2296,23 +2380,51 @@ public class CompanionEntity extends PathfinderMob {
         this.permanentDeathOnNextDeath = false;
         this.waitingForHomeRespawn = false;
         this.recoveringAfterDeathAtHome = true;
+        this.nextNoHomeRespawnReminderTick = -1L;
+        this.noHomeCommandBlockedHintSentForDeath = false;
         clearHostilePlayerMemory();
         this.setMode(CompanionMode.STOPPED);
     }
 
-    private void notifyNoHomeRespawnHint() {
-        Component hint = Component.translatable(HOME_DEATH_NO_HOME_KEY);
+    private void tickNoHomeRespawnReminder(long gameTime) {
+        if (!isWaitingForHomeRespawnWithoutHome() || homeNoHomeReminderDisabled) {
+            return;
+        }
+        if (nextNoHomeRespawnReminderTick < 0L) {
+            nextNoHomeRespawnReminderTick = gameTime + HOME_NO_HOME_REMINDER_TICKS;
+            return;
+        }
+        if (gameTime < nextNoHomeRespawnReminderTick) {
+            return;
+        }
+        notifyNoHomeRespawnHint();
+        nextNoHomeRespawnReminderTick = gameTime + HOME_NO_HOME_REMINDER_TICKS;
+    }
+
+    private boolean notifyNoHomeRespawnHint() {
+        MutableComponent hint = Component.translatable(
+                HOME_DEATH_NO_HOME_KEY,
+                Component.literal("помощь дом").withStyle(ChatFormatting.AQUA));
+        MutableComponent disableButton = Component.translatable(HOME_DEATH_NO_HOME_BUTTON_KEY)
+                .withStyle(style -> style
+                        .withColor(ChatFormatting.DARK_GRAY)
+                        .withClickEvent(new ClickEvent(
+                                ClickEvent.Action.RUN_COMMAND,
+                                "/ainpc msg " + HOME_NO_HOME_REMINDER_DISABLE_TOKEN)));
+        Component fullHint = hint.append(Component.literal(" ")).append(disableButton);
         if (ownerId != null) {
-            Player owner = getPlayerById(ownerId);
+            ServerPlayer owner = getOnlinePlayerById(ownerId);
             if (owner != null) {
-                sendReply(owner, hint);
-                return;
+                sendReply(owner, fullHint);
+                return true;
             }
         }
         Player nearest = this.level().getNearestPlayer(this, REACTION_RANGE);
         if (nearest != null) {
-            sendReply(nearest, hint);
+            sendReply(nearest, fullHint);
+            return true;
         }
+        return false;
     }
 
     private void sendReaction(Component message) {
@@ -3728,6 +3840,54 @@ public class CompanionEntity extends PathfinderMob {
         companion.getNavigation().stop();
     }
 
+    public static void tickHomeRecoveryFallback(MinecraftServer server) {
+        if (server == null) {
+            return;
+        }
+        long serverTick = server.getTickCount();
+        if (serverTick - lastHomeRecoveryFallbackTick < HOME_RECOVERY_FALLBACK_INTERVAL_TICKS) {
+            return;
+        }
+        lastHomeRecoveryFallbackTick = serverTick;
+        CompanionSingleNpcManager.ensureLoaded(server);
+        UUID companionId = CompanionSingleNpcManager.getActiveId();
+        ResourceKey<Level> levelKey = CompanionSingleNpcManager.getActiveDimension();
+        if (companionId == null || levelKey == null) {
+            return;
+        }
+        ServerLevel level = server.getLevel(levelKey);
+        if (level == null) {
+            return;
+        }
+        CompanionEntity companion = null;
+        Entity entity = level.getEntity(companionId);
+        if (entity instanceof CompanionEntity loadedCompanion) {
+            companion = loadedCompanion;
+        }
+        if (companion == null) {
+            BlockPos chunkHintPos = CompanionSingleNpcManager.getLastKnownPos();
+            if (chunkHintPos == null) {
+                chunkHintPos = CompanionSingleNpcManager.getLastHomePos();
+            }
+            if (chunkHintPos != null) {
+                level.getChunkSource().getChunk(chunkHintPos.getX() >> 4, chunkHintPos.getZ() >> 4, ChunkStatus.FULL, true);
+                entity = level.getEntity(companionId);
+                if (entity instanceof CompanionEntity loadedAfterChunk) {
+                    companion = loadedAfterChunk;
+                }
+            }
+        }
+        if (companion == null || companion.isRemoved()) {
+            return;
+        }
+        long gameTime = companion.level().getGameTime();
+        if (companion.isAlive() && companion.recoveringAfterDeathAtHome) {
+            companion.tickHomeRegen(gameTime);
+            companion.syncHungerFullFlag();
+        }
+        companion.tickNoHomeRespawnReminder(gameTime);
+    }
+
     public void handleTeleportResponse(Player player, boolean accepted) {
         if (pendingTeleportPlayerId == null || !pendingTeleportPlayerId.equals(player.getUUID())) {
             return;
@@ -3770,6 +3930,13 @@ public class CompanionEntity extends PathfinderMob {
         return findPlayerById(playerId);
     }
 
+    private ServerPlayer getOnlinePlayerById(UUID playerId) {
+        if (playerId == null || this.getServer() == null) {
+            return null;
+        }
+        return this.getServer().getPlayerList().getPlayer(playerId);
+    }
+
     private Player findPlayerById(UUID playerId) {
         for (Player player : this.level().players()) {
             if (player.getUUID().equals(playerId)) {
@@ -3777,6 +3944,18 @@ public class CompanionEntity extends PathfinderMob {
             }
         }
         return null;
+    }
+
+    private boolean isWaitingForHomeRespawnWithoutHome() {
+        return waitingForHomeRespawn && !this.isAlive() && !isHomeInCurrentLevel();
+    }
+
+    private boolean isNoHomeReminderDisableCommand(String message) {
+        if (message == null) {
+            return false;
+        }
+        String normalized = message.trim();
+        return HOME_NO_HOME_REMINDER_DISABLE_TOKEN.equalsIgnoreCase(normalized);
     }
 
     private boolean isIgnoredHitReaction(DamageSource source) {

@@ -56,6 +56,7 @@ public final class CompanionChatEvents {
         }
         CompanionEntity.tickPendingTeleports(ServerLifecycleHooks.getCurrentServer());
         CompanionEntity.tickTeleportRequestFallback(ServerLifecycleHooks.getCurrentServer());
+        CompanionEntity.tickHomeRecoveryFallback(ServerLifecycleHooks.getCurrentServer());
     }
 
     public static boolean handlePlayerMessage(ServerPlayer player, String rawMessage) {
@@ -64,7 +65,7 @@ public final class CompanionChatEvents {
             return false;
         }
         if (isAiPrefixedMessage(message)) {
-            CompanionEntity companion = findNearestCompanion(player);
+            CompanionEntity companion = resolveCommandCompanion(player);
             if (companion == null) {
                 return false;
             }
@@ -77,22 +78,33 @@ public final class CompanionChatEvents {
         }
 
         if (isWhereCommand(message)) {
-            CompanionEntity active = CompanionSingleNpcManager.getActive(player);
-            if (active != null) {
-                return active.handleWhereCommand(player);
-            }
-            CompanionEntity nearest = findNearestCompanion(player);
-            if (nearest != null) {
-                return nearest.handleWhereCommand(player);
+            CompanionEntity companion = resolveCommandCompanion(player);
+            if (companion != null) {
+                return handleMessageForCompanion(player, companion, message, true);
             }
             return CompanionEntity.handleWhereCommandFallback(player);
         }
 
-        CompanionEntity companion = findNearestCompanion(player);
+        CompanionEntity companion = resolveCommandCompanion(player);
         if (companion == null) {
             return false;
         }
         return handleMessageForCompanion(player, companion, message, true);
+    }
+
+    private static CompanionEntity resolveCommandCompanion(ServerPlayer player) {
+        if (player == null) {
+            return null;
+        }
+        CompanionEntity nearest = findNearestCompanion(player);
+        if (nearest != null) {
+            return nearest;
+        }
+        CompanionEntity active = CompanionSingleNpcManager.getActive(player);
+        if (active != null) {
+            return active;
+        }
+        return CompanionSingleNpcManager.getActiveIncludingDead(player);
     }
 
     private static boolean handleMessageForCompanion(ServerPlayer player,
@@ -101,6 +113,9 @@ public final class CompanionChatEvents {
                                                      boolean allowAiPrefixInterpretation) {
         if (player == null || companion == null || message == null) {
             return false;
+        }
+        if (companion.handleHomeRespawnWaitStateMessage(player, message)) {
+            return true;
         }
         if (allowAiPrefixInterpretation && isAiPrefixedMessage(message)) {
             return handleAiPrefixedCommand(player, companion, message);

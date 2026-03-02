@@ -6,6 +6,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.chunk.ChunkStatus;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.core.registries.Registries;
 
@@ -185,8 +186,15 @@ public final class CompanionSingleNpcManager {
             }
             return null;
         }
-        if (lastKnownPos != null && !level.hasChunkAt(lastKnownPos)) {
-            return null;
+        if (lastKnownPos != null) {
+            level.getChunkSource().getChunk(lastKnownPos.getX() >> 4, lastKnownPos.getZ() >> 4, ChunkStatus.FULL, true);
+            entity = level.getEntity(activeId);
+            if (entity instanceof CompanionEntity loadedCompanion) {
+                if (includeDead || loadedCompanion.isAlive()) {
+                    return loadedCompanion;
+                }
+                return null;
+            }
         }
         activeId = null;
         activeDimension = null;

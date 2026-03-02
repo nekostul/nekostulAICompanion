@@ -8,7 +8,9 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.util.Mth;
 
+import java.util.ArrayDeque;
 import java.util.EnumSet;
+import java.util.Iterator;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
@@ -29,6 +31,10 @@ public class FollowNearestPlayerGoal extends Goal {
     private long lastProgressTick;
     private long nextTargetUpdateTick;
     private final int sideSign;
+    private final ArrayDeque<RoutePoint> routeMemory = new ArrayDeque<>();
+    private RoutePoint currentRoutePoint;
+    private long nextRouteSampleTick;
+    private boolean lastTargetOnGround = true;
 
     private static final double FOLLOW_BEHIND_DISTANCE = 2.6D;
     private static final double FOLLOW_SIDE_DISTANCE = 0.0D;
@@ -46,6 +52,25 @@ public class FollowNearestPlayerGoal extends Goal {
     private static final float RUN_YAW_DEADZONE_DEGREES = 10.0F;
     private static final double RUN_ROTATE_MIN_SPEED_SQR = 1.0E-3D;
     private static final double TARGET_IDLE_SPEED_SQR = 4.0E-4D;
+    private static final int ROUTE_SAMPLE_TICKS = 2;
+    private static final int ROUTE_MAX_AGE_TICKS = 12 * 20;
+    private static final int ROUTE_MAX_POINTS = 120;
+    private static final double ROUTE_SAMPLE_MOVE_SQR = 0.09D;
+    private static final double ROUTE_LOOKBACK_MAX_DISTANCE_SQR = 196.0D;
+    private static final double ROUTE_WAYPOINT_REACHED_SQR = 1.2D;
+    private static final double ROUTE_DIRECT_MOVE_DISTANCE_SQR = 16.0D;
+
+    private static final class RoutePoint {
+        private final Vec3 pos;
+        private final long tick;
+        private final boolean forceDirect;
+
+        private RoutePoint(Vec3 pos, long tick, boolean forceDirect) {
+            this.pos = pos;
+            this.tick = tick;
+            this.forceDirect = forceDirect;
+        }
+    }
 
     public FollowNearestPlayerGoal(PathfinderMob mob, double speedModifier, float startDistance, float stopDistance) {
         this(mob, speedModifier, startDistance, stopDistance, () -> true, null);
@@ -117,6 +142,10 @@ public class FollowNearestPlayerGoal extends Goal {
         this.lastFollowDistanceSqr = -1.0D;
         this.lastProgressTick = 0L;
         this.nextTargetUpdateTick = 0L;
+        this.routeMemory.clear();
+        this.currentRoutePoint = null;
+        this.nextRouteSampleTick = 0L;
+        this.lastTargetOnGround = this.target != null && this.target.onGround();
         this.movementController.reset();
     }
 
@@ -128,6 +157,9 @@ public class FollowNearestPlayerGoal extends Goal {
         this.lastPathPos = null;
         this.lastFollowDistanceSqr = -1.0D;
         this.lastProgressTick = 0L;
+        this.routeMemory.clear();
+        this.currentRoutePoint = null;
+        this.nextRouteSampleTick = 0L;
         this.mob.getNavigation().stop();
     }
 
@@ -160,6 +192,29 @@ public class FollowNearestPlayerGoal extends Goal {
         double speed = this.movementController.update(this.target, this.followPos, gameTime, distanceSqr);
         if (this.movementController.shouldHoldPosition() || speed <= 0.01D) {
             this.mob.getNavigation().stop();
+            return;
+        }
+        if (this.movementController.shouldForceDirectMovementForJump(gameTime)) {
+            this.mob.getNavigation().stop();
+            this.mob.getMoveControl().setWantedPosition(this.followPos.x, this.followPos.y, this.followPos.z, speed);
+            alignRunRotation();
+            return;
+        }
+        if (this.movementController.shouldForceDirectMovementForLadder(gameTime)) {
+            this.mob.getNavigation().stop();
+            this.mob.getMoveControl().setWantedPosition(this.followPos.x, this.followPos.y, this.followPos.z, speed);
+            alignRunRotation();
+            return;
+        }
+        if (shouldUseDirectMoveFromRoute(gameTime)) {
+            this.mob.getNavigation().stop();
+            this.mob.getMoveControl().setWantedPosition(this.followPos.x, this.followPos.y, this.followPos.z, speed);
+            alignRunRotation();
+            return;
+        }
+        if (this.movementController.isGapJumpLocked(gameTime)) {
+            this.mob.getNavigation().stop();
+            alignRunRotation();
             return;
         }
         net.minecraft.world.level.pathfinder.Path currentPath = this.mob.getNavigation().getPath();
@@ -208,6 +263,16 @@ public class FollowNearestPlayerGoal extends Goal {
 
     private void updateFollowTarget(long gameTime) {
         Vec3 playerPos = this.target.position();
+        rememberPlayerRoute(playerPos, gameTime);
+        Vec3 routeFollow = pickRouteFollowPos(playerPos, gameTime);
+        if (routeFollow != null) {
+            if (this.followPos == null || routeFollow.distanceToSqr(this.followPos) >= FOLLOW_POS_EPS_SQR) {
+                this.followPos = routeFollow;
+            }
+            this.lastPlayerPos = playerPos;
+            this.nextTargetUpdateTick = gameTime + ROUTE_SAMPLE_TICKS;
+            return;
+        }
         double distanceSqr = this.mob.distanceToSqr(this.target);
         if (this.followPos == null || this.lastPlayerPos == null) {
             this.followPos = computeFollowPos(playerPos, distanceSqr);
@@ -237,6 +302,88 @@ public class FollowNearestPlayerGoal extends Goal {
         this.followPos = nextFollow;
         this.lastPlayerPos = playerPos;
         this.nextTargetUpdateTick = gameTime + TARGET_UPDATE_TICKS;
+    }
+
+    private void rememberPlayerRoute(Vec3 playerPos, long gameTime) {
+        if (this.target == null || playerPos == null) {
+            return;
+        }
+        trimRouteMemory(gameTime);
+        boolean onGround = this.target.onGround();
+        boolean jumpStarted = !onGround && lastTargetOnGround && this.target.getDeltaMovement().y > 0.08D;
+        RoutePoint last = this.routeMemory.peekLast();
+        double movedSqr = last == null ? Double.MAX_VALUE : last.pos.distanceToSqr(playerPos);
+        boolean shouldSample = jumpStarted || gameTime >= this.nextRouteSampleTick || movedSqr >= ROUTE_SAMPLE_MOVE_SQR;
+        if (shouldSample) {
+            boolean forceDirect = jumpStarted || !onGround;
+            this.routeMemory.addLast(new RoutePoint(playerPos, gameTime, forceDirect));
+            this.nextRouteSampleTick = gameTime + ROUTE_SAMPLE_TICKS;
+        }
+        this.lastTargetOnGround = onGround;
+        trimRouteMemory(gameTime);
+    }
+
+    private Vec3 pickRouteFollowPos(Vec3 playerPos, long gameTime) {
+        trimRouteMemory(gameTime);
+        consumeReachedRoutePoints();
+        RoutePoint picked = null;
+        Iterator<RoutePoint> it = this.routeMemory.descendingIterator();
+        while (it.hasNext()) {
+            RoutePoint point = it.next();
+            double toPlayerSqr = point.pos.distanceToSqr(playerPos);
+            if (toPlayerSqr < FOLLOW_MIN_DISTANCE_SQR) {
+                continue;
+            }
+            if (toPlayerSqr > ROUTE_LOOKBACK_MAX_DISTANCE_SQR) {
+                break;
+            }
+            picked = point;
+            break;
+        }
+        this.currentRoutePoint = picked;
+        return picked != null ? picked.pos : null;
+    }
+
+    private void trimRouteMemory(long gameTime) {
+        while (!this.routeMemory.isEmpty()) {
+            RoutePoint first = this.routeMemory.peekFirst();
+            if (first == null) {
+                break;
+            }
+            if (gameTime - first.tick <= ROUTE_MAX_AGE_TICKS && this.routeMemory.size() <= ROUTE_MAX_POINTS) {
+                break;
+            }
+            this.routeMemory.removeFirst();
+        }
+        if (this.currentRoutePoint != null && gameTime - this.currentRoutePoint.tick > ROUTE_MAX_AGE_TICKS) {
+            this.currentRoutePoint = null;
+        }
+        while (this.routeMemory.size() > ROUTE_MAX_POINTS) {
+            this.routeMemory.removeFirst();
+        }
+    }
+
+    private void consumeReachedRoutePoints() {
+        while (!this.routeMemory.isEmpty()) {
+            RoutePoint first = this.routeMemory.peekFirst();
+            if (first == null) {
+                return;
+            }
+            if (this.mob.position().distanceToSqr(first.pos) > ROUTE_WAYPOINT_REACHED_SQR) {
+                return;
+            }
+            this.routeMemory.removeFirst();
+        }
+    }
+
+    private boolean shouldUseDirectMoveFromRoute(long gameTime) {
+        if (this.currentRoutePoint == null || !this.currentRoutePoint.forceDirect) {
+            return false;
+        }
+        if (gameTime - this.currentRoutePoint.tick > ROUTE_MAX_AGE_TICKS) {
+            return false;
+        }
+        return this.mob.position().distanceToSqr(this.currentRoutePoint.pos) <= ROUTE_DIRECT_MOVE_DISTANCE_SQR;
     }
 
     private Vec3 computeFollowPos(Vec3 playerPos, double distanceSqr) {
