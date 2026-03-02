@@ -253,6 +253,7 @@
   "entity.aicompanion.companion.home.death.recovery.hp": "Восстановление после смерти: %s / %s HP.",
   "entity.aicompanion.companion.home.death.recovery.hp.remove": "",
   "entity.aicompanion.companion.owner.death.coords": "Ты умер на координатах: X=%s Y=%s Z=%s. Я уже рядом.",
+  "entity.aicompanion.companion.home.at_home.teleport": "Я дома. Телепортировать меня к тебе? Осталось %s сек.",
   "entity.aicompanion.companion.where.status": "Я на XYZ: %s %s %s. Телепортировать меня к тебе? Осталось %s сек.",
   "entity.aicompanion.companion.where.button": "[Телепорт]",
   "entity.aicompanion.companion.boat.request": "Ты в лодке. Можно я сяду к тебе? Осталось %s сек.",

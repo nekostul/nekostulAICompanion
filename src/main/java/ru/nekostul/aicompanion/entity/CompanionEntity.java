@@ -9,6 +9,8 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.StringTag;
@@ -173,6 +175,7 @@ public class CompanionEntity extends PathfinderMob {
             "entity.aicompanion.companion.home.death.no_home.command_blocked";
     private static final String HOME_DEATH_RECOVERY_HP_KEY = "entity.aicompanion.companion.home.death.recovery.hp";
     private static final String HOME_DEATH_RECOVERY_HP_REMOVE_KEY = "entity.aicompanion.companion.home.death.recovery.hp.remove";
+    private static final String HOME_AT_HOME_TELEPORT_KEY = "entity.aicompanion.companion.home.at_home.teleport";
     private static final String WHERE_STATUS_KEY = "entity.aicompanion.companion.where.status";
     private static final String WHERE_TELEPORT_BUTTON_KEY = "entity.aicompanion.companion.where.button";
     private static final String OWNER_DEATH_COORDS_KEY = "entity.aicompanion.companion.owner.death.coords";
@@ -222,6 +225,7 @@ public class CompanionEntity extends PathfinderMob {
     private static final int DIMENSION_TELEPORT_TICKS = 10 * 20;
     private static final int WHERE_MIN_DISTANCE = 100;
     private static final int WHERE_COOLDOWN_TICKS = 10 * 20;
+    private static final int HOME_AT_HOME_TELEPORT_COOLDOWN_TICKS = 5 * 20;
     private static final double BOAT_REQUEST_DISTANCE = 12.0D;
     private static final double BOAT_REQUEST_DISTANCE_SQR = BOAT_REQUEST_DISTANCE * BOAT_REQUEST_DISTANCE;
     private static final int HOME_INTERACT_COOLDOWN_TICKS = 1200;
@@ -391,6 +395,7 @@ public class CompanionEntity extends PathfinderMob {
     private UUID pendingWherePlayerId;
     private long pendingWhereUntilTick = -1L;
     private int pendingWhereLastSeconds = -1;
+    private boolean pendingWhereHomeAtHomeNotice;
     private UUID pendingFollowPlayerId;
     private long pendingFollowUntilTick = -1L;
     private int pendingFollowLastSeconds = -1;
@@ -399,6 +404,7 @@ public class CompanionEntity extends PathfinderMob {
     private int pendingBoatLastSeconds = -1;
     private long nextBoatRequestTick = -1L;
     private final Map<UUID, Long> whereCooldowns = new HashMap<>();
+    private final Map<UUID, Long> homeAtHomeTeleportCooldowns = new HashMap<>();
     private final Map<UUID, Long> pendingInventoryOpenClicks = new HashMap<>();
     private long lastHomeRegenTick = -1L;
     private long lastHomeDeathInteractTick = -10000L;
@@ -625,6 +631,9 @@ public class CompanionEntity extends PathfinderMob {
         if (handleHomeRespawnWaitStateMessage(player, message)) {
             return true;
         }
+        if (tryOfferHomeTeleportAfterCommand(player)) {
+            return true;
+        }
         if (recoveringAfterDeathAtHome) {
             return true;
         }
@@ -632,6 +641,26 @@ public class CompanionEntity extends PathfinderMob {
             return true;
         }
         return this.taskCoordinator.handlePlayerMessage(player, message);
+    }
+
+    private boolean tryOfferHomeTeleportAfterCommand(ServerPlayer player) {
+        if (player == null || !this.isAlive() || !isAtHome()) {
+            return false;
+        }
+        if (player.level() != this.level()) {
+            return false;
+        }
+        if (this.distanceToSqr(player) <= (double) WHERE_MIN_DISTANCE * WHERE_MIN_DISTANCE) {
+            return false;
+        }
+        long gameTime = getServerTick();
+        Long lastTick = homeAtHomeTeleportCooldowns.get(player.getUUID());
+        if (lastTick != null && gameTime - lastTick < HOME_AT_HOME_TELEPORT_COOLDOWN_TICKS) {
+            return false;
+        }
+        homeAtHomeTeleportCooldowns.put(player.getUUID(), gameTime);
+        requestWhereTeleport(player, gameTime, true);
+        return true;
     }
 
     public boolean handleHomeRespawnWaitStateMessage(ServerPlayer player, String message) {
@@ -896,7 +925,7 @@ public class CompanionEntity extends PathfinderMob {
             return true;
         }
         clearHomeRequest();
-        startHomeReturn(player);
+        confirmHomeTeleportNow(player);
         return true;
     }
 
@@ -998,7 +1027,7 @@ public class CompanionEntity extends PathfinderMob {
             return true;
         }
         whereCooldowns.put(player.getUUID(), gameTime);
-        requestWhereTeleport(player, gameTime);
+        requestWhereTeleport(player, gameTime, false);
         return true;
     }
 
@@ -1343,17 +1372,19 @@ public class CompanionEntity extends PathfinderMob {
         pendingHomeDistance = 0;
     }
 
-    private void requestWhereTeleport(ServerPlayer player, long gameTime) {
+    private void requestWhereTeleport(ServerPlayer player, long gameTime, boolean homeAtHomeNotice) {
         clearWhereRequest();
         pendingWherePlayerId = player.getUUID();
         pendingWhereUntilTick = gameTime + WHERE_TELEPORT_TICKS;
         pendingWhereLastSeconds = -1;
+        pendingWhereHomeAtHomeNotice = homeAtHomeNotice;
+        String messageKey = homeAtHomeNotice ? HOME_AT_HOME_TELEPORT_KEY : WHERE_STATUS_KEY;
         PENDING_TELEPORT_REQUESTS.remove(player.getUUID());
         PENDING_TELEPORTS.remove(player.getUUID());
         APPROVED_DIMENSION_TELEPORTS.remove(player.getUUID());
         APPROVED_WHERE_TELEPORTS.remove(player.getUUID());
         int secondsLeft = secondsLeft(pendingWhereUntilTick, gameTime);
-        if (!registerPendingTeleportRequest(player, WHERE_STATUS_KEY, pendingWhereUntilTick, secondsLeft)) {
+        if (!registerPendingTeleportRequest(player, messageKey, pendingWhereUntilTick, secondsLeft)) {
             pendingWherePlayerId = null;
             pendingWhereUntilTick = -1L;
             pendingWhereLastSeconds = -1;
@@ -1365,7 +1396,9 @@ public class CompanionEntity extends PathfinderMob {
 
     private void sendWhereMessage(ServerPlayer player, int secondsLeft) {
         BlockPos pos = this.blockPosition();
-        MutableComponent base = Component.translatable(WHERE_STATUS_KEY, pos.getX(), pos.getY(), pos.getZ(), secondsLeft);
+        MutableComponent base = pendingWhereHomeAtHomeNotice
+                ? Component.translatable(HOME_AT_HOME_TELEPORT_KEY, secondsLeft)
+                : Component.translatable(WHERE_STATUS_KEY, pos.getX(), pos.getY(), pos.getZ(), secondsLeft);
         Component button = Component.translatable(WHERE_TELEPORT_BUTTON_KEY)
                 .withStyle(style -> style.withColor(ChatFormatting.AQUA)
                         .withBold(true)
@@ -1378,6 +1411,18 @@ public class CompanionEntity extends PathfinderMob {
             return;
         }
         MutableComponent base = Component.translatable(WHERE_STATUS_KEY, pos.getX(), pos.getY(), pos.getZ(), secondsLeft);
+        Component button = Component.translatable(WHERE_TELEPORT_BUTTON_KEY)
+                .withStyle(style -> style.withColor(ChatFormatting.AQUA)
+                        .withBold(true)
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ainpc tp yes")));
+        sendDirectMessageStatic(player, base.append(Component.literal(" ")).append(button));
+    }
+
+    private static void sendHomeAtHomeTeleportMessageFallback(ServerPlayer player, int secondsLeft) {
+        if (player == null) {
+            return;
+        }
+        MutableComponent base = Component.translatable(HOME_AT_HOME_TELEPORT_KEY, secondsLeft);
         Component button = Component.translatable(WHERE_TELEPORT_BUTTON_KEY)
                 .withStyle(style -> style.withColor(ChatFormatting.AQUA)
                         .withBold(true)
@@ -1411,6 +1456,7 @@ public class CompanionEntity extends PathfinderMob {
         pendingWherePlayerId = null;
         pendingWhereUntilTick = -1L;
         pendingWhereLastSeconds = -1;
+        pendingWhereHomeAtHomeNotice = false;
     }
 
     private void clearFollowRequest(boolean notifyRemove) {
@@ -1816,6 +1862,98 @@ public class CompanionEntity extends PathfinderMob {
         Vec3 target = new Vec3(homePos.getX() + 0.5D, homePos.getY() + 1.0D, homePos.getZ() + 0.5D);
         this.teleportTo(target.x, target.y, target.z);
         this.getNavigation().stop();
+    }
+
+    private void confirmHomeTeleportNow(ServerPlayer player) {
+        if (!isHomeInCurrentLevel()) {
+            if (player != null) {
+                sendReply(player, Component.translatable(HOME_MISSING_KEY));
+            }
+            return;
+        }
+        if (this.mode != CompanionMode.STOPPED && !setMode(CompanionMode.STOPPED)) {
+            return;
+        }
+        returningHome = false;
+        homeLeaveTarget = null;
+        homeReturnPlayerId = null;
+        homeDirectReturn = false;
+        resetHomeMoveTracking();
+        teleportHomeWithEndermanEffect();
+    }
+
+    private void teleportHomeWithEndermanEffect() {
+        if (!isHomeInCurrentLevel()) {
+            return;
+        }
+        Vec3 from = this.position();
+        Vec3 target = new Vec3(homePos.getX() + 0.5D, homePos.getY() + 1.0D, homePos.getZ() + 0.5D);
+        if (this.level() instanceof ServerLevel serverLevel) {
+            spawnEndermanTeleportParticles(serverLevel, from);
+            serverLevel.playSound(
+                    null,
+                    from.x,
+                    from.y + this.getBbHeight() * 0.5D,
+                    from.z,
+                    SoundEvents.ENDERMAN_TELEPORT,
+                    SoundSource.NEUTRAL,
+                    1.0F,
+                    1.0F
+            );
+        }
+        this.teleportTo(target.x, target.y, target.z);
+        this.getNavigation().stop();
+        if (this.level() instanceof ServerLevel serverLevel) {
+            spawnEndermanTeleportParticles(serverLevel, target);
+            serverLevel.playSound(
+                    null,
+                    target.x,
+                    target.y + this.getBbHeight() * 0.5D,
+                    target.z,
+                    SoundEvents.ENDERMAN_TELEPORT,
+                    SoundSource.NEUTRAL,
+                    1.0F,
+                    1.0F
+            );
+        }
+    }
+
+    private void spawnEndermanTeleportParticles(ServerLevel level, Vec3 center) {
+        if (level == null || center == null) {
+            return;
+        }
+        level.sendParticles(
+                ParticleTypes.PORTAL,
+                center.x,
+                center.y + this.getBbHeight() * 0.5D,
+                center.z,
+                48,
+                this.getBbWidth() * 0.6D,
+                this.getBbHeight() * 0.5D,
+                this.getBbWidth() * 0.6D,
+                0.2D
+        );
+    }
+
+    private void teleportToWithEndermanAppearEffect(Vec3 target) {
+        if (target == null) {
+            return;
+        }
+        this.teleportTo(target.x, target.y, target.z);
+        this.getNavigation().stop();
+        if (this.level() instanceof ServerLevel serverLevel) {
+            spawnEndermanTeleportParticles(serverLevel, target);
+            serverLevel.playSound(
+                    null,
+                    target.x,
+                    target.y + this.getBbHeight() * 0.5D,
+                    target.z,
+                    SoundEvents.ENDERMAN_TELEPORT,
+                    SoundSource.NEUTRAL,
+                    1.0F,
+                    1.0F
+            );
+        }
     }
 
     private int homeDistance() {
@@ -3378,7 +3516,7 @@ public class CompanionEntity extends PathfinderMob {
         }
         if (!accepted && DIMENSION_TELEPORT_REQUEST_KEY.equals(request.messageKey)) {
             APPROVED_DIMENSION_TELEPORTS.remove(player.getUUID());
-        } else if (!accepted && WHERE_STATUS_KEY.equals(request.messageKey)) {
+        } else if (!accepted && isWhereTeleportMessageKey(request.messageKey)) {
             APPROVED_WHERE_TELEPORTS.remove(player.getUUID());
         }
         MinecraftServer server = player.getServer();
@@ -3412,7 +3550,7 @@ public class CompanionEntity extends PathfinderMob {
             sendTeleportIgnore(player, TELEPORT_IGNORE_DIMENSION_KEY);
             return true;
         }
-        if (WHERE_STATUS_KEY.equals(request.messageKey)) {
+        if (isWhereTeleportMessageKey(request.messageKey)) {
             if (accepted && (companion == null || !companion.isAlive())) {
                 APPROVED_WHERE_TELEPORTS.add(player.getUUID());
                 sendTeleportIgnore(player, TELEPORT_IGNORE_WHERE_KEY);
@@ -3425,9 +3563,11 @@ public class CompanionEntity extends PathfinderMob {
             }
         }
         boolean shouldFollowAfterTeleport = false;
+        boolean teleportFromHome = false;
         if (companion != null) {
             shouldFollowAfterTeleport = companion.isAtHome()
                     || companion.getMode() == CompanionMode.STOPPED;
+            teleportFromHome = companion.isAtHome();
         }
         if (accepted && companion != null && companion.isAlive()) {
             boolean recoveringAtHome = companion.recoveringAfterDeathAtHome && companion.isAtHome();
@@ -3462,8 +3602,12 @@ public class CompanionEntity extends PathfinderMob {
                     }
                 } else {
                     Vec3 targetPos = companion.resolveTeleportTarget(player);
-                    companion.teleportTo(targetPos.x, targetPos.y, targetPos.z);
-                    companion.getNavigation().stop();
+                    if (teleportFromHome) {
+                        companion.teleportToWithEndermanAppearEffect(targetPos);
+                    } else {
+                        companion.teleportTo(targetPos.x, targetPos.y, targetPos.z);
+                        companion.getNavigation().stop();
+                    }
                 }
                 if (shouldFollowAfterTeleport) {
                     companion.setMode(CompanionMode.AUTONOMOUS);
@@ -3631,15 +3775,19 @@ public class CompanionEntity extends PathfinderMob {
         player.sendSystemMessage(Component.translatable(key));
     }
 
+    private static boolean isWhereTeleportMessageKey(String messageKey) {
+        return WHERE_STATUS_KEY.equals(messageKey) || HOME_AT_HOME_TELEPORT_KEY.equals(messageKey);
+    }
+
     private static boolean usesServerTickClock(String messageKey) {
-        return WHERE_STATUS_KEY.equals(messageKey) || DIMENSION_TELEPORT_REQUEST_KEY.equals(messageKey);
+        return isWhereTeleportMessageKey(messageKey) || DIMENSION_TELEPORT_REQUEST_KEY.equals(messageKey);
     }
 
     private static String getTimedMessageRemovalKey(String messageKey) {
         if (messageKey == null) {
             return null;
         }
-        if (WHERE_STATUS_KEY.equals(messageKey)) {
+        if (isWhereTeleportMessageKey(messageKey)) {
             return TELEPORT_IGNORE_WHERE_KEY;
         }
         if (DIMENSION_TELEPORT_REQUEST_KEY.equals(messageKey)) {
@@ -3733,7 +3881,7 @@ public class CompanionEntity extends PathfinderMob {
                 }
                 continue;
             }
-            if (WHERE_STATUS_KEY.equals(request.messageKey) && request.originPos != null) {
+            if (isWhereTeleportMessageKey(request.messageKey)) {
                 ServerPlayer player = server.getPlayerList().getPlayer(entry.getKey());
                 if (APPROVED_WHERE_TELEPORTS.contains(entry.getKey())) {
                     if (player == null || player.isSpectator() || !player.isAlive()) {
@@ -3755,6 +3903,7 @@ public class CompanionEntity extends PathfinderMob {
                     } else {
                         boolean shouldFollowAfterTeleport = companion.isAtHome()
                                 || companion.getMode() == CompanionMode.STOPPED;
+                        boolean teleportFromHome = companion.isAtHome();
                         boolean teleported = false;
                         if (companion.level() != player.level()) {
                             if (forceTeleportToPlayerDimension(companion, player)
@@ -3767,8 +3916,12 @@ public class CompanionEntity extends PathfinderMob {
                             }
                         } else {
                             Vec3 targetPos = companion.resolveTeleportTarget(player);
-                            companion.teleportTo(targetPos.x, targetPos.y, targetPos.z);
-                            companion.getNavigation().stop();
+                            if (teleportFromHome) {
+                                companion.teleportToWithEndermanAppearEffect(targetPos);
+                            } else {
+                                companion.teleportTo(targetPos.x, targetPos.y, targetPos.z);
+                                companion.getNavigation().stop();
+                            }
                             teleported = true;
                         }
                         if (!teleported) {
@@ -3792,7 +3945,11 @@ public class CompanionEntity extends PathfinderMob {
                 if (secondsLeft != request.lastSeconds) {
                     request.lastSeconds = secondsLeft;
                     if (player != null) {
-                        sendWhereMessageFallback(player, request.originPos, secondsLeft);
+                        if (HOME_AT_HOME_TELEPORT_KEY.equals(request.messageKey)) {
+                            sendHomeAtHomeTeleportMessageFallback(player, secondsLeft);
+                        } else if (request.originPos != null) {
+                            sendWhereMessageFallback(player, request.originPos, secondsLeft);
+                        }
                     }
                 }
             }

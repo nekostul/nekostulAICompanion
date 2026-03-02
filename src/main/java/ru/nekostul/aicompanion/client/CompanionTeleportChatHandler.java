@@ -52,6 +52,7 @@ public final class CompanionTeleportChatHandler {
             "entity.aicompanion.companion.dimension.request",
             "entity.aicompanion.companion.home.confirm",
             "entity.aicompanion.companion.where.status",
+            "entity.aicompanion.companion.home.at_home.teleport",
             "entity.aicompanion.companion.home.follow",
             "entity.aicompanion.companion.inventory.drop.tools.notice"
     );

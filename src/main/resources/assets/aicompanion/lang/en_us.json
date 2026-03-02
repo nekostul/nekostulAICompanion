@@ -253,6 +253,7 @@
   "entity.aicompanion.companion.home.death.recovery.hp": "Post-death recovery: %s / %s HP.",
   "entity.aicompanion.companion.home.death.recovery.hp.remove": "",
   "entity.aicompanion.companion.owner.death.coords": "You died at: X=%s Y=%s Z=%s. I'm already nearby.",
+  "entity.aicompanion.companion.home.at_home.teleport": "I'm home. Teleport me to you? %s seconds left.",
   "entity.aicompanion.companion.where.status": "I'm at XYZ: %s %s %s. Teleport me to you? %s seconds left.",
   "entity.aicompanion.companion.where.button": "[Teleport]",
   "entity.aicompanion.companion.boat.request": "You're in a boat. Can I sit with you? %s seconds left.",
