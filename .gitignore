@@ -12,3 +12,4 @@
 *.toml
 !src/main/resources/META-INF/mods.toml
 *.log
+*.DS_Store
