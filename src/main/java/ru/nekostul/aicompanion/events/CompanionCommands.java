@@ -60,6 +60,16 @@ public final class CompanionCommands {
                                 .executes(CompanionCommands::handleInventory))
                         .then(Commands.literal("gui")
                                 .executes(CompanionCommands::handleGui))
+                        .then(Commands.literal("nickname")
+                                .then(Commands.literal("reset")
+                                        .executes(CompanionCommands::handleNicknameReset))
+                                .then(Commands.argument("name", StringArgumentType.greedyString())
+                                        .executes(CompanionCommands::handleNickname)))
+                        .then(Commands.literal("skin")
+                                .then(Commands.literal("reset")
+                                        .executes(CompanionCommands::handleSkinReset))
+                                .then(Commands.argument("name", StringArgumentType.greedyString())
+                                        .executes(CompanionCommands::handleSkin)))
                         .then(Commands.literal("bug")
                                 .then(Commands.argument("text", StringArgumentType.greedyString())
                                         .executes(CompanionCommands::handleBugReport)))
@@ -148,6 +158,44 @@ public final class CompanionCommands {
             return 0;
         }
         return companion.openInventoryMenu(player) ? 1 : 0;
+    }
+
+    private static int handleNickname(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
+        if (companion == null || !companion.canPlayerControl(player)) {
+            return 0;
+        }
+        String nickname = StringArgumentType.getString(context, "name");
+        return companion.handleNicknameChange(player, nickname) ? 1 : 0;
+    }
+
+    private static int handleNicknameReset(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
+        if (companion == null || !companion.canPlayerControl(player)) {
+            return 0;
+        }
+        return companion.handleNicknameReset(player) ? 1 : 0;
+    }
+
+    private static int handleSkin(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
+        if (companion == null || !companion.canPlayerControl(player)) {
+            return 0;
+        }
+        String skinName = StringArgumentType.getString(context, "name");
+        return companion.handleSkinChange(player, skinName) ? 1 : 0;
+    }
+
+    private static int handleSkinReset(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        CompanionEntity companion = CompanionSingleNpcManager.getActive(player);
+        if (companion == null || !companion.canPlayerControl(player)) {
+            return 0;
+        }
+        return companion.handleSkinReset(player) ? 1 : 0;
     }
 
     private static int handleBugReport(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {

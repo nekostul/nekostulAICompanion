@@ -1,8 +1,13 @@
 package ru.nekostul.aicompanion.entity.ai;
+
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.pathfinder.Node;
 import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -36,11 +41,11 @@ public class FollowNearestPlayerGoal extends Goal {
     private long nextRouteSampleTick;
     private boolean lastTargetOnGround = true;
 
-    private static final double FOLLOW_BEHIND_DISTANCE = 2.6D;
+    private static final double FOLLOW_BEHIND_DISTANCE = 3.0D;
     private static final double FOLLOW_SIDE_DISTANCE = 0.0D;
-    private static final double FOLLOW_BEHIND_FAR_DISTANCE = 3.6D;
-    private static final double FOLLOW_MIN_DISTANCE_SQR = 2.25D;
-    private static final double FOLLOW_MAX_DISTANCE_SQR = 20.25D;
+    private static final double FOLLOW_BEHIND_FAR_DISTANCE = 4.5D;
+    private static final double FOLLOW_MIN_DISTANCE_SQR = 6.25D;
+    private static final double FOLLOW_MAX_DISTANCE_SQR = 42.25D;
     private static final double FOLLOW_STOP_VERTICAL_EPS = 0.9D;
     private static final double PLAYER_MOVE_RECALC_SQR = 1.0D;
     private static final int TARGET_UPDATE_TICKS = 10;
@@ -48,8 +53,8 @@ public class FollowNearestPlayerGoal extends Goal {
     private static final double FOLLOW_POS_EPS_SQR = 0.25D;
     private static final double PATH_RECALC_EPS_SQR = 0.36D;
     private static final double FOLLOW_PROGRESS_EPS_SQR = 0.04D;
-    private static final float RUN_YAW_STEP_DEGREES = 7.0F;
-    private static final float RUN_YAW_DEADZONE_DEGREES = 10.0F;
+    private static final float RUN_YAW_STEP_DEGREES = 4.0F;
+    private static final float RUN_YAW_DEADZONE_DEGREES = 14.0F;
     private static final double RUN_ROTATE_MIN_SPEED_SQR = 1.0E-3D;
     private static final double TARGET_IDLE_SPEED_SQR = 4.0E-4D;
     private static final int ROUTE_SAMPLE_TICKS = 2;
@@ -59,6 +64,9 @@ public class FollowNearestPlayerGoal extends Goal {
     private static final double ROUTE_LOOKBACK_MAX_DISTANCE_SQR = 196.0D;
     private static final double ROUTE_WAYPOINT_REACHED_SQR = 1.2D;
     private static final double ROUTE_DIRECT_MOVE_DISTANCE_SQR = 16.0D;
+    private static final int SAFE_PATH_MAX_DRY_DROP = 1;
+    private static final int SAFE_PATH_WATER_SCAN_DOWN = 6;
+    private static final int SAFE_PATH_MIN_WATER_SIDE_OPENINGS = 1;
 
     private static final class RoutePoint {
         private final Vec3 pos;
@@ -189,7 +197,8 @@ public class FollowNearestPlayerGoal extends Goal {
             this.lastProgressTick = gameTime;
         }
         this.lastFollowDistanceSqr = followDistanceSqr;
-        double speed = this.movementController.update(this.target, this.followPos, gameTime, distanceSqr);
+        double speed = this.movementController.update(this.target, this.followPos, gameTime, distanceSqr,
+                followDistanceSqr);
         if (this.movementController.shouldHoldPosition() || speed <= 0.01D) {
             this.mob.getNavigation().stop();
             return;
@@ -197,28 +206,22 @@ public class FollowNearestPlayerGoal extends Goal {
         if (this.movementController.shouldForceDirectMovementForJump(gameTime)) {
             this.mob.getNavigation().stop();
             this.mob.getMoveControl().setWantedPosition(this.followPos.x, this.followPos.y, this.followPos.z, speed);
-            alignRunRotation();
+            alignRunRotation(this.followPos);
             return;
         }
         if (this.movementController.shouldForceDirectMovementForLadder(gameTime)) {
             this.mob.getNavigation().stop();
             this.mob.getMoveControl().setWantedPosition(this.followPos.x, this.followPos.y, this.followPos.z, speed);
-            alignRunRotation();
-            return;
-        }
-        if (shouldUseDirectMoveFromRoute(gameTime)) {
-            this.mob.getNavigation().stop();
-            this.mob.getMoveControl().setWantedPosition(this.followPos.x, this.followPos.y, this.followPos.z, speed);
-            alignRunRotation();
+            alignRunRotation(this.followPos);
             return;
         }
         if (this.movementController.isGapJumpLocked(gameTime)) {
             this.mob.getNavigation().stop();
-            alignRunRotation();
+            alignRunRotation(this.followPos);
             return;
         }
         net.minecraft.world.level.pathfinder.Path currentPath = this.mob.getNavigation().getPath();
-        alignRunRotation();
+        alignRunRotation(this.followPos);
         if (currentPath == null || currentPath.isDone()) {
             this.mob.getNavigation().moveTo(this.followPos.x, this.followPos.y, this.followPos.z, speed);
             this.lastPathPos = this.followPos;
@@ -240,25 +243,47 @@ public class FollowNearestPlayerGoal extends Goal {
         }
     }
 
-    private void alignRunRotation() {
-        Vec3 motion = this.mob.getDeltaMovement();
-        double vx = motion.x;
-        double vz = motion.z;
+    private void alignRunRotation(Vec3 fallbackTarget) {
+        Vec3 direction = resolveRunDirection(fallbackTarget);
+        double vx = direction.x;
+        double vz = direction.z;
         if (vx * vx + vz * vz < 1.0E-4D) {
             return;
         }
-        if (vx * vx + vz * vz < RUN_ROTATE_MIN_SPEED_SQR) {
+        Vec3 motion = this.mob.getDeltaMovement();
+        if (motion.x * motion.x + motion.z * motion.z < RUN_ROTATE_MIN_SPEED_SQR) {
             return;
         }
         float currentYaw = this.mob.getYRot();
         float desiredYaw = (float) (Mth.atan2(vz, vx) * (180.0D / Math.PI)) - 90.0F;
-        if (Math.abs(Mth.wrapDegrees(desiredYaw - currentYaw)) < RUN_YAW_DEADZONE_DEGREES) {
+        float yawDelta = Math.abs(Mth.wrapDegrees(desiredYaw - currentYaw));
+        if (yawDelta < RUN_YAW_DEADZONE_DEGREES) {
             desiredYaw = currentYaw;
         }
-        float smoothedYaw = Mth.approachDegrees(currentYaw, desiredYaw, RUN_YAW_STEP_DEGREES);
+        float rotateStep = yawDelta >= 45.0F ? RUN_YAW_STEP_DEGREES * 1.5F : RUN_YAW_STEP_DEGREES;
+        float smoothedYaw = Mth.approachDegrees(currentYaw, desiredYaw, rotateStep);
         this.mob.setYRot(smoothedYaw);
         this.mob.setYBodyRot(smoothedYaw);
+        this.mob.setYHeadRot(smoothedYaw);
         this.mob.setXRot(0.0F);
+    }
+
+    private Vec3 resolveRunDirection(Vec3 fallbackTarget) {
+        if (this.mob.getNavigation() != null) {
+            Path path = this.mob.getNavigation().getPath();
+            if (path != null && !path.isDone()) {
+                BlockPos nextNode = path.getNextNodePos();
+                Vec3 toNode = Vec3.atCenterOf(nextNode).subtract(this.mob.position());
+                Vec3 horizontalToNode = new Vec3(toNode.x, 0.0D, toNode.z);
+                if (horizontalToNode.lengthSqr() >= 0.04D) {
+                    return horizontalToNode;
+                }
+            }
+        }
+        if (fallbackTarget == null) {
+            return Vec3.ZERO;
+        }
+        return new Vec3(fallbackTarget.x - this.mob.getX(), 0.0D, fallbackTarget.z - this.mob.getZ());
     }
 
     private void updateFollowTarget(long gameTime) {
@@ -407,18 +432,38 @@ public class FollowNearestPlayerGoal extends Goal {
             preferred = new Vec3(playerPos.x + farther.x, playerPos.y, playerPos.z + farther.z);
         }
         Vec3 behindOnly = new Vec3(playerPos.x + behind.x, playerPos.y, playerPos.z + behind.z);
+        Vec3 fallback = buildFallbackFollowPos(playerPos, forward);
         Vec3 direct = new Vec3(playerPos.x, playerPos.y, playerPos.z);
-        return chooseReachableFollowPos(playerPos, preferred, behindOnly, direct);
+        return chooseReachableFollowPos(playerPos, preferred, behindOnly, fallback, direct);
     }
 
-    private Vec3 chooseReachableFollowPos(Vec3 playerPos, Vec3 preferred, Vec3 behindOnly, Vec3 direct) {
+    private Vec3 chooseReachableFollowPos(Vec3 playerPos, Vec3 preferred, Vec3 behindOnly, Vec3 fallback,
+                                          Vec3 direct) {
         if (isGoodFollowCandidate(playerPos, preferred)) {
             return preferred;
         }
         if (isGoodFollowCandidate(playerPos, behindOnly)) {
             return behindOnly;
         }
-        return direct;
+        if (isGoodFollowCandidate(playerPos, fallback)) {
+            return fallback;
+        }
+        if (isGoodFollowCandidate(playerPos, direct)) {
+            return direct;
+        }
+        return this.followPos != null ? this.followPos : this.mob.position();
+    }
+
+    private Vec3 buildFallbackFollowPos(Vec3 playerPos, Vec3 forward) {
+        Vec3 fromPlayerToMob = new Vec3(this.mob.getX() - playerPos.x, 0.0D, this.mob.getZ() - playerPos.z);
+        if (fromPlayerToMob.lengthSqr() < 1.0E-4D) {
+            fromPlayerToMob = forward.scale(-1.0D);
+        }
+        if (fromPlayerToMob.lengthSqr() < 1.0E-4D) {
+            fromPlayerToMob = new Vec3(0.0D, 0.0D, -1.0D);
+        }
+        fromPlayerToMob = fromPlayerToMob.normalize().scale(FOLLOW_BEHIND_DISTANCE);
+        return new Vec3(playerPos.x + fromPlayerToMob.x, playerPos.y, playerPos.z + fromPlayerToMob.z);
     }
 
     private boolean isGoodFollowCandidate(Vec3 playerPos, Vec3 candidate) {
@@ -444,7 +489,66 @@ public class FollowNearestPlayerGoal extends Goal {
             return false;
         }
         Path path = this.mob.getNavigation().createPath(targetPos.x, targetPos.y, targetPos.z, 0);
-        return path != null && path.canReach();
+        return path != null && path.canReach() && isSafeFollowPath(path);
+    }
+
+    private boolean isSafeFollowPath(Path path) {
+        if (path == null || path.getNodeCount() <= 1) {
+            return true;
+        }
+        BlockPos previous = toBlockPos(path.getNode(0));
+        for (int i = 1; i < path.getNodeCount(); i++) {
+            BlockPos current = toBlockPos(path.getNode(i));
+            int dryDrop = previous.getY() - current.getY();
+            if (dryDrop > SAFE_PATH_MAX_DRY_DROP && !hasSafeWaterLanding(current)) {
+                return false;
+            }
+            previous = current;
+        }
+        return true;
+    }
+
+    private BlockPos toBlockPos(Node node) {
+        return new BlockPos(node.x, node.y, node.z);
+    }
+
+    private boolean hasSafeWaterLanding(BlockPos pos) {
+        if (pos == null) {
+            return false;
+        }
+        for (int depth = 0; depth <= SAFE_PATH_WATER_SCAN_DOWN; depth++) {
+            BlockPos cursor = pos.below(depth);
+            if (this.mob.level().getFluidState(cursor).is(FluidTags.WATER)) {
+                return hasWaterOpening(cursor);
+            }
+            if (!this.mob.level().getBlockState(cursor).getCollisionShape(this.mob.level(), cursor).isEmpty()) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasWaterOpening(BlockPos waterPos) {
+        if (waterPos == null || !this.mob.level().getFluidState(waterPos).is(FluidTags.WATER)) {
+            return false;
+        }
+        BlockPos headPos = waterPos.above();
+        if (!this.mob.level().getFluidState(headPos).is(FluidTags.WATER)
+                && !this.mob.level().getBlockState(headPos).getCollisionShape(this.mob.level(), headPos).isEmpty()) {
+            return false;
+        }
+        int openings = 0;
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            BlockPos side = waterPos.relative(direction);
+            if (this.mob.level().getFluidState(side).is(FluidTags.WATER)
+                    || this.mob.level().getBlockState(side).getCollisionShape(this.mob.level(), side).isEmpty()) {
+                openings++;
+                if (openings >= SAFE_PATH_MIN_WATER_SIDE_OPENINGS) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private boolean canHoldAtCurrentVerticalOffset(Player player) {

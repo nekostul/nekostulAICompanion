@@ -11,6 +11,8 @@ final class CompanionHelpSystem {
     private static final String HELP_HOME_KEY = "entity.aicompanion.companion.help.home";
     private static final String HELP_WHERE_KEY = "entity.aicompanion.companion.help.where";
     private static final String HELP_MINING_KEY = "entity.aicompanion.companion.help.mining";
+    private static final String HELP_NICKNAME_KEY = "entity.aicompanion.companion.help.nickname";
+    private static final String HELP_SKIN_KEY = "entity.aicompanion.companion.help.skin";
     private static final String HELP_AI_KEY = "entity.aicompanion.companion.help.ai";
 
     boolean handleHelp(Player player, String message) {
@@ -39,6 +41,16 @@ final class CompanionHelpSystem {
         if (normalized.contains("\u043f\u043e\u043c\u043e\u0449\u044c \u0434\u043e\u0431\u044b\u0447")
                 || normalized.contains("help mining")) {
             player.sendSystemMessage(Component.translatable(HELP_MINING_KEY));
+            return true;
+        }
+        if (normalized.contains("\u043f\u043e\u043c\u043e\u0449\u044c \u043d\u0438\u043a")
+                || normalized.contains("help nickname")) {
+            player.sendSystemMessage(Component.translatable(HELP_NICKNAME_KEY));
+            return true;
+        }
+        if (normalized.contains("\u043f\u043e\u043c\u043e\u0449\u044c \u0441\u043a\u0438\u043d")
+                || normalized.contains("help skin")) {
+            player.sendSystemMessage(Component.translatable(HELP_SKIN_KEY));
             return true;
         }
         if (normalized.contains("\u043f\u043e\u043c\u043e\u0449\u044c \u0438\u0438")

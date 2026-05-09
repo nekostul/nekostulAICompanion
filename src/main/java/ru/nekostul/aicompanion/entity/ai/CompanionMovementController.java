@@ -16,15 +16,23 @@ final class CompanionMovementController {
 
     private static final double PLAYER_WALK_SPEED = 0.3D;
     private static final double PLAYER_SPRINT_MULTIPLIER = 1.5D;
-    private static final double WALK_DISTANCE_SQR = 16.0D;
-    private static final double RUN_DISTANCE_SQR = 16.0D;
-    private static final double HOLD_DISTANCE_SQR = 4.0D;
+    private static final double WALK_DISTANCE_SQR = 49.0D;
+    private static final double RUN_DISTANCE_SQR = 100.0D;
+    private static final double HOLD_DISTANCE_SQR = 12.25D;
+    private static final double HOLD_FOLLOW_DISTANCE_SQR = 1.0D;
     private static final double HOLD_VERTICAL_EPS = 0.75D;
+    private static final double APPROACH_START_DISTANCE = 6.0D;
+    private static final double APPROACH_START_DISTANCE_SQR = 36.0D;
+    private static final double APPROACH_STOP_DISTANCE = 2.75D;
+    private static final double APPROACH_MIN_SPEED_FACTOR = 0.45D;
+    private static final double FOLLOW_POINT_SLOWDOWN_DISTANCE = 2.25D;
+    private static final double FOLLOW_POINT_SLOWDOWN_DISTANCE_SQR = 5.0625D;
+    private static final double FOLLOW_POINT_MIN_SPEED_FACTOR = 0.38D;
     private static final double PLAYER_IDLE_SPEED = 0.02D;
-    private static final double PLAYER_WALK_RATIO_MIN = 1.0D;
-    private static final double PLAYER_WALK_RATIO_MAX = 1.0D;
-    private static final double PLAYER_RUN_RATIO_MIN = 1.0D;
-    private static final double PLAYER_RUN_RATIO_MAX = 1.0D;
+    private static final double PLAYER_WALK_RATIO_MIN = 0.92D;
+    private static final double PLAYER_WALK_RATIO_MAX = 1.08D;
+    private static final double PLAYER_RUN_RATIO_MIN = 0.96D;
+    private static final double PLAYER_RUN_RATIO_MAX = 1.16D;
     private static final double STYLE_WALK_RATIO_MIN = 0.94D;
     private static final double STYLE_WALK_RATIO_MAX = 1.08D;
     private static final double STYLE_RUN_RATIO_MIN = 0.94D;
@@ -63,8 +71,8 @@ final class CompanionMovementController {
     private static final double LADDER_CLIMB_SPEED = 0.22D;
     private static final double LADDER_FORWARD_FACTOR = 0.65D;
     private static final int LADDER_ASSIST_TICKS = 4;
-    private static final double SPEED_STEP_UP = 0.05D;
-    private static final double SPEED_STEP_DOWN = 0.02D;
+    private static final double SPEED_STEP_UP = 0.018D;
+    private static final double SPEED_STEP_DOWN = 0.028D;
 
     private final PathfinderMob mob;
     private final double maxSpeedModifier;
@@ -96,7 +104,7 @@ final class CompanionMovementController {
         this.currentSpeed = Math.min(walkSpeedModifier(), maxSpeedModifier);
     }
 
-    double update(Player target, Vec3 followPos, long gameTime, double distanceSqr) {
+    double update(Player target, Vec3 followPos, long gameTime, double distanceSqr, double followDistanceSqr) {
         if (target == null || followPos == null) {
             return currentSpeed;
         }
@@ -106,18 +114,8 @@ final class CompanionMovementController {
             currentSpeed = Math.max(currentSpeed, walkSpeedModifier());
             return currentSpeed;
         }
-        if (tryMirrorPlayerJump(target, followPos, gameTime, distanceSqr)) {
-            holdPosition = false;
-            currentSpeed = Math.max(currentSpeed, walkSpeedModifier());
-            return currentSpeed;
-        }
-        if (tryLearnedGapJump(target, followPos, gameTime, distanceSqr)) {
-            holdPosition = false;
-            currentSpeed = Math.max(currentSpeed, walkSpeedModifier());
-            return currentSpeed;
-        }
         safetyLevel = safeMovement.evaluate(followPos);
-        holdPosition = shouldHold(target, distanceSqr);
+        holdPosition = shouldHold(target, distanceSqr, followDistanceSqr);
         if (holdPosition || safetyLevel == CompanionSafeMovement.SafetyLevel.DANGER) {
             currentSpeed = approach(currentSpeed, 0.0D, SPEED_STEP_UP, SPEED_STEP_DOWN);
             return currentSpeed;
@@ -128,7 +126,7 @@ final class CompanionMovementController {
             state = desired;
             stateLockUntilTick = gameTime + STATE_LOCK_TICKS;
         }
-        double wantedSpeed = desiredSpeed(distanceSqr, playerRatio);
+        double wantedSpeed = desiredSpeed(distanceSqr, playerRatio, followDistanceSqr);
         currentSpeed = approach(currentSpeed, wantedSpeed, SPEED_STEP_UP, SPEED_STEP_DOWN);
         tryJump(gameTime, target, followPos);
         return currentSpeed;
@@ -157,7 +155,7 @@ final class CompanionMovementController {
     }
 
     boolean shouldHoldPosition() {
-        return holdPosition;
+        return holdPosition || safetyLevel == CompanionSafeMovement.SafetyLevel.DANGER;
     }
 
     boolean isGapJumpLocked(long gameTime) {
@@ -165,7 +163,7 @@ final class CompanionMovementController {
     }
 
     boolean shouldForceDirectMovementForJump(long gameTime) {
-        return gameTime < pendingPlayerJumpUntilTick && !isGapJumpLocked(gameTime);
+        return false;
     }
 
     boolean shouldForceDirectMovementForLadder(long gameTime) {
@@ -182,24 +180,21 @@ final class CompanionMovementController {
         return MoveState.WALK;
     }
 
-    private double desiredSpeed(double distanceSqr, double playerRatio) {
+    private double desiredSpeed(double distanceSqr, double playerRatio, double followDistanceSqr) {
         double speed;
         double walkSpeed = walkSpeedModifier();
         double runSpeed = runSpeedModifier();
         double styleWalkRatio = clamp(learnedWalkRatio, STYLE_WALK_RATIO_MIN, STYLE_WALK_RATIO_MAX);
         double styleRunRatio = clamp(learnedRunRatio, STYLE_RUN_RATIO_MIN, STYLE_RUN_RATIO_MAX);
-        if (RUN_DISTANCE_SQR <= WALK_DISTANCE_SQR) {
-            if (distanceSqr <= WALK_DISTANCE_SQR) {
-                speed = walkSpeed * clamp(playerRatio, PLAYER_WALK_RATIO_MIN, PLAYER_WALK_RATIO_MAX) * styleWalkRatio;
-            } else {
-                speed = runSpeed * clamp(playerRatio, PLAYER_RUN_RATIO_MIN, PLAYER_RUN_RATIO_MAX) * styleRunRatio;
-            }
-        } else if (distanceSqr <= WALK_DISTANCE_SQR) {
+        if (distanceSqr <= WALK_DISTANCE_SQR) {
             speed = walkSpeed * clamp(playerRatio, PLAYER_WALK_RATIO_MIN, PLAYER_WALK_RATIO_MAX) * styleWalkRatio;
         } else if (distanceSqr >= RUN_DISTANCE_SQR) {
             speed = runSpeed * clamp(playerRatio, PLAYER_RUN_RATIO_MIN, PLAYER_RUN_RATIO_MAX) * styleRunRatio;
         } else {
-            double t = (distanceSqr - WALK_DISTANCE_SQR) / (RUN_DISTANCE_SQR - WALK_DISTANCE_SQR);
+            double walkDistance = Math.sqrt(WALK_DISTANCE_SQR);
+            double runDistance = Math.sqrt(RUN_DISTANCE_SQR);
+            double actualDistance = Math.sqrt(distanceSqr);
+            double t = clamp((actualDistance - walkDistance) / (runDistance - walkDistance), 0.0D, 1.0D);
             double walkBlend = walkSpeedModifier()
                     * clamp(playerRatio, PLAYER_WALK_RATIO_MIN, PLAYER_WALK_RATIO_MAX)
                     * styleWalkRatio;
@@ -208,8 +203,10 @@ final class CompanionMovementController {
                     * styleRunRatio;
             speed = lerp(walkBlend, runBlend, t);
         }
+        speed = applyPlayerApproachSlowdown(speed, distanceSqr, walkSpeed);
+        speed = applyFollowPointSlowdown(speed, followDistanceSqr, walkSpeed);
         if (safetyLevel == CompanionSafeMovement.SafetyLevel.CAUTION) {
-            speed = Math.min(speed, walkSpeedModifier() * 0.85D);
+            speed = Math.min(speed, walkSpeedModifier() * 0.8D);
         }
         return Math.min(speed, maxSpeedModifier);
     }
@@ -338,14 +335,34 @@ final class CompanionMovementController {
         return true;
     }
 
-    private boolean shouldHold(Player target, double distanceSqr) {
+    private boolean shouldHold(Player target, double distanceSqr, double followDistanceSqr) {
         double playerSpeed = horizontalSpeed(target);
         if (playerSpeed < PLAYER_IDLE_SPEED
                 && distanceSqr <= HOLD_DISTANCE_SQR
+                && followDistanceSqr <= HOLD_FOLLOW_DISTANCE_SQR
                 && Math.abs(target.getY() - mob.getY()) <= HOLD_VERTICAL_EPS) {
             return true;
         }
         return false;
+    }
+
+    private double applyPlayerApproachSlowdown(double speed, double distanceSqr, double walkSpeed) {
+        if (distanceSqr >= APPROACH_START_DISTANCE_SQR) {
+            return speed;
+        }
+        double distance = Math.sqrt(Math.max(0.0D, distanceSqr));
+        double t = clamp((distance - APPROACH_STOP_DISTANCE)
+                / Math.max(1.0E-4D, APPROACH_START_DISTANCE - APPROACH_STOP_DISTANCE), 0.0D, 1.0D);
+        return lerp(walkSpeed * APPROACH_MIN_SPEED_FACTOR, speed, smoothStep(t));
+    }
+
+    private double applyFollowPointSlowdown(double speed, double followDistanceSqr, double walkSpeed) {
+        if (followDistanceSqr >= FOLLOW_POINT_SLOWDOWN_DISTANCE_SQR) {
+            return speed;
+        }
+        double distance = Math.sqrt(Math.max(0.0D, followDistanceSqr));
+        double t = clamp(distance / FOLLOW_POINT_SLOWDOWN_DISTANCE, 0.0D, 1.0D);
+        return lerp(walkSpeed * FOLLOW_POINT_MIN_SPEED_FACTOR, speed, smoothStep(t));
     }
 
     private double playerSpeedRatio(Player target) {
@@ -709,6 +726,11 @@ final class CompanionMovementController {
 
     private double lerp(double from, double to, double t) {
         return from + (to - from) * t;
+    }
+
+    private double smoothStep(double t) {
+        double clamped = clamp(t, 0.0D, 1.0D);
+        return clamped * clamped * (3.0D - 2.0D * clamped);
     }
 
     private double clamp(double value, double min, double max) {

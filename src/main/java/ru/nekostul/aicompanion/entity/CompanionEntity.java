@@ -21,6 +21,7 @@ import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.damagesource.DamageTypes;
@@ -29,6 +30,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
+import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.goal.FloatGoal;
@@ -58,6 +60,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.DoorBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
+import net.minecraft.world.level.pathfinder.BlockPathTypes;
 import net.minecraft.world.level.portal.PortalInfo;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.AABB;
@@ -68,6 +71,7 @@ import net.minecraftforge.network.NetworkHooks;
 
 import ru.nekostul.aicompanion.entity.ai.FollowNearestPlayerGoal;
 import ru.nekostul.aicompanion.entity.ai.HoldPositionGoal;
+import ru.nekostul.aicompanion.entity.ai.CompanionSwimmingMoveControl;
 import ru.nekostul.aicompanion.entity.command.CompanionCommandParser;
 import ru.nekostul.aicompanion.entity.food.CompanionFoodHuntController;
 import ru.nekostul.aicompanion.entity.food.CompanionHungerSystem;
@@ -81,6 +85,7 @@ import ru.nekostul.aicompanion.entity.inventory.CompanionInventoryExchange;
 import ru.nekostul.aicompanion.entity.movement.CompanionMovementSpeed;
 import ru.nekostul.aicompanion.entity.movement.CompanionTeleportPositioning;
 import ru.nekostul.aicompanion.entity.mining.CompanionGatheringController;
+import ru.nekostul.aicompanion.skin.CompanionSkinStorage;
 import ru.nekostul.aicompanion.entity.tool.CompanionToolHandler;
 import ru.nekostul.aicompanion.entity.tool.CompanionToolSlot;
 import ru.nekostul.aicompanion.entity.tree.CompanionTreeHarvestController;
@@ -129,6 +134,8 @@ public class CompanionEntity extends PathfinderMob {
     private static final String TOOL_SLOTS_NBT = "CompanionToolSlots";
     private static final String OWNER_NBT = "CompanionOwner";
     private static final String PARTY_NBT = "CompanionParty";
+    private static final String CUSTOM_NICKNAME_NBT = "CompanionCustomNickname";
+    private static final String CUSTOM_SKIN_NBT = "CompanionCustomSkin";
     private static final String HOME_POS_NBT = "CompanionHomePos";
     private static final String HOME_DIM_NBT = "CompanionHomeDim";
     private static final String HOME_SET_COOLDOWN_UNTIL_NBT = "CompanionHomeSetCooldownUntil";
@@ -178,6 +185,13 @@ public class CompanionEntity extends PathfinderMob {
     private static final String HOME_AT_HOME_TELEPORT_KEY = "entity.aicompanion.companion.home.at_home.teleport";
     private static final String WHERE_STATUS_KEY = "entity.aicompanion.companion.where.status";
     private static final String WHERE_TELEPORT_BUTTON_KEY = "entity.aicompanion.companion.where.button";
+    private static final String NICKNAME_SET_KEY = "entity.aicompanion.companion.nickname.set";
+    private static final String NICKNAME_RESET_KEY = "entity.aicompanion.companion.nickname.reset";
+    private static final String NICKNAME_INVALID_KEY = "entity.aicompanion.companion.nickname.invalid";
+    private static final String SKIN_SET_KEY = "entity.aicompanion.companion.skin.set";
+    private static final String SKIN_RESET_KEY = "entity.aicompanion.companion.skin.reset";
+    private static final String SKIN_INVALID_KEY = "entity.aicompanion.companion.skin.invalid";
+    private static final String SKIN_NOT_FOUND_KEY = "entity.aicompanion.companion.skin.not_found";
     private static final String OWNER_DEATH_COORDS_KEY = "entity.aicompanion.companion.owner.death.coords";
     private static final String TELEPORT_IGNORE_HOME_KEY = "entity.aicompanion.companion.teleport.ignore.home";
     private static final String TELEPORT_IGNORE_WHERE_KEY = "entity.aicompanion.companion.teleport.ignore.where";
@@ -251,6 +265,32 @@ public class CompanionEntity extends PathfinderMob {
     private static final int HOME_RECOVERY_FALLBACK_INTERVAL_TICKS = 20;
     private static final int HOME_NO_HOME_REMINDER_TICKS = 60 * 20;
     private static final String HOME_NO_HOME_REMINDER_DISABLE_TOKEN = "__ainpc_home_no_home_reminder_off__";
+    private static final double FOLLOW_LOOK_RELEASE_DISTANCE_SQR = 36.0D;
+    private static final float FOLLOW_LOOK_YAW_LIMIT = 18.0F;
+    private static final float FOLLOW_LOOK_PITCH_LIMIT = 12.0F;
+    private static final float FOLLOW_BODY_LOOK_STEP_DEGREES = 5.0F;
+    private static final float FOLLOW_BODY_LOOK_DEADZONE_DEGREES = 10.0F;
+    private static final int FOLLOW_WATER_SPRINT_DELAY_TICKS = 10;
+    private static final double FOLLOW_WATER_STOP_DISTANCE_SQR = 9.0D;
+    private static final double FOLLOW_WATER_SPRINT_SPEED = 0.37D;
+    private static final double FOLLOW_WATER_SWIM_SPEED = 0.31D;
+    private static final double FOLLOW_WATER_WALK_SPEED = 0.24D;
+    private static final double FOLLOW_WATER_MOTION_BLEND = 0.28D;
+    private static final double FOLLOW_WATER_WALK_BLEND = 0.24D;
+    private static final double FOLLOW_WATER_VERTICAL_BLEND = 0.2D;
+    private static final double FOLLOW_WATER_VERTICAL_FACTOR = 0.14D;
+    private static final double FOLLOW_WATER_MIN_UP_SPEED = 0.035D;
+    private static final double FOLLOW_WATER_MIN_DOWN_SPEED = 0.05D;
+    private static final double FOLLOW_WATER_MAX_VERTICAL_SPEED = 0.18D;
+    private static final double FOLLOW_WATER_WALK_DOWN_SPEED = -0.045D;
+    private static final double FOLLOW_WATER_SUBMERGED_OFFSET = 0.95D;
+    private static final double FOLLOW_WATER_EXIT_RISE_DISTANCE_SQR = 16.0D;
+    private static final double FOLLOW_WATER_SHORE_ASCENT_DISTANCE_SQR = 49.0D;
+    private static final double FOLLOW_WATER_SHORE_TARGET_Y_OFFSET = 0.6D;
+    private static final double FOLLOW_WATER_SHORE_SURFACE_RISE = 0.3D;
+    private static final int FOLLOW_WATER_SHORE_TELEPORT_DELAY_TICKS = 35;
+    private static final int FOLLOW_WATER_DEPTH_SWIM_THRESHOLD = 2;
+    private static final int FOLLOW_WATER_DEPTH_SCAN = 5;
 
     private static final EntityDataAccessor<ItemStack> TOOL_PICKAXE =
             SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
@@ -264,6 +304,8 @@ public class CompanionEntity extends PathfinderMob {
             SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.ITEM_STACK);
     private static final EntityDataAccessor<Boolean> HUNGER_FULL =
             SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.BOOLEAN);
+    private static final EntityDataAccessor<String> CUSTOM_SKIN =
+            SynchedEntityData.defineId(CompanionEntity.class, EntityDataSerializers.STRING);
 
     private static final Map<UUID, CompanionEntity> PENDING_TELEPORTS = new ConcurrentHashMap<>();
     private static final Map<UUID, PendingTeleportRequest> PENDING_TELEPORT_REQUESTS = new ConcurrentHashMap<>();
@@ -414,6 +456,7 @@ public class CompanionEntity extends PathfinderMob {
     private BlockPos homeSetAnchorPos;
     private ResourceLocation homeSetAnchorDimension;
     private boolean homeSetFreeRadiusActive;
+    private String customNickname = "";
     private boolean permanentDeathOnNextDeath;
     private boolean waitingForHomeRespawn;
     private boolean recoveringAfterDeathAtHome;
@@ -428,11 +471,17 @@ public class CompanionEntity extends PathfinderMob {
     private UUID ownerId;
     private final Set<UUID> partyMembers = new HashSet<>();
     private final Map<String, ManagedDoubleDoor> trackedDoubleDoors = new HashMap<>();
+    private final net.minecraft.world.entity.ai.control.MoveControl landMoveControl;
+    private final CompanionSwimmingMoveControl followWaterSwimMoveControl;
+    private ResourceKey<Level> forcedChunkDimension;
+    private ChunkPos forcedChunkPos;
+    private int followWaterTicks;
+    private int followWaterSprintTicks;
+    private boolean followWaterSprintActive;
 
     public CompanionEntity(EntityType<? extends PathfinderMob> type, Level level) {
         super(type, level);
-        this.setCustomName(Component.literal(DISPLAY_NAME));
-        this.setCustomNameVisible(true);
+        applyResolvedDisplayName();
         this.inventory = new CompanionInventory(this, INVENTORY_SIZE);
         this.equipment = new CompanionEquipment(this, inventory);
         this.inventoryExchange = new CompanionInventoryExchange(this, inventory);
@@ -452,10 +501,21 @@ public class CompanionEntity extends PathfinderMob {
         this.taskCoordinator = new CompanionTaskCoordinator(this, inventory, equipment, gatheringController,
                 treeHarvestController, deliveryController, bucketHandler, commandParser, helpSystem,
                 inventoryExchange, torchHandler);
+        this.landMoveControl = this.moveControl;
+        this.followWaterSwimMoveControl = new CompanionSwimmingMoveControl(this, 85, 90, 1.0F, 0.95F, false);
         if (this.getNavigation() instanceof GroundPathNavigation navigation) {
             navigation.setCanOpenDoors(true);
             navigation.setCanPassDoors(true);
+            navigation.setCanFloat(true);
         }
+        this.setPathfindingMalus(BlockPathTypes.WATER, 0.0F);
+        this.setPathfindingMalus(BlockPathTypes.WATER_BORDER, 0.0F);
+    }
+
+    @Override
+    protected void customServerAiStep() {
+        super.customServerAiStep();
+        tickFollowWaterMovement(resolveFollowOwnerPlayer(), this.level().getGameTime());
     }
 
     @Override
@@ -467,6 +527,7 @@ public class CompanionEntity extends PathfinderMob {
         this.entityData.define(TOOL_SWORD, ItemStack.EMPTY);
         this.entityData.define(FOOD_SLOT, ItemStack.EMPTY);
         this.entityData.define(HUNGER_FULL, true);
+        this.entityData.define(CUSTOM_SKIN, "");
     }
 
     @Override
@@ -474,8 +535,41 @@ public class CompanionEntity extends PathfinderMob {
         super.onAddedToWorld();
         if (!this.level().isClientSide) {
             ensureOwnerFromNearby();
+            updateForcedChunkLoading();
         }
         CompanionSingleNpcManager.register(this);
+    }
+
+    private void updateForcedChunkLoading() {
+        if (!(this.level() instanceof ServerLevel serverLevel)) {
+            return;
+        }
+        ChunkPos currentChunkPos = this.chunkPosition();
+        ResourceKey<Level> currentDimension = serverLevel.dimension();
+        if (currentDimension.equals(this.forcedChunkDimension) && currentChunkPos.equals(this.forcedChunkPos)) {
+            return;
+        }
+        releaseForcedChunkLoading();
+        serverLevel.setChunkForced(currentChunkPos.x, currentChunkPos.z, true);
+        this.forcedChunkDimension = currentDimension;
+        this.forcedChunkPos = currentChunkPos;
+    }
+
+    private void releaseForcedChunkLoading() {
+        if (this.forcedChunkDimension == null || this.forcedChunkPos == null) {
+            this.forcedChunkDimension = null;
+            this.forcedChunkPos = null;
+            return;
+        }
+        MinecraftServer server = this.getServer();
+        if (server != null) {
+            ServerLevel forcedLevel = server.getLevel(this.forcedChunkDimension);
+            if (forcedLevel != null) {
+                forcedLevel.setChunkForced(this.forcedChunkPos.x, this.forcedChunkPos.z, false);
+            }
+        }
+        this.forcedChunkDimension = null;
+        this.forcedChunkPos = null;
     }
 
     @Override
@@ -624,6 +718,65 @@ public class CompanionEntity extends PathfinderMob {
         return removed;
     }
 
+    public String getCustomSkinName() {
+        return this.entityData.get(CUSTOM_SKIN);
+    }
+
+    public boolean handleNicknameChange(ServerPlayer player, String rawNickname) {
+        if (!canPlayerControl(player)) {
+            return false;
+        }
+        String nickname = normalizeNickname(rawNickname);
+        if (nickname.isBlank()) {
+            sendReply(player, Component.translatable(NICKNAME_INVALID_KEY));
+            return true;
+        }
+        setCustomNickname(nickname);
+        sendReply(player, Component.translatable(NICKNAME_SET_KEY, nickname));
+        return true;
+    }
+
+    public boolean handleNicknameReset(ServerPlayer player) {
+        if (!canPlayerControl(player)) {
+            return false;
+        }
+        setCustomNickname("");
+        sendReply(player, Component.translatable(NICKNAME_RESET_KEY));
+        return true;
+    }
+
+    public boolean handleSkinChange(ServerPlayer player, String rawSkinName) {
+        if (!canPlayerControl(player)) {
+            return false;
+        }
+        String skinName = CompanionSkinStorage.normalizeSkinName(rawSkinName);
+        if (skinName.isBlank()) {
+            sendReply(player, Component.translatable(SKIN_INVALID_KEY));
+            return true;
+        }
+        if (CompanionSkinStorage.findSkinFile(skinName).isEmpty()) {
+            sendReply(player, Component.translatable(
+                    SKIN_NOT_FOUND_KEY,
+                    skinName,
+                    skinName,
+                    CompanionSkinStorage.getSkinDirectoryName()
+            ));
+            return true;
+        }
+        setCustomSkinName(skinName);
+        sendReply(player, Component.translatable(SKIN_SET_KEY, skinName));
+        return true;
+    }
+
+    public boolean handleSkinReset(ServerPlayer player) {
+        if (!canPlayerControl(player)) {
+            return false;
+        }
+        setCustomSkinName("");
+        sendReply(player, Component.translatable(SKIN_RESET_KEY));
+        return true;
+    }
+
     public boolean handlePlayerCommand(ServerPlayer player, String message) {
         if (!canPlayerControl(player)) {
             return false;
@@ -702,7 +855,7 @@ public class CompanionEntity extends PathfinderMob {
         NetworkHooks.openScreen(player, new SimpleMenuProvider(
                 (containerId, playerInventory, ignoredPlayer) ->
                         new ChestMenu(MenuType.GENERIC_9x4, containerId, playerInventory, container, 4),
-                Component.literal(DISPLAY_NAME)));
+                Component.literal(getCompanionDisplayNameText())));
         return true;
     }
 
@@ -1027,7 +1180,7 @@ public class CompanionEntity extends PathfinderMob {
             return true;
         }
         whereCooldowns.put(player.getUUID(), gameTime);
-        requestWhereTeleport(player, gameTime, false);
+        requestWhereTeleport(player, gameTime, isAtHome());
         return true;
     }
 
@@ -1059,12 +1212,30 @@ public class CompanionEntity extends PathfinderMob {
         WHERE_FALLBACK_COOLDOWNS.put(player.getUUID(), gameTime);
         long untilTick = gameTime + WHERE_TELEPORT_TICKS;
         int secondsLeft = secondsLeftStatic(untilTick, gameTime);
+        boolean homeAtHomeNotice = isFallbackAtHome(levelKey, lastPos);
+        String messageKey = homeAtHomeNotice ? HOME_AT_HOME_TELEPORT_KEY : WHERE_STATUS_KEY;
         PENDING_TELEPORT_REQUESTS.remove(player.getUUID());
         PENDING_TELEPORTS.remove(player.getUUID());
         APPROVED_WHERE_TELEPORTS.remove(player.getUUID());
-        registerPendingTeleportRequest(player, companionId, levelKey, lastPos, WHERE_STATUS_KEY, untilTick, secondsLeft);
-        sendWhereMessageFallback(player, lastPos, secondsLeft);
+        registerPendingTeleportRequest(player, companionId, levelKey, lastPos, messageKey, untilTick, secondsLeft);
+        if (homeAtHomeNotice) {
+            sendHomeAtHomeTeleportMessageFallback(player, secondsLeft);
+        } else {
+            sendWhereMessageFallback(player, lastPos, secondsLeft);
+        }
         return true;
+    }
+
+    private static boolean isFallbackAtHome(ResourceKey<Level> levelKey, BlockPos lastPos) {
+        if (levelKey == null || lastPos == null) {
+            return false;
+        }
+        ResourceKey<Level> homeLevelKey = CompanionSingleNpcManager.getLastHomeDimension();
+        BlockPos homePos = CompanionSingleNpcManager.getLastHomePos();
+        return homePos != null
+                && homeLevelKey != null
+                && homeLevelKey.equals(levelKey)
+                && lastPos.below().equals(homePos);
     }
 
     private boolean ensureOwner(ServerPlayer player) {
@@ -2044,6 +2215,12 @@ public class CompanionEntity extends PathfinderMob {
         super.addAdditionalSaveData(tag);
         tag.putString(MODE_NBT, this.mode.name());
         tag.putBoolean(GREETED_NBT, this.hasGreeted);
+        if (!this.customNickname.isBlank()) {
+            tag.putString(CUSTOM_NICKNAME_NBT, this.customNickname);
+        }
+        if (!getCustomSkinName().isBlank()) {
+            tag.putString(CUSTOM_SKIN_NBT, getCustomSkinName());
+        }
         CompoundTag inventoryTag = new CompoundTag();
         this.inventory.saveToTag(inventoryTag);
         tag.put(INVENTORY_NBT, inventoryTag);
@@ -2115,6 +2292,8 @@ public class CompanionEntity extends PathfinderMob {
                 this.mode = CompanionMode.AUTONOMOUS;
             }
         }
+        setCustomNickname(tag.contains(CUSTOM_NICKNAME_NBT) ? tag.getString(CUSTOM_NICKNAME_NBT) : "");
+        setCustomSkinName(tag.contains(CUSTOM_SKIN_NBT) ? tag.getString(CUSTOM_SKIN_NBT) : "");
         this.hasGreeted = tag.getBoolean(GREETED_NBT);
         if (tag.contains(INVENTORY_NBT)) {
             CompoundTag inventoryTag = tag.getCompound(INVENTORY_NBT);
@@ -2214,6 +2393,7 @@ public class CompanionEntity extends PathfinderMob {
         if (!this.level().isClientSide) {
             long gameTime = this.level().getGameTime();
             Player ownerPlayer = resolveFollowOwnerPlayer();
+            updateForcedChunkLoading();
             CompanionSingleNpcManager.updateState(this, this.taskCoordinator.isBusy(),
                     this.lastTeleportCycleTick, this.lastTeleportOriginalTick);
             tickSetHomeCooldown(gameTime, null);
@@ -2271,7 +2451,408 @@ public class CompanionEntity extends PathfinderMob {
             hideSwordWhileInBoat();
             syncAdjacentDoubleDoors();
             tickTeleportRequest();
+            if (shouldLookAtFollowOwner(ownerPlayer, gameTime)) {
+                lookAtFollowOwner(ownerPlayer);
+            } else if (shouldLockFollowHeadToBody(gameTime)) {
+                lockFollowHeadToBody();
+            }
         }
+    }
+
+    private void setCustomSkinName(String rawSkinName) {
+        String skinName = CompanionSkinStorage.normalizeSkinName(rawSkinName);
+        this.entityData.set(CUSTOM_SKIN, skinName);
+    }
+
+    private void setCustomNickname(String rawNickname) {
+        this.customNickname = normalizeNickname(rawNickname);
+        applyResolvedDisplayName();
+    }
+
+    private void applyResolvedDisplayName() {
+        this.setCustomName(Component.literal(getCompanionDisplayNameText()));
+        this.setCustomNameVisible(true);
+    }
+
+    private String getCompanionDisplayNameText() {
+        return this.customNickname == null || this.customNickname.isBlank() ? DISPLAY_NAME : this.customNickname;
+    }
+
+    private static String normalizeNickname(String rawNickname) {
+        if (rawNickname == null) {
+            return "";
+        }
+        String nickname = rawNickname
+                .replace('\r', ' ')
+                .replace('\n', ' ')
+                .trim();
+        return nickname.isBlank() ? "" : nickname;
+    }
+
+    private void tickFollowWaterMovement(Player ownerPlayer, long gameTime) {
+        if (!shouldUseFollowWaterAssist(ownerPlayer, gameTime)) {
+            resetFollowWaterMovement();
+            return;
+        }
+        this.setAirSupply(this.getMaxAirSupply());
+        int waterDepth = resolveFollowWaterDepth();
+        boolean followWaterSwimActive = isFollowWaterSwimActive();
+        if (!followWaterSwimActive && waterDepth < FOLLOW_WATER_DEPTH_SWIM_THRESHOLD) {
+            applyShallowFollowWaterWalk(ownerPlayer);
+            return;
+        }
+        followWaterTicks++;
+        followWaterSprintTicks = Math.max(followWaterSprintTicks + 1, followWaterTicks);
+        if (tryTeleportFollowOutOfWater(ownerPlayer)) {
+            resetFollowWaterMovement();
+            return;
+        }
+        if (followWaterTicks < FOLLOW_WATER_SPRINT_DELAY_TICKS) {
+            applyFollowWaterSwimApproach(ownerPlayer);
+            return;
+        }
+        followWaterSprintActive = true;
+        applyFollowWaterSprint(ownerPlayer);
+    }
+
+    private boolean shouldUseFollowWaterAssist(Player ownerPlayer, long gameTime) {
+        if (ownerPlayer == null || !ownerPlayer.isAlive() || ownerPlayer.isSpectator()) {
+            return false;
+        }
+        if (!isFollowModeActive()) {
+            return false;
+        }
+        if (this.getTarget() != null || hostilePlayerTargetId != null) {
+            return false;
+        }
+        if (combatController.isEngaged(gameTime) || this.isPassenger()) {
+            return false;
+        }
+        if (!this.isInWaterOrBubble() || this.isInLava()) {
+            return false;
+        }
+        if (isFollowWaterSwimActive()) {
+            return true;
+        }
+        if (!ownerPlayer.isInWaterOrBubble()) {
+            return true;
+        }
+        return this.distanceToSqr(ownerPlayer) > FOLLOW_WATER_STOP_DISTANCE_SQR;
+    }
+
+    private int resolveFollowWaterDepth() {
+        BlockPos feet = BlockPos.containing(this.getX(), this.getBoundingBox().minY + 0.1D, this.getZ());
+        int depth = 0;
+        for (int i = 0; i < FOLLOW_WATER_DEPTH_SCAN; i++) {
+            if (!this.level().getFluidState(feet.above(i)).is(FluidTags.WATER)) {
+                break;
+            }
+            depth++;
+        }
+        return depth;
+    }
+
+    private boolean isFollowWaterSwimActive() {
+        return this.isInWaterOrBubble() && (followWaterSprintActive || followWaterTicks > 0);
+    }
+
+    private void applyShallowFollowWaterWalk(Player ownerPlayer) {
+        if (ownerPlayer == null) {
+            return;
+        }
+        useLandMoveControl();
+        boolean wasFollowWaterSwimActive = isFollowWaterSwimActive();
+        if (wasFollowWaterSwimActive) {
+            this.setSwimming(false);
+            this.setSprinting(false);
+            if (this.getPose() == Pose.SWIMMING) {
+                this.setPose(Pose.STANDING);
+            }
+        }
+        followWaterTicks = 0;
+        followWaterSprintTicks = 0;
+        followWaterSprintActive = false;
+        Vec3 toOwner = new Vec3(ownerPlayer.getX() - this.getX(), 0.0D, ownerPlayer.getZ() - this.getZ());
+        if (toOwner.lengthSqr() < 1.0E-4D) {
+            return;
+        }
+        Vec3 direction = toOwner.normalize();
+        Vec3 motion = this.getDeltaMovement();
+        double nextX = Mth.lerp(FOLLOW_WATER_WALK_BLEND, motion.x, direction.x * FOLLOW_WATER_WALK_SPEED);
+        double nextZ = Mth.lerp(FOLLOW_WATER_WALK_BLEND, motion.z, direction.z * FOLLOW_WATER_WALK_SPEED);
+        double nextY = this.onGround() ? Math.min(motion.y, 0.0D) : FOLLOW_WATER_WALK_DOWN_SPEED;
+        this.getMoveControl().setWantedPosition(ownerPlayer.getX(), this.getY(), ownerPlayer.getZ(),
+                CompanionMovementSpeed.strictByAttribute(this, FOLLOW_WATER_WALK_SPEED));
+        this.setDeltaMovement(nextX, nextY, nextZ);
+        this.hasImpulse = true;
+        this.fallDistance = 0.0F;
+    }
+
+    private void applyFollowWaterSwimApproach(Player ownerPlayer) {
+        followWaterSprintActive = false;
+        applyFollowWaterSwimMovement(ownerPlayer, FOLLOW_WATER_SWIM_SPEED, false, false);
+    }
+
+    private void applyFollowWaterSprint(Player ownerPlayer) {
+        if (!followWaterSprintActive) {
+            snapToFollowWaterSprintDepth(ownerPlayer);
+        }
+        followWaterSprintActive = true;
+        applyFollowWaterSwimMovement(ownerPlayer, FOLLOW_WATER_SPRINT_SPEED, true, true);
+    }
+
+    private void applyFollowWaterSwimMovement(Player ownerPlayer, double desiredSpeed, boolean sprinting,
+                                              boolean submerged) {
+        if (ownerPlayer == null) {
+            return;
+        }
+        useFollowWaterSwimMoveControl();
+        this.getNavigation().stop();
+        this.setSprinting(sprinting);
+        this.setSwimming(true);
+        if (this.getPose() != Pose.SWIMMING) {
+            this.setPose(Pose.SWIMMING);
+        }
+        double targetY = submerged ? resolveFollowWaterTargetY(ownerPlayer) : resolveFollowWaterSurfaceTargetY();
+        Vec3 toOwner = new Vec3(ownerPlayer.getX() - this.getX(), targetY - this.getY(), ownerPlayer.getZ() - this.getZ());
+        Vec3 horizontal = new Vec3(toOwner.x, 0.0D, toOwner.z);
+        if (horizontal.lengthSqr() < 1.0E-4D) {
+            Vec3 ownerLook = ownerPlayer.getLookAngle();
+            horizontal = new Vec3(ownerLook.x, 0.0D, ownerLook.z);
+        }
+        if (horizontal.lengthSqr() < 1.0E-4D) {
+            return;
+        }
+        Vec3 direction = horizontal.normalize();
+        float desiredYaw = (float) (Mth.atan2(direction.z, direction.x) * (180.0D / Math.PI)) - 90.0F;
+        float smoothedYaw = Mth.approachDegrees(this.getYRot(), desiredYaw, 8.0F);
+        this.setYRot(smoothedYaw);
+        this.setYBodyRot(smoothedYaw);
+        this.setYHeadRot(smoothedYaw);
+        this.getMoveControl().setWantedPosition(ownerPlayer.getX(), targetY, ownerPlayer.getZ(),
+                CompanionMovementSpeed.strictByAttribute(this, desiredSpeed));
+        if (submerged && this.getY() > targetY + 0.04D) {
+            Vec3 motion = this.getDeltaMovement();
+            this.setDeltaMovement(motion.x, Math.min(motion.y - 0.08D, -0.18D), motion.z);
+        }
+        this.hasImpulse = true;
+        this.fallDistance = 0.0F;
+    }
+
+    private void snapToFollowWaterSprintDepth(Player ownerPlayer) {
+        if (ownerPlayer == null) {
+            return;
+        }
+        double targetY = resolveFollowWaterTargetY(ownerPlayer);
+        if (this.getY() <= targetY + 0.04D) {
+            return;
+        }
+        this.setPos(this.getX(), targetY, this.getZ());
+        Vec3 motion = this.getDeltaMovement();
+        this.setDeltaMovement(motion.x, Math.min(motion.y, -0.08D), motion.z);
+        this.hasImpulse = true;
+    }
+
+    private double resolveFollowWaterTargetY(Player ownerPlayer) {
+        if (ownerPlayer == null) {
+            return this.getY();
+        }
+        if (ownerPlayer.isInWaterOrBubble()) {
+            return ownerPlayer.getEyeY() - FOLLOW_WATER_SUBMERGED_OFFSET;
+        }
+        double waterSurfaceY = resolveLocalWaterSurfaceY();
+        if (waterSurfaceY > this.getY() - 1.0D) {
+            return waterSurfaceY - FOLLOW_WATER_SUBMERGED_OFFSET;
+        }
+        return this.getY();
+    }
+
+    private double resolveFollowWaterSurfaceTargetY() {
+        double waterSurfaceY = resolveLocalWaterSurfaceY();
+        return waterSurfaceY > this.getY() - 1.0D ? Math.max(this.getY(), waterSurfaceY - 0.18D) : this.getY();
+    }
+
+    private double resolveLocalWaterSurfaceY() {
+        BlockPos feet = BlockPos.containing(this.getX(), this.getBoundingBox().minY + 0.1D, this.getZ());
+        int topWaterY = Integer.MIN_VALUE;
+        for (int i = 0; i < FOLLOW_WATER_DEPTH_SCAN; i++) {
+            BlockPos cursor = feet.above(i);
+            if (!this.level().getFluidState(cursor).is(FluidTags.WATER)) {
+                break;
+            }
+            topWaterY = cursor.getY();
+        }
+        return topWaterY == Integer.MIN_VALUE ? this.getY() : topWaterY + 1.0D;
+    }
+
+    private void resetFollowWaterMovement() {
+        boolean wasFollowWaterSwimActive = isFollowWaterSwimActive();
+        followWaterTicks = 0;
+        followWaterSprintTicks = 0;
+        useLandMoveControl();
+        if (wasFollowWaterSwimActive) {
+            this.setSwimming(false);
+            this.setSprinting(false);
+            if (this.getPose() == Pose.SWIMMING) {
+                this.setPose(Pose.STANDING);
+            }
+        }
+        followWaterSprintActive = false;
+    }
+
+    private boolean tryTeleportFollowOutOfWater(Player ownerPlayer) {
+        if (ownerPlayer == null || ownerPlayer.isInWaterOrBubble()) {
+            return false;
+        }
+        if (followWaterTicks < FOLLOW_WATER_SHORE_TELEPORT_DELAY_TICKS) {
+            return false;
+        }
+        BlockPos feet = BlockPos.containing(this.getX(), this.getBoundingBox().minY + 0.1D, this.getZ());
+        int stepX = Integer.compare(Mth.floor(ownerPlayer.getX()), feet.getX());
+        int stepZ = Integer.compare(Mth.floor(ownerPlayer.getZ()), feet.getZ());
+        int[][] offsets = new int[][]{
+                {stepX, stepZ},
+                {stepX, 0},
+                {0, stepZ}
+        };
+        for (int[] offset : offsets) {
+            if (offset[0] == 0 && offset[1] == 0) {
+                continue;
+            }
+            BlockPos nextPos = feet.offset(offset[0], 0, offset[1]);
+            if (this.level().getFluidState(nextPos).is(FluidTags.WATER)
+                    || this.level().getFluidState(nextPos.above()).is(FluidTags.WATER)) {
+                continue;
+            }
+            Vec3 candidate = CompanionTeleportPositioning.adjustTeleportY(
+                    this,
+                    new Vec3(nextPos.getX() + 0.5D, this.getY(), nextPos.getZ() + 0.5D),
+                    2,
+                    2
+            );
+            if (candidate == null) {
+                continue;
+            }
+            BlockPos standPos = BlockPos.containing(candidate);
+            if (this.level().getFluidState(standPos).is(FluidTags.WATER)
+                    || this.level().getFluidState(standPos.above()).is(FluidTags.WATER)) {
+                continue;
+            }
+            this.teleportTo(candidate.x, candidate.y, candidate.z);
+            this.setDeltaMovement(Vec3.ZERO);
+            return true;
+        }
+        return false;
+    }
+
+    private void useFollowWaterSwimMoveControl() {
+        if (this.moveControl != this.followWaterSwimMoveControl) {
+            this.moveControl = this.followWaterSwimMoveControl;
+        }
+    }
+
+    private void useLandMoveControl() {
+        if (this.moveControl != this.landMoveControl) {
+            this.moveControl = this.landMoveControl;
+        }
+    }
+
+    @Override
+    public boolean canBreatheUnderwater() {
+        return true;
+    }
+
+    @Override
+    public void updateSwimming() {
+        if (isFollowWaterSwimActive() && !this.isPassenger()) {
+            this.setSwimming(true);
+            return;
+        }
+        super.updateSwimming();
+    }
+
+    private boolean shouldLookAtFollowOwner(Player ownerPlayer, long gameTime) {
+        if (ownerPlayer == null || !ownerPlayer.isAlive() || ownerPlayer.isSpectator()) {
+            return false;
+        }
+        if (!isFollowHeadControlAllowed(gameTime)) {
+            return false;
+        }
+        if (this.distanceToSqr(ownerPlayer) <= FOLLOW_LOOK_RELEASE_DISTANCE_SQR) {
+            return false;
+        }
+        double motionSqr = this.getDeltaMovement().x * this.getDeltaMovement().x
+                + this.getDeltaMovement().z * this.getDeltaMovement().z;
+        return motionSqr > 1.0E-4D || !this.getNavigation().isDone();
+    }
+
+    private void lookAtFollowOwner(Player ownerPlayer) {
+        if (ownerPlayer == null) {
+            return;
+        }
+        alignFollowBodyToOwner(ownerPlayer);
+        this.getLookControl().setLookAt(ownerPlayer, FOLLOW_LOOK_YAW_LIMIT, FOLLOW_LOOK_PITCH_LIMIT);
+    }
+
+    private void alignFollowBodyToOwner(Player ownerPlayer) {
+        if (ownerPlayer == null) {
+            return;
+        }
+        double dx = ownerPlayer.getX() - this.getX();
+        double dz = ownerPlayer.getZ() - this.getZ();
+        if (dx * dx + dz * dz < 1.0E-4D) {
+            return;
+        }
+        float currentYaw = this.getYRot();
+        float desiredYaw = (float) (Mth.atan2(dz, dx) * (180.0D / Math.PI)) - 90.0F;
+        float yawDelta = Math.abs(Mth.wrapDegrees(desiredYaw - currentYaw));
+        if (yawDelta < FOLLOW_BODY_LOOK_DEADZONE_DEGREES) {
+            desiredYaw = currentYaw;
+        }
+        float smoothedYaw = Mth.approachDegrees(currentYaw, desiredYaw, FOLLOW_BODY_LOOK_STEP_DEGREES);
+        this.setYRot(smoothedYaw);
+        this.setYBodyRot(smoothedYaw);
+        this.yRotO = smoothedYaw;
+        this.yBodyRotO = smoothedYaw;
+    }
+
+    private boolean shouldLockFollowHeadToBody(long gameTime) {
+        if (!isFollowHeadControlAllowed(gameTime)) {
+            return false;
+        }
+        double motionSqr = this.getDeltaMovement().x * this.getDeltaMovement().x
+                + this.getDeltaMovement().z * this.getDeltaMovement().z;
+        return motionSqr > 1.0E-4D || !this.getNavigation().isDone();
+    }
+
+    private boolean isFollowHeadControlAllowed(long gameTime) {
+        if (!this.isAlive()) {
+            return false;
+        }
+        if (!isFollowModeActive()) {
+            return false;
+        }
+        if (isFollowWaterSwimActive()) {
+            return false;
+        }
+        if (this.getTarget() != null || hostilePlayerTargetId != null) {
+            return false;
+        }
+        if (combatController.isEngaged(gameTime)) {
+            return false;
+        }
+        return true;
+    }
+
+    private void lockFollowHeadToBody() {
+        float yaw = this.getYRot();
+        this.setYBodyRot(yaw);
+        this.setYHeadRot(yaw);
+        this.yBodyRotO = yaw;
+        this.yHeadRotO = yaw;
+        this.yRotO = yaw;
+        this.setXRot(0.0F);
+        this.xRotO = 0.0F;
     }
 
     @Override
@@ -2486,6 +3067,7 @@ public class CompanionEntity extends PathfinderMob {
 
     @Override
     public void remove(RemovalReason reason) {
+        releaseForcedChunkLoading();
         if (!this.isAlive()) {
             clearTeleportRequest();
             clearTeleportReminder();
@@ -2567,14 +3149,14 @@ public class CompanionEntity extends PathfinderMob {
 
     private void sendReaction(Component message) {
         AABB range = this.getBoundingBox().inflate(REACTION_RANGE);
-        Component fullMessage = Component.literal(DISPLAY_NAME + ": ").append(message);
+        Component fullMessage = Component.literal(getCompanionDisplayNameText() + ": ").append(message);
         for (Player player : this.level().getEntitiesOfClass(Player.class, range)) {
             player.sendSystemMessage(fullMessage);
         }
     }
 
     private void sendGlobalReaction(Component message) {
-        Component fullMessage = Component.literal(DISPLAY_NAME + ": ").append(message);
+        Component fullMessage = Component.literal(getCompanionDisplayNameText() + ": ").append(message);
         if (this.level() instanceof ServerLevel serverLevel) {
             for (ServerPlayer player : serverLevel.getServer().getPlayerList().getPlayers()) {
                 player.sendSystemMessage(fullMessage);
@@ -2587,7 +3169,7 @@ public class CompanionEntity extends PathfinderMob {
     }
 
     private void sendDirectMessage(Player player, Component message) {
-        Component fullMessage = Component.literal(DISPLAY_NAME + ": ").append(message);
+        Component fullMessage = Component.literal(getCompanionDisplayNameText() + ": ").append(message);
         player.sendSystemMessage(fullMessage);
     }
 
